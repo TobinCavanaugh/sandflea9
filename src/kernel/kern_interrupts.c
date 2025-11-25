@@ -1,0 +1,214 @@
+//
+// Created by tobin on 2025-11-24.
+//
+
+#include "../include/kern_interrupts.h"
+#include "../include/kern_vmm.h"
+#include "../include/kern_asmstubs.h"
+#include "../include/kern_serial.h"
+
+extern u64 rdmsr(u32 msr);
+
+u64 get_apic_base() {
+    u64 msr_val = rdmsr(IA32_APIC_BASE_MSR);
+    return msr_val & APIC_BASE_MASK;
+}
+
+#define LAPIC_SVR 0xF0
+#define LAPIC_EOI 0xB0
+
+#define APIC_ENABLE 0x100
+
+u0 lapic_write(u64 base, u32 reg, u32 val) {
+    volatile u32 *addr = (volatile u32 *) (base + reg);
+    *addr = val;
+}
+
+u0 enable_apic(u64 lapic_virtual_base) {
+    lapic_write(lapic_virtual_base, LAPIC_SVR, APIC_ENABLE | 0xFF);
+}
+
+u0 apic_eoi(u64 lapic_virtual_base) {
+    lapic_write(lapic_virtual_base, LAPIC_EOI, 0);
+}
+
+//@formatter:off
+extern void isr0(u0);
+extern void isr1(u0);
+extern void isr2(u0);
+extern void isr3(u0);
+extern void isr4(u0);
+extern void isr5(u0);
+extern void isr6(u0);
+extern void isr7(u0);
+extern void isr8(u0);
+extern void isr9(u0);
+extern void isr10(u0);
+extern void isr11(u0);
+extern void isr12(u0);
+extern void isr13(u0);
+extern void isr14(u0);
+extern void isr15(u0);
+extern void isr16(u0);
+extern void isr17(u0);
+extern void isr18(u0);
+extern void isr19(u0);
+extern void isr20(u0);
+extern void isr21(u0);
+extern void isr22(u0);
+extern void isr23(u0);
+extern void isr24(u0);
+extern void isr25(u0);
+extern void isr26(u0);
+extern void isr27(u0);
+extern void isr28(u0);
+extern void isr29(u0);
+extern void isr30(u0);
+extern void isr31(u0);
+extern void isr33(u0); //<-- Is this actuall an IRQ?
+//@formatter:on
+
+static idt_entry_t idt_array[256] = {0};
+
+u0 (*isr_handler[256])(const registers_t *) = {0};
+
+u0 interrupt_register(u8 index, u0 (*handler)(const registers_t *)) {
+    isr_handler[index] = handler;
+}
+
+u0 ioapic_write(u64 ioapic_virt_base, u8 reg, u32 val) {
+    volatile u32 *index_reg = (volatile u32 *) ioapic_virt_base;
+    *index_reg = reg;
+
+    volatile u32 *data_reg = (volatile u32 *) (ioapic_virt_base + 0x10);
+    *data_reg = val;
+}
+
+u0 enable_keyboard_ioapic(u64 ioapic_virt_base) {
+    u32 low_bits = 0x21;
+    u32 high_bits = 0;
+
+    ioapic_write(ioapic_virt_base, 0x10 + (1 * 2), low_bits);
+    ioapic_write(ioapic_virt_base, 0x10 + (1 * 2) + 1, high_bits);
+}
+
+
+char *isr_errors[] = {
+    "Divide by Zero",
+    "Debug Exception",
+    "Non Maskable Interrupt",
+    "Breakpoint",
+    "Overflow",
+    "Bound",
+    "Invalid Opcode",
+    "No FPU",
+    "Double Fault",
+    "Coprocessor Segment Overrun",
+    "Invalid TSS",
+    "Segment Not Present",
+    "Stack Segment Fault",
+    "General Protection Fault",
+    "Page Fault",
+    "Reserved Intel",
+    "FPU error",
+    "Alignment Check",
+    "Machine Check",
+    "SIMD Exception",
+    "Virtualization Exception",
+    "Control Protection Exception", // 21
+    "Reserved Intel", // 22
+    "Reserved Intel", // 23
+    "Reserved Intel", // 24
+    "Reserved Intel", // 25
+    "Reserved Intel", // 26
+    "Reserved Intel", // 27
+    "Reserved Intel", // 28
+    "Reserved Intel", // 29
+    "Reserved Intel", // 30
+    "Reserved Intel", // 31
+};
+
+u0 kern_interrupt_handler(const registers_t *t) {
+    if (t->int_no <= 31) {
+        serial_outs("!!!");
+        serial_outs(isr_errors[t->int_no]);
+        serial_outs("!!!");
+        for (;;);
+    }
+
+    if (isr_handler[t->int_no]) {
+        isr_handler[t->int_no](t);
+    } else {
+        inb(0x60); //<-- suboptimal
+    }
+
+    apic_eoi(0xFFFFFFFF10000000);
+}
+
+u0 idt_set_gate(int n, u64 handler) {
+    idt_array[n].offset_low = (u16) (handler & 0xFFFF);
+    idt_array[n].selector = (0x28); // set by Limine
+    idt_array[n].ist = 0;
+    idt_array[n].type_attributes = 0x8E;
+    idt_array[n].offset_mid = (u16) ((handler >> 16) & 0xFFFF);
+    idt_array[n].offset_high = (u32) ((handler >> 32) & 0xFFFFFFFF);
+    idt_array[n].reserved = 0;
+}
+
+u0 interrupts_init() {
+    // make sure the PIC is dead
+    outb(0x21, 0xFF);
+    outb(0xA1, 0xFF);
+
+    idt_ptr_t idtr;
+    idtr.limit = sizeof(idt_entry_t) * 256 - 1;
+    idtr.base = (u64) &idt_array;
+
+    idt_set_gate(0, (u64) isr0);
+    idt_set_gate(1, (u64) isr1);
+    idt_set_gate(2, (u64) isr2);
+    idt_set_gate(3, (u64) isr3);
+    idt_set_gate(4, (u64) isr4);
+    idt_set_gate(5, (u64) isr5);
+    idt_set_gate(6, (u64) isr6);
+    idt_set_gate(7, (u64) isr7);
+    idt_set_gate(8, (u64) isr8);
+    idt_set_gate(9, (u64) isr9);
+    idt_set_gate(10, (u64) isr10);
+    idt_set_gate(11, (u64) isr11);
+    idt_set_gate(12, (u64) isr12);
+    idt_set_gate(13, (u64) isr13);
+    idt_set_gate(14, (u64) isr14);
+    idt_set_gate(15, (u64) isr15);
+    idt_set_gate(16, (u64) isr16);
+    idt_set_gate(17, (u64) isr17);
+    idt_set_gate(18, (u64) isr18);
+    idt_set_gate(19, (u64) isr19);
+    idt_set_gate(20, (u64) isr20);
+    idt_set_gate(21, (u64) isr21);
+    idt_set_gate(22, (u64) isr22);
+    idt_set_gate(23, (u64) isr23);
+    idt_set_gate(24, (u64) isr24);
+    idt_set_gate(25, (u64) isr25);
+    idt_set_gate(26, (u64) isr26);
+    idt_set_gate(27, (u64) isr27);
+    idt_set_gate(28, (u64) isr28);
+    idt_set_gate(29, (u64) isr29);
+    idt_set_gate(30, (u64) isr30);
+    idt_set_gate(31, (u64) isr31);
+    idt_set_gate(33, (u64) isr33);
+
+
+    u64 apic_phys = get_apic_base();
+    u64 apic_virt = 0xFFFFFFFF10000000;
+    vmm_map_page(apic_phys, apic_virt, PAGE_RW | PAGE_PCD | PAGE_PWT);
+    enable_apic(apic_virt);
+
+    u64 ioapic_virt = 0xFFFFFFFF10001000;
+    vmm_map_page(IOAPIC_PHYS_BASE, ioapic_virt, PAGE_RW | PAGE_PCD);
+    enable_keyboard_ioapic(ioapic_virt);
+    // place handlers in here
+
+    asm volatile ("lidt %0" : : "m" (idtr));
+    sti();
+}
