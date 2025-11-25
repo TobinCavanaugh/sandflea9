@@ -29,6 +29,23 @@
 #define IA32_APIC_BASE_MSR 0x1B
 #define APIC_BASE_MASK 0xFFFFF000
 
+#define KHEAP_START_ADDR 0xFFFFFFFF88000000
+#define PAGE_SIZE 4096
+#define HEAP_MIN_SIZE 0x40000 // Initial 256KB
+
+typedef struct heap_header {
+    u64 size; // Size of the data block (excluding header)
+    u64 is_free; // 1 if free, 0 if used
+    struct heap_header *next; // Pointer to the next block in the list
+} heap_header_t;
+
+// API
+u0 kmalloc_init();
+
+u0 *kmalloc(u64 size);
+
+u0 kfree(void *ptr);
+
 u0 init_vmm_globals(struct limine_hhdm_request hhdm_request);
 
 u0 init_pmm(struct limine_memmap_request memmap_request);

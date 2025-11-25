@@ -10,6 +10,8 @@ C_SOURCES=(
     "src/kernel/kern_asmstubs.c"
     "src/kernel/kern_interrupts.c"
     "src/kernel/kern_serial.c"
+    "src/kernel/kern_keyboard.c"
+    "src/kernel/kern_screen.c"
     "src/kernel/kern_vmm.c"
     "src/kernel/kern_mem.c"
     "src/kernel/main.c"
