@@ -7,6 +7,19 @@
 
 #include "../include/dialect.h"
 
+
+#define LAPIC_SVR 0xF0
+#define LAPIC_EOI 0xB0
+#define APIC_ENABLE 0x100
+
+#define LAPIC_TIMER_LVT 0x320
+#define LAPIC_TIMER_INIT 0x380
+#define LAPIC_TIMER_CURR 0x390
+#define LAPIC_TIMER_DIV 0x3e0
+
+#define LAPIC_LVT_MASKED 0x10000
+#define LAPIC_TIMER_PERIODIC 0x20000
+
 typedef struct {
     u16 offset_low;
     u16 selector;
@@ -30,14 +43,10 @@ typedef struct {
     u64 rip, cs, rflags, rsp, ss; // Pushed automatically by CPU
 } registers_t;
 
-
 //@formatter:off
 u0 idt_set_gate(int n, u64 handler);
-
 u0 interrupts_init();
-
 u0 interrupt_register(u8 index, u0 (*handler)(const registers_t *));
-
 //@formatter:on
 
 

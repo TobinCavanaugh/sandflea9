@@ -7,6 +7,8 @@
 #include "../include/kern_asmstubs.h"
 #include "../include/kern_serial.h"
 
+u0 apic_timer_init(u64 lapic_base, u8 vector, u32 ms);
+
 extern u64 rdmsr(u32 msr);
 
 u64 get_apic_base() {
@@ -14,10 +16,6 @@ u64 get_apic_base() {
     return msr_val & APIC_BASE_MASK;
 }
 
-#define LAPIC_SVR 0xF0
-#define LAPIC_EOI 0xB0
-
-#define APIC_ENABLE 0x100
 
 u0 lapic_write(u64 base, u32 reg, u32 val) {
     volatile u32 *addr = (volatile u32 *) (base + reg);
@@ -65,6 +63,8 @@ extern void isr28(u0);
 extern void isr29(u0);
 extern void isr30(u0);
 extern void isr31(u0);
+
+extern void isr32(u0);
 extern void isr33(u0); //<-- Is this actuall an IRQ?
 //@formatter:on
 
@@ -196,6 +196,7 @@ u0 interrupts_init() {
     idt_set_gate(29, (u64) isr29);
     idt_set_gate(30, (u64) isr30);
     idt_set_gate(31, (u64) isr31);
+    idt_set_gate(32, (u64) isr32);
     idt_set_gate(33, (u64) isr33);
 
 
@@ -203,12 +204,67 @@ u0 interrupts_init() {
     u64 apic_virt = 0xFFFFFFFF10000000;
     vmm_map_page(apic_phys, apic_virt, PAGE_RW | PAGE_PCD | PAGE_PWT);
     enable_apic(apic_virt);
+    apic_timer_init(apic_virt, 32, 10); //10ms
 
     u64 ioapic_virt = 0xFFFFFFFF10001000;
     vmm_map_page(IOAPIC_PHYS_BASE, ioapic_virt, PAGE_RW | PAGE_PCD);
     enable_keyboard_ioapic(ioapic_virt);
-    // place handlers in here
 
     asm volatile ("lidt %0" : : "m" (idtr));
     sti();
+}
+
+
+u0 pit_prepare_sleep(u16 ms) {
+    outb(0x43, 0x30);
+    u16 count = 1193 * ms; // 1.193182 Mhz
+    outb(0x40, count & 0xFF);
+    outb(0x40, (count >> 8) & 0xFF);
+}
+
+u0 pit_perform_sleep() {
+    u16 last_tick = 0xFFFF; // Start with the max possible value
+
+    while (1) {
+        // Send Latch Command to Channel 0 (0x00) to read the current count
+        outb(0x43, 0x00);
+
+        // Read Low byte then High byte
+        u8 lo = inb(0x40);
+        u8 hi = inb(0x40);
+        u16 current_tick = lo | (hi << 8);
+
+        // In Mode 0, the counter decrements.
+        // 1. If current_tick > last_tick, it wrapped around (reached 0 then 0xFFFF).
+        if (current_tick > last_tick) {
+            break;
+        }
+
+        // 2. If it reaches a very small number (close to 0), we are done.
+        // (Some emulators might stop at 0 instead of wrapping immediately)
+        if (current_tick < 10) {
+            break;
+        }
+
+        last_tick = current_tick;
+    }
+}
+
+u0 apic_timer_init(u64 lapic_base, u8 vector, u32 ms) {
+    lapic_write(lapic_base, LAPIC_TIMER_DIV, 0x3);
+    pit_prepare_sleep(10);
+    lapic_write(lapic_base, LAPIC_TIMER_INIT, 0xFFFFffff);
+    pit_perform_sleep();
+    lapic_write(lapic_base, LAPIC_TIMER_LVT, LAPIC_LVT_MASKED);
+
+    u32 ticks_in_10ms = 0xFFFFffff - *(volatile u32 *) (lapic_base + LAPIC_TIMER_CURR);
+
+    u32 tpms = ticks_in_10ms / 10;
+    u32 total_ticks = tpms * ms;
+
+    lapic_write(lapic_base, LAPIC_TIMER_LVT, vector | LAPIC_TIMER_PERIODIC);
+    lapic_write(lapic_base, LAPIC_TIMER_DIV, 0x3);
+    lapic_write(lapic_base, LAPIC_TIMER_INIT, total_ticks);
+
+    serial_outs("APIC timer initialized\n");
 }

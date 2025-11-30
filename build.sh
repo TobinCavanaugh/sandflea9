@@ -89,6 +89,18 @@ xorriso -as mkisofs \
         -efi-boot-part --efi-boot-image --protective-msdos-label \
         -o sandfleaOS.iso iso_root
 
+echo "--- Creating Test Filesystem ---"
+# 1. Create a 32MB empty file
+dd if=/dev/zero of=disk.img bs=1M count=32
+
+# 2. Format it as ext2 (force it to not complain about it being a file)
+# Note: You may need to install e2fsprogs (sudo apt install e2fsprogs)
+/usr/sbin/mkfs.ext2 -F disk.img
+
+# (Optional) Copy a test file into it using debugfs so you don't need to mount it
+# This writes a text file "hello.txt" into the root of the image
+echo "write src/blob/testfile.txt testfile.txt" | /usr/sbin/debugfs -w disk.img
+
 echo "--- Done ---"
-echo "NOTE: To run this in QEMU, you now need OVMF (UEFI Firmware)."
-echo "Run: qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom sandfleaOS.iso"
+#echo "NOTE: To run this in QEMU, you now need OVMF (UEFI Firmware)."
+#echo "Run: qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom sandfleaOS.iso"

@@ -2,7 +2,7 @@
 // Created by tobin on 2025-11-25.
 //
 
-#include "kern_keyboard.h"
+#include "../include/kern_keyboard.h"
 
 #include "../include/kern_mem.h"
 

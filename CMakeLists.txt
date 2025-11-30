@@ -13,7 +13,7 @@ add_executable(sandflea9 src/kernel/main.c
         src/include/kern_vmm.h
         src/kernel/kern_asmstubs.c
         src/kernel/kern_screen.c
-        src/kernel/kern_screen.h
+        src/include/kern_screen.h
         src/kernel/kern_keyboard.c
-        src/kernel/kern_keyboard.h
+        src/include/kern_keyboard.h
 )
