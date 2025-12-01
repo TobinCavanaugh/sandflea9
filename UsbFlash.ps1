@@ -1,0 +1,1 @@
+& rufus -i "sandfleaOS.iso"

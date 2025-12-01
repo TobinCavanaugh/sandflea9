@@ -4,6 +4,8 @@
 
 #include "../include/kern_serial.h"
 
+#include "../util/util_str.h"
+
 
 u8 init_serial() {
     outb(SERIAL_PORT + 1, 0x00); // Disable all interrupts
@@ -28,6 +30,8 @@ u8 init_serial() {
 }
 
 u0 serial_outc(char c) {
+    //TODO Make it also output out of pci serial
+    
     outb(SERIAL_PORT, c);
 }
 
@@ -36,4 +40,14 @@ u0 serial_outs(char *str) {
     while (str[i] != '\0') {
         serial_outc(str[i++]);
     }
+}
+
+u0 serial_outi64(i64 val, BASE_FMT base) {
+    char buf[64];
+    i64_to_sn(val, buf, base, 64);
+}
+u0 serial_outu64(u64 val, BASE_FMT base) {
+    char buf[64];
+    u64_to_sn(val, buf, base, 64);
+    serial_outs(buf);
 }

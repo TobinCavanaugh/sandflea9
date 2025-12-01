@@ -3,10 +3,8 @@
 //
 
 #include "../include/kern_vmm.h"
-
 #include "../include/kern_mem.h"
 #include "../include/kern_serial.h"
-
 
 u64 hhdm_offset = 0;
 u64 free_list_head = 0;
@@ -26,7 +24,7 @@ u0 init_pmm(struct limine_memmap_request memmap_request) {
     struct limine_memmap_response *map = memmap_request.response;
     for (u64 i = 0; i < map->entry_count; i++) {
         struct limine_memmap_entry *entry = map->entries[i];
-        if (entry->type == LIMINE_MEMMAP_USABLE) {
+        if (entry->type == LIMINE_MEMMAP_USABLE) { // This will skip any blocks that limine is keeping for itself
             u64 addr = (entry->base + 0xFFF) & ~0xFFF; // Align to 4096
             u64 top = (entry->base + entry->length);
 
@@ -176,7 +174,7 @@ u0 *kmalloc(u64 size) {
         last->next = (heap_header_t *) old_end;
     }
 
-    heap_header_t *new_block = (heap_header_t * )old_end;
+    heap_header_t *new_block = (heap_header_t *) old_end;
     new_block->size = expansion_size - sizeof(heap_header_t);
     new_block->is_free = 1;
     new_block->next = null;

@@ -1,0 +1,140 @@
+//
+// Created by tobin on 2025-11-30.
+//
+
+#include "util_str.h"
+
+u32 str_len(const char *str) {
+    i32 i = 0;
+    while (str[i]) {
+        i++;
+    }
+    return i;
+}
+
+u0 reverse(char s[]) {
+    i32 i, j;
+    char c;
+
+    for (i = 0, j = str_len(s) - 1; i < j; i++, j--) {
+        c = s[i];
+        s[i] = s[j];
+        s[j] = c;
+    }
+}
+
+u32 i64_to_sn(i64 val, char *out_buf, u8 base, u32 max_size) {
+    if (max_size == 0) {
+        return 0;
+    }
+
+    char temp_buf[65]; // Sufficient for 64-bit binary + sign + null
+    i32 i = 0;
+    u64 u_val;
+    int is_negative = 0;
+
+    // 1. Handle Sign & Type Casting
+    // We treat Base 10 as signed, and others (Hex, Binary) as unsigned/raw bits.
+    // We cast to u64 to safely handle INT64_MIN negation.
+    if (base == 10 && val < 0) {
+        is_negative = 1;
+        u_val = (u64) (-(val + 1)) + 1; // 2's complement safe negation
+    } else {
+        u_val = (u64) val;
+    }
+
+    // 2. Handle Zero Explicitly
+    if (u_val == 0) {
+        temp_buf[i++] = '0';
+    } else {
+        // 3. Convert Digits
+        while (u_val != 0) {
+            int rem = u_val % base;
+            if (rem < 10) {
+                temp_buf[i++] = rem + '0';
+            } else {
+                temp_buf[i++] = (rem - 10) + 'A'; // Output 'A'-'F' for Hex
+            }
+            u_val /= base;
+        }
+    }
+
+    // 4. Append Negative Sign
+    if (is_negative) {
+        temp_buf[i++] = '-';
+    }
+
+    // 5. Copy to Output Buffer (Reverse & Bounds Check)
+    // We generated digits in reverse (LSD first), so we read temp_buf backward.
+    u32 out_len = 0;
+    while (i > 0 && out_len < max_size - 1) {
+        out_buf[out_len++] = temp_buf[--i];
+    }
+
+    out_buf[out_len] = '\0'; // Null terminate
+
+    return out_len;
+}
+
+
+u32 u64_to_sn(u64 val, char *out_buf, u8 base, u32 max_size) {
+    if (max_size == 0) {
+        return 0;
+    }
+
+    char temp_buf[65]; // Sufficient for 64-bit binary + null
+    i32 i = 0;
+
+    // 1. Handle Zero Explicitly
+    if (val == 0) {
+        temp_buf[i++] = '0';
+    } else {
+        // 2. Convert Digits
+        while (val != 0) {
+            int rem = val % base;
+            if (rem < 10) {
+                temp_buf[i++] = rem + '0';
+            } else {
+                temp_buf[i++] = (rem - 10) + 'A'; // Output 'A'-'F' for Hex
+            }
+            val /= base;
+        }
+    }
+
+    // 3. Copy to Output Buffer (Reverse & Bounds Check)
+    // We generated digits in reverse (LSD first), so we read temp_buf backward.
+    u32 out_len = 0;
+    while (i > 0 && out_len < max_size - 1) {
+        out_buf[out_len++] = temp_buf[--i];
+    }
+
+    out_buf[out_len] = '\0'; // Null terminate
+
+    return out_len;
+}
+
+u8 str_eq(const char *a, const char *b) {
+    i32 alen = str_len(a);
+    i32 blen = str_len(b);
+
+    if (alen != blen) { return false; }
+
+    for (i32 i = 0; i < alen; i++) {
+        if (a[i] != b[i]) { return false; }
+    }
+
+    return true;
+}
+
+u8 str_sw(const char *a , const char *b) {
+    i32 alen = str_len(a);
+    i32 blen = str_len(b);
+
+    if (blen > alen) { return false; }
+
+    for (i32 i = 0; i < blen; i++) {
+        if (a[i] != b[i]) { return false; }
+    }
+
+    return true;
+}

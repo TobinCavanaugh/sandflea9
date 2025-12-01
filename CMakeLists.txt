@@ -16,4 +16,12 @@ add_executable(sandflea9 src/kernel/main.c
         src/include/kern_screen.h
         src/kernel/kern_keyboard.c
         src/include/kern_keyboard.h
+        src/util/util_str.c
+        src/util/util_str.h
+        src/include/stbsupport.h
+        src/include/limine_requests.h
+        src/kernel/kern_pci.c
+        src/include/kern_pci.h
+        src/kernel/kern_ext2.c
+        src/kernel/kern_ext2.h
 )

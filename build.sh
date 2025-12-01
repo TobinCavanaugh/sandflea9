@@ -9,12 +9,15 @@ C_SOURCES=(
     "src/kernel/arith64.c"
     "src/kernel/kern_asmstubs.c"
     "src/kernel/kern_interrupts.c"
-    "src/kernel/kern_serial.c"
     "src/kernel/kern_keyboard.c"
-    "src/kernel/kern_screen.c"
-    "src/kernel/kern_vmm.c"
     "src/kernel/kern_mem.c"
+    "src/kernel/kern_screen.c"
+    "src/kernel/kern_serial.c"
+    "src/kernel/kern_vmm.c"
+    "src/kernel/kern_pci.c"
     "src/kernel/main.c"
+    "src/kernel/kern_ext2.c"
+    "src/util/util_str.c"
 )
 
 ASM_SOURCES=(
@@ -77,6 +80,27 @@ LINK_LIST="$LINK_LIST obj/font.o"
 echo "--- Linking ---"
 ld $LDFLAGS -o "iso_root/kernel.elf" $LINK_LIST
 
+
+echo "--- Creating Test Filesystem ---"
+# 1. Create a 32MB empty file
+dd if=/dev/zero of=disk.img bs=1M count=32
+
+# 2. Format it as ext2 (force it to not complain about it being a file)
+# Note: You may need to install e2fsprogs (sudo apt install e2fsprogs)
+/usr/sbin/mkfs.ext2 -F disk.img
+
+# (Optional) Copy a test file into it using debugfs so you don't need to mount it
+# This writes a text file "hello.txt" into the root of the image
+#echo "write src/blob/testfile.txt testfile.txt" | /usr/sbin/debugfs -w disk.img
+/usr/sbin/debugfs -w disk.img <<EOF
+write src/blob/testfile.txt testfile.txt
+write src/blob/a.txt a.txt
+write src/blob/b.txt b.txt
+write src/blob/c.txt c.txt
+EOF
+
+cp disk.img iso_root/
+
 echo "--- Packaging UEFI ISO ---"
 
 # 1. Copy ONLY the UEFI bootloader binary
@@ -89,17 +113,6 @@ xorriso -as mkisofs \
         -efi-boot-part --efi-boot-image --protective-msdos-label \
         -o sandfleaOS.iso iso_root
 
-echo "--- Creating Test Filesystem ---"
-# 1. Create a 32MB empty file
-dd if=/dev/zero of=disk.img bs=1M count=32
-
-# 2. Format it as ext2 (force it to not complain about it being a file)
-# Note: You may need to install e2fsprogs (sudo apt install e2fsprogs)
-/usr/sbin/mkfs.ext2 -F disk.img
-
-# (Optional) Copy a test file into it using debugfs so you don't need to mount it
-# This writes a text file "hello.txt" into the root of the image
-echo "write src/blob/testfile.txt testfile.txt" | /usr/sbin/debugfs -w disk.img
 
 echo "--- Done ---"
 #echo "NOTE: To run this in QEMU, you now need OVMF (UEFI Firmware)."

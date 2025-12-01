@@ -1,80 +1,31 @@
-#include "../include/kern_screen.h"
+#include "../include/dialect.h"
+#define STB_SPRINTF_IMPLEMENTATION
+#include "../include/stbsupport.h"
+
 #include "../include/kern_asmstubs.h"
 #include "../include/kern_serial.h"
 #include "../include/kern_vmm.h"
-#include "../include/kern_interrupts.h"
 #include "../include/kern_keyboard.h"
 #include "../include/kern_mem.h"
-
-//TODO SWITCH TO SSFN RENDER
-//TODO FAT FILE SYSTEM
-
-typedef __builtin_va_list va_list;
-
-#define va_start(ap, param) __builtin_va_start(ap, param)
-#define va_end(ap)          __builtin_va_end(ap)
-#define va_arg(ap, type)    __builtin_va_arg(ap, type)
-#define va_copy(dest, src)  __builtin_va_copy(dest, src)
-
-#define STB_SPRINTF_IMPLEMENTATION
-#define size_t u64
-#define ptrdiff_t i64
-#include "../include/stb_sprintf.h"
-
-#include "../include/dialect.h"
+#include "../util/util_str.h"
 #include "../../limine/limine.h"
+#include "../include/limine_requests.h"
+#include "../include/kern_pci.h"
+#include "../include/kern_interrupts.h"
+#include "../include/kern_screen.h"
+#include "kern_ext2.h"
+
 
 #define SSFN_CONSOLEBITMAP_TRUECOLOR
-
 #include  "../include/ssfn.h"
 
-#define LIMINE_REQUEST __attribute__((used, section(".limine_requests")))
-
-LIMINE_REQUEST static volatile LIMINE_BASE_REVISION(3);
-LIMINE_REQUEST static volatile struct limine_framebuffer_request framebuffer_request = {
-    .id = LIMINE_FRAMEBUFFER_REQUEST,
-    .revision = 0
-};
-
-LIMINE_REQUEST static volatile struct limine_hhdm_request hhdm_request = {
-    .id = LIMINE_HHDM_REQUEST,
-    .revision = 0
-};
-
-LIMINE_REQUEST static volatile struct limine_memmap_request memmap_request = {
-    .id = LIMINE_MEMMAP_REQUEST,
-    .revision = 0
-};
-
+//TODO FAT FILE SYSTEM
 
 display_t *display_main = 0;
-
-u0 ssfn_putc2(char c) {
-    // why doesn't this clamp work....
-    ssfn_dst.x = clamp(ssfn_dst.x, 0, display_main->surface.width - 1 - font_width);
-    ssfn_dst.y = clamp(ssfn_dst.y, 0, display_main->surface.height - 1 - font_width);
-
-    if (c > 31) {
-        ssfn_putc(c);
-    } else {
-        if (c == '\n') {
-            ssfn_dst.x = 0;
-            ssfn_dst.y += font_height;
-        } else if (c == '\t') {
-            ssfn_dst.x += font_width * 5;
-        }
-    }
-}
-
-u0 ssfn_puts(char *str) {
-    i32 i = 0;
-    while (str[i] != 0) ssfn_putc2(str[i++]);
-}
 
 extern char _binary_src_blob_regularfont_sfn_start;
 
 extern u0 enable_sse(u0);
-
 
 u64 sw = 0;
 u32 offX = 0, offY = 0;
@@ -82,50 +33,103 @@ u0 timer_handler(const registers_t *reg) {
     sw += 10;
 }
 
-u32 str_len(const char *str) {
-    i32 i = 0;
-    while (str[i]) {
-        i++;
+u64 alive = 0;
+
+// typedef struct {
+//     u8 bus, u8 slot, u8 func;
+// } pci_device_t;
+
+typedef struct {
+    display_t *display_main;
+    display_t **display_array;
+    u64 usable_mem_size;
+    u64 total_mem_size;
+} system_t;
+
+system_t system = {0};
+
+char *content = null;
+char typingbuf[255] = {0};
+
+u0 handle_command() {
+    char workingbuf[256] = {0};
+    u64 add = PAGE_SIZE * 1000;
+
+    if (str_eq(typingbuf, "kmalloc")) {
+        u64 size = 0;
+
+        serial_outs("Testing Kmalloc and page fault handling.\n");
+        i64 inc = 0;
+        while (1) {
+            // 1.99 GB when running with qemu -2G
+            size += add;
+            kmalloc(add);
+            stbsp_snprintf(workingbuf, 255, "%lldB\n", size);
+            serial_outs(workingbuf);
+
+            if (inc % 2 == 0) {
+                screen_puts_r(workingbuf, V2I(0, font_height * 2), COLOR_WHITE, COLOR_BLACK);
+                screen_draw();
+            }
+
+            ++inc;
+        }
     }
-    return i;
+
+    if (str_eq(typingbuf, "kmalloc2")) {
+        u64 sum = 0;
+
+        serial_outs("Testing Kmalloc and freeing. This should result in no errors.\n");
+
+        // Cycle through our memory 4 times, this should be enough to catch any page faults
+        while (sum < system.total_mem_size * 4) {
+            sum += add;
+            void *dat = kmalloc(add);
+            mem_set(dat, COLOR_MAGENTA, add);
+            kfree(dat);
+
+            stbsp_snprintf(workingbuf, 255, "%lld\n", sum);
+            serial_outs(workingbuf);
+        }
+    }
+
+    if (str_sw(typingbuf, "ext2")) {
+        char *word = typingbuf;
+        i32 x = 0;
+        while (word[x] != 0) {
+            if (word[x] == ' ') break;
+            x++;
+        }
+
+        serial_outs(">>>");
+        serial_outs(word + x + 1);
+        serial_outs("<<<");
+
+        ext2_inode_t *i = find_file_in_root(word + x + 1);
+
+        if (i != null) {
+            serial_outs("Yipeee\n");
+
+            content = (char *) get_block_ptr(i->block[0]);
+            serial_outs("vvv\n");
+            serial_outs(content);
+            serial_outs("\n^^^");
+        } else {
+            serial_outs("Bummer");
+            content = "File Not Found";
+        }
+    }
+
+    if (str_eq(typingbuf, "cls")) {
+        typingbuf[0] = 0;
+        content = null;
+    }
 }
-
-u0 screen_puts_nb(const char *str, v2i_t loc, COLOR fg) {
-    ssfn_dst.x = loc.x;
-    ssfn_dst.y = loc.y;
-    ssfn_dst.fg = fg;
-    ssfn_dst.bg = COLOR_BLACK; // useless
-
-    i32 i = 0;
-    while (str[i] != 0) ssfn_putc2(str[i++]);
-}
-
-v2i_t screen_puts_c(const char *str, v2i_t loc, COLOR fg, COLOR bg) {
-    ssfn_dst.x = loc.x;
-    ssfn_dst.y = loc.y;
-    ssfn_dst.fg = fg;
-    ssfn_dst.bg = bg; // useless
-
-    v2i_t newP = {ssfn_dst.x + str_len(str) * font_width, ssfn_dst.y + font_height};
-    screen_draw_box(V2I(loc.x, loc.y), newP, bg);
-
-    i32 i = 0;
-    while (str[i] != 0) ssfn_putc2(str[i++]);
-
-    newP.y -= font_height;
-    return newP;
-}
-
-v2i_t screen_puts_r(const char *str, v2i_t loc, COLOR fg, COLOR bg) {
-    v2i_t e = screen_puts_c(str, loc, fg, bg);
-    screen_draw_rectl(loc, V2I(e.x, e.y + font_height), fg);
-    return e;
-}
-
-u32 alive = 0;
 
 void kern_entry(void) {
     init_serial();
+    pci_scan_and_init_serial();
+
     enable_sse(); // cpu extension
     serial_outc('*');
 
@@ -198,30 +202,35 @@ void kern_entry(void) {
             default: { break; }
         }
     }
+    system.usable_mem_size = usable_ram;
+    system.total_mem_size = total_ram;
+
+    serial_outs("memmapped\n");
 
     char buf[255];
 
-    // u64 size = 0;
-    // while (1) {
-    //     // 1.99 GB when running with qemu -2G
-    //     u64 add = PAGE_SIZE * 100;
-    //     size += add;
-    //     kmalloc(add);
-    //     stbsp_snprintf(buf, 255, "%lld\n", size);
-    //     serial_outs(buf);
-    // }
+    ext2_init(module_request);
 
-    char *kpanicm = "Control Protection Exception";
-
+    // failing here vvv
 
     v2i_t s = {0}, e = {0};
     for (;;) {
-        // // Keyboard input
-        // u8 k = 0;
-        // while ((k = keyboard_eat_key())) {
-        //     ssfn_putc2(k);
-        //     sw = 0;
-        // }
+        // Keyboard input
+        u8 k = 0;
+        while ((k = keyboard_eat_key())) {
+            i32 len = str_len(typingbuf);
+
+            if (k == '\n') {
+                handle_command();
+                typingbuf[0] = 0;
+            } else if (k == '\b') {
+                typingbuf[len - 1] = '\0';
+            } else {
+                typingbuf[len] = k;
+                typingbuf[len + 1] = 0;
+                sw = 0;
+            }
+        }
 
         screen_clear(COLOR_BLACK);
 
@@ -240,21 +249,29 @@ void kern_entry(void) {
         stbsp_snprintf(buf, 255, " Display %-2d ", display_main->index);
         p.x = 1 + screen_puts_r(buf, p, COLOR_GRAY, COLOR_BLACK).x;
 
-        stbsp_snprintf(buf, 255, " IO %-5s ", "/////");
+        stbsp_snprintf(buf, 255, " %s ", (alive++ % 2) ? "*" : " ");
         p.x = 1 + screen_puts_r(buf, p, COLOR_GRAY, COLOR_BLACK).x;
 
-        i32 w = (28 + 2) * font_width;
+        i32 w = (28 + 1) * font_width + 1;
         i32 rem = display_main->surface.width - w;
 
-
         for (int i = 0; i <= font_height; i += 4) {
-            screen_draw_line(V2I(p.x, i), V2I(rem, i), COLOR_WHITE);
+            screen_draw_line(V2I(p.x, i), V2I(rem, i), COLOR_DIM_GRAY);
         }
 
-        p.x = rem;
-        stbsp_snprintf(buf, 255, " %-28s ", kpanicm);
-        p.x = 1 + screen_puts_r(buf, p, COLOR_GRAY, COLOR_BLACK).x;
+        // p.x = rem;
+        // stbsp_snprintf(buf, 255, " %-28s ", kpanicm);
+        // p.x = 1 + screen_puts_r(buf, p, COLOR_GRAY, COLOR_BLACK).x;
 
+
+        ssfn_dst.x = 0;
+        ssfn_dst.y = font_height * 2;
+        if (content != null) ssfn_puts(content);
+
+        ssfn_dst.x = 0;
+        ssfn_dst.y = display_main->surface.height - font_height;
+        ssfn_puts("#>");
+        ssfn_puts(typingbuf);
 
         screen_draw();
 

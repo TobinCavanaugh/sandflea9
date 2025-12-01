@@ -5,7 +5,9 @@
 #include "../include/kern_interrupts.h"
 #include "../include/kern_vmm.h"
 #include "../include/kern_asmstubs.h"
+#include "../include/kern_screen.h"
 #include "../include/kern_serial.h"
+#include "../include/stbsupport.h"
 
 u0 apic_timer_init(u64 lapic_base, u8 vector, u32 ms);
 
@@ -128,11 +130,26 @@ char *isr_errors[] = {
     "Reserved Intel", // 31
 };
 
+u0 panic_draw_status(char * msg) {
+    char buf[256];
+    stbsp_snprintf(buf, 255, " %-28s", msg);
+    i32 w = (28 + 1) * font_width + 1;
+    display_t * disp = screen_current_display();
+    i32 x_pos = disp->surface.width - w;
+
+    screen_puts_r(buf, V2I(x_pos, 0), COLOR_WHITE, COLOR_RED);
+
+    screen_draw();
+}
+
 u0 kern_interrupt_handler(const registers_t *t) {
     if (t->int_no <= 31) {
         serial_outs("!!!");
-        serial_outs(isr_errors[t->int_no]);
+        char * err = isr_errors[t->int_no];
+        serial_outs(err);
         serial_outs("!!!");
+
+        panic_draw_status(err);
         for (;;);
     }
 

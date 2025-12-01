@@ -6,6 +6,8 @@
 
 #include "../include/kern_mem.h"
 #include "../include/kern_vmm.h"
+#include "../include/ssfn.h"
+#include "../util/util_str.h"
 
 display_t *current_display;
 // struct limine_framebuffer *current_display->surface;
@@ -162,4 +164,69 @@ u32 color_rgb(u32 r, u32 g, u32 b) {
     return ((r & 0xFF) << current_display->red_mask_shift) |
            ((g & 0xFF) << current_display->green_mask_shift) |
            ((b & 0xFF) << current_display->blue_mask_shift);
+}
+
+
+u0 screen_puts_nb(const char *str, v2i_t loc, COLOR fg) {
+    ssfn_dst.x = loc.x;
+    ssfn_dst.y = loc.y;
+    ssfn_dst.fg = fg;
+    ssfn_dst.bg = COLOR_BLACK; // useless
+
+    i32 i = 0;
+    while (str[i] != 0) ssfn_putc2(str[i++], true);
+}
+
+v2i_t screen_puts_c(const char *str, v2i_t loc, COLOR fg, COLOR bg) {
+    ssfn_dst.x = loc.x;
+    ssfn_dst.y = loc.y;
+    ssfn_dst.fg = fg;
+    ssfn_dst.bg = bg; // useless
+
+    v2i_t newP = {ssfn_dst.x + str_len(str) * font_width, ssfn_dst.y + font_height};
+    screen_draw_box(V2I(loc.x, loc.y), newP, bg);
+
+    i32 i = 0;
+    while (str[i] != 0) ssfn_putc2(str[i++], true);
+
+    newP.y -= font_height;
+    return newP;
+}
+
+v2i_t screen_puts_r(const char *str, v2i_t loc, COLOR fg, COLOR bg) {
+    v2i_t e = screen_puts_c(str, loc, fg, bg);
+    screen_draw_rectl(loc, V2I(e.x, e.y + font_height), fg);
+    return e;
+}
+
+
+u0 ssfn_puts(char *str) {
+    i32 i = 0;
+    while (str[i] != 0) ssfn_putc2(str[i++], true);
+}
+
+u0 ssfn_putc2(char c, u8 wrapx) {
+    // why doesn't this clamp work....
+    u32 maxw = current_display->surface.width - 1 - font_width;
+    ssfn_dst.x = clamp(ssfn_dst.x, 0, maxw);
+    ssfn_dst.y = clamp(ssfn_dst.y, 0, current_display->surface.height - 1 - font_width);
+
+    if (c > 31) {
+        if (wrapx && ssfn_dst.x >= maxw) {
+            ssfn_dst.x = 0;
+            ssfn_dst.y += font_height;
+        }
+        ssfn_putc(c);
+    } else {
+        if (c == '\n') {
+            ssfn_dst.x = 0;
+            ssfn_dst.y += font_height;
+        } else if (c == '\t') {
+            ssfn_dst.x += font_width * 5;
+        }
+    }
+}
+
+display_t * screen_current_display() {
+    return current_display;
 }

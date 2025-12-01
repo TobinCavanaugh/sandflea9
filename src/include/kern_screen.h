@@ -6,7 +6,9 @@
 #define KERN_SCREEN_H
 
 #include "dialect.h"
+
 #include "../../limine/limine.h"
+
 
 //@formatter:off
 
@@ -79,6 +81,15 @@ u0 screen_draw_rectl(v2i_t p1, v2i_t p2, COLOR color);
 u0 screen_draw_box(v2i_t p1, v2i_t p2, COLOR color);
 u0 screen_draw();
 u0 screen_draw_rectl(v2i_t p1, v2i_t p2, u32 color);
+u0 screen_puts_nb(const char *str, v2i_t loc, COLOR fg);
+
+u0 ssfn_putc2(char c, u8 wrapx);
+u0 ssfn_puts(char *str);
+
+display_t * screen_current_display();
+
+v2i_t screen_puts_c(const char *str, v2i_t loc, COLOR fg, COLOR bg);
+v2i_t screen_puts_r(const char *str, v2i_t loc, COLOR fg, COLOR bg);
 //@formatter:on
 
 static const i8 font_height = 16;
