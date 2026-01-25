@@ -1,2 +1,4 @@
 cmake-build-debug/
 obj/
+iso_root/disk.img
+iso_root/kernel.elf
