@@ -531,8 +531,7 @@ void kern_entry(void) {
                 stbsp_snprintf(buf, 255, " %s ", (heartbeat3 % 2) ? "*" : " ");
                 p.x = 1 + screen_puts_r(buf, p, COLOR_GRAY, COLOR_BLACK).x;
             }
-
-
+            //
             for (int i = 0; i <= font_height; i += 4) {
                 screen_draw_line(V2I(p.x, i), V2I(display_main->surface.width, i), COLOR_DIM_GRAY);
             }
