@@ -3,6 +3,7 @@
 //
 
 #include "util_str.h"
+#include "../include/kern_mem.h"
 
 u32 str_len(const char *str) {
     i32 i = 0;
@@ -113,7 +114,25 @@ u32 u64_to_sn(u64 val, char *out_buf, u8 base, u32 max_size) {
     return out_len;
 }
 
-u8 str_eq(const char *a, const char *b) {
+purefn u8 str_eql(const char *a, const char *b, u32 len) {
+    if (a == b) return true;
+    if (a == null || b == null) return false;
+
+    for (u32 i = 0; i < len; i++) {
+        if (a[i] != b[i]) return false;
+        if (a[i] == '\0') return true;
+        if (b[i] == '\0') return true;
+    }
+
+    return true;
+}
+
+purefn u8 str_sw(const char *a, const char *b) {
+    if (a == null || b == null) return false;
+    return str_eql(a, b, str_len(b));
+}
+
+purefn u8 str_eq(const char *a, const char *b) {
     i32 alen = str_len(a);
     i32 blen = str_len(b);
 
@@ -126,15 +145,9 @@ u8 str_eq(const char *a, const char *b) {
     return true;
 }
 
-u8 str_sw(const char *a , const char *b) {
-    i32 alen = str_len(a);
-    i32 blen = str_len(b);
-
-    if (blen > alen) { return false; }
-
-    for (i32 i = 0; i < blen; i++) {
-        if (a[i] != b[i]) { return false; }
-    }
-
-    return true;
+char *str_dup(const char *a, void *(*Alloc_Func)(u64)) {
+    i32 len = str_len(a);
+    char *res = Alloc_Func(len + 1);
+    mem_copy(res, a, len + 1);
+    return res;
 }

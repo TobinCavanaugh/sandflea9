@@ -44,11 +44,17 @@ u0 kmalloc_init();
 
 u0 *kmalloc(u64 size);
 
+u0* kmallocz(u64 size);
+
 u0 kfree(void *ptr);
 
 u0 init_vmm_globals(struct limine_hhdm_request hhdm_request);
 
 u0 init_pmm(struct limine_memmap_request memmap_request);
+
+u64 pmm_alloc_page();
+
+u64 vmm_get_hhdm();
 
 u0 vmm_map_page(u64 phys_addr, u64 virt_addr, u64 flags);
 

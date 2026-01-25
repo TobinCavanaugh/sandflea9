@@ -85,3 +85,26 @@ _isr_common_stub:
     add rsp, 16 ; pop the interrupt number and the error code
 
     iretq
+
+global task_switch_asm
+task_switch_asm:
+    pushfq
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov [rdi], rsp ; save current stack pointer so [rdi] points at it
+    mov rsp, [rsi] ; Load stack pointer from next task struct
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
+    popfq
+
+    ret

@@ -5,6 +5,7 @@
 #include "../include/kern_interrupts.h"
 #include "../include/kern_vmm.h"
 #include "../include/kern_asmstubs.h"
+#include "../include/kern_keyboard.h"
 #include "../include/kern_screen.h"
 #include "../include/kern_serial.h"
 #include "../include/stbsupport.h"
@@ -138,7 +139,6 @@ u0 panic_draw_status(char * msg) {
     i32 x_pos = disp->surface.width - w;
 
     screen_puts_r(buf, V2I(x_pos, 0), COLOR_WHITE, COLOR_RED);
-
     screen_draw();
 }
 
@@ -150,7 +150,11 @@ u0 kern_interrupt_handler(const registers_t *t) {
         serial_outs("!!!");
 
         panic_draw_status(err);
-        for (;;);
+        while (1) {
+            for (volatile i64 i = 0; i < 1000000; i++) {
+                toggle_capslock();
+            }
+        }
     }
 
     if (isr_handler[t->int_no]) {

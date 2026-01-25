@@ -24,4 +24,8 @@ add_executable(sandflea9 src/kernel/main.c
         src/include/kern_pci.h
         src/kernel/kern_ext2.c
         src/kernel/kern_ext2.h
+        src/kernel/kern_sched.c
+        src/include/kern_sched.h
+        src/util/util_cmd.c
+        src/include/util_cmd.h
 )

@@ -47,6 +47,7 @@ typedef struct {
 u0 idt_set_gate(int n, u64 handler);
 u0 interrupts_init();
 u0 interrupt_register(u8 index, u0 (*handler)(const registers_t *));
+u0 apic_eoi(u64 lapic_virtual_base);
 //@formatter:on
 
 

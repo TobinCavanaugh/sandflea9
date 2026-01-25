@@ -43,22 +43,17 @@ u0 outw(u16 port, u16 val) {
 }
 
 #define PCI_CONFIG_PORT 0xCF8
+#define PCI_DATA_PORT 0xCFC
 
 u32 pci_read_32(u8 bus, u8 slot, u8 func, u8 offset) {
     u32 addr = (u32) ((bus << 16) | (slot << 11) | (func << 8) | (offset & 0xFC) | ((u32) 0x80000000));
-    // __asm__ volatile("outl %0, %1" : : "a"(addr), "Nd"((u16) 0xCF8));
     outl(PCI_CONFIG_PORT, addr);
-
-    u32 tmp = 0;
-    asm volatile ("inl %1, %0" : "=a"(tmp) : "Nd"((u16) 0xCFC));
-    tmp = inl(0xCFC);
-
-    return tmp;
+    return inl(0xCFC);
 }
 
 u16 pci_read_16(u8 bus, u8 slot, u8 func, u8 offset) {
     u32 addr = (u32) ((bus << 16) | (slot << 11) | (func << 8) | (offset & 0xFC) | (u32) 0x80000000);
     outl(PCI_CONFIG_PORT, addr);
-    u32 val = inl(PCI_CONFIG_PORT);
+    u32 val = inl(PCI_DATA_PORT);
     return U16((val >> ((offset & 2) * 8)) & 0xFFff);
 }

@@ -16,8 +16,10 @@ C_SOURCES=(
     "src/kernel/kern_vmm.c"
     "src/kernel/kern_pci.c"
     "src/kernel/main.c"
+    "src/kernel/kern_sched.c"
     "src/kernel/kern_ext2.c"
     "src/util/util_str.c"
+    "src/util/util_cmd.c"
 )
 
 ASM_SOURCES=(

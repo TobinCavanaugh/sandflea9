@@ -33,68 +33,121 @@ char get_ascii_from_scancode(u8 scancode) {
     // Complete mapping of keys to ASCII characters
     switch (scancode) {
         // Letters
-        case 0x1E: return 'a';
-        case 0x30: return 'b';
-        case 0x2E: return 'c';
-        case 0x20: return 'd';
-        case 0x12: return 'e';
-        case 0x21: return 'f';
-        case 0x22: return 'g';
-        case 0x23: return 'h';
-        case 0x17: return 'i';
-        case 0x24: return 'j';
-        case 0x25: return 'k';
-        case 0x26: return 'l';
-        case 0x32: return 'm';
-        case 0x31: return 'n';
-        case 0x18: return 'o';
-        case 0x19: return 'p';
-        case 0x10: return 'q';
-        case 0x13: return 'r';
-        case 0x1F: return 's';
-        case 0x14: return 't';
-        case 0x16: return 'u';
-        case 0x2F: return 'v';
-        case 0x11: return 'w';
-        case 0x2D: return 'x';
-        case 0x15: return 'y';
-        case 0x2C: return 'z';
+        case 0x1E:
+            return 'a';
+        case 0x30:
+            return 'b';
+        case 0x2E:
+            return 'c';
+        case 0x20:
+            return 'd';
+        case 0x12:
+            return 'e';
+        case 0x21:
+            return 'f';
+        case 0x22:
+            return 'g';
+        case 0x23:
+            return 'h';
+        case 0x17:
+            return 'i';
+        case 0x24:
+            return 'j';
+        case 0x25:
+            return 'k';
+        case 0x26:
+            return 'l';
+        case 0x32:
+            return 'm';
+        case 0x31:
+            return 'n';
+        case 0x18:
+            return 'o';
+        case 0x19:
+            return 'p';
+        case 0x10:
+            return 'q';
+        case 0x13:
+            return 'r';
+        case 0x1F:
+            return 's';
+        case 0x14:
+            return 't';
+        case 0x16:
+            return 'u';
+        case 0x2F:
+            return 'v';
+        case 0x11:
+            return 'w';
+        case 0x2D:
+            return 'x';
+        case 0x15:
+            return 'y';
+        case 0x2C:
+            return 'z';
 
-        // Numbers
-        case 0x02: return '1';
-        case 0x03: return '2';
-        case 0x04: return '3';
-        case 0x05: return '4';
-        case 0x06: return '5';
-        case 0x07: return '6';
-        case 0x08: return '7';
-        case 0x09: return '8';
-        case 0x0A: return '9';
-        case 0x0B: return '0';
+            // Numbers
+        case 0x02:
+            return '1';
+        case 0x03:
+            return '2';
+        case 0x04:
+            return '3';
+        case 0x05:
+            return '4';
+        case 0x06:
+            return '5';
+        case 0x07:
+            return '6';
+        case 0x08:
+            return '7';
+        case 0x09:
+            return '8';
+        case 0x0A:
+            return '9';
+        case 0x0B:
+            return '0';
 
-        // Special keys
-        case 0x1C: return '\n'; // Enter
-        case 0x39: return ' '; // Space
-        case 0x0E: return '\b'; // Backspace
-        case 0x0F: return '\t'; // Tab
-        case 0x01: return '\0'; // Escape (ASCII 27)
+            // Special keys
+        case 0x1C:
+            return '\n'; // Enter
+        case 0x39:
+            return ' '; // Space
+        case 0x0E:
+            return '\b'; // Backspace
+        case 0x0F:
+            return '\t'; // Tab
+        case 0x01:
+            return '\0'; // Escape (ASCII 27)
 
-        // Symbols on number row
-        case 0x29: return '`'; // Grave accent
-        case 0x0C: return '-'; // Minus
-        case 0x0D: return '='; // Equals
+            // Symbols on number row
+        case 0x29:
+            return '`'; // Grave accent
+        case 0x0C:
+            return '-'; // Minus
+        case 0x0D:
+            return '='; // Equals
 
-        // Symbols on letter rows
-        case 0x1A: return '['; // Left bracket
-        case 0x1B: return ']'; // Right bracket
-        case 0x2B: return '\\'; // Backslash
-        case 0x27: return ';'; // Semicolon
-        case 0x28: return '\''; // Single quote
-        case 0x33: return ','; // Comma
-        case 0x34: return '.'; // Period
-        case 0x35: return '/'; // Forward slash
+            // Symbols on letter rows
+        case 0x1A:
+            return '['; // Left bracket
+        case 0x1B:
+            return ']'; // Right bracket
+        case 0x2B:
+            return '\\'; // Backslash
+        case 0x27:
+            return ';'; // Semicolon
+        case 0x28:
+            return '\''; // Single quote
+        case 0x33:
+            return ','; // Comma
+        case 0x34:
+            return '.'; // Period
+        case 0x35:
+            return '/'; // Forward slash
 
-        default: return 0; // Unmapped key
+        default:
+            return 0; // Unmapped key
     }
 }
 
@@ -128,6 +181,14 @@ u8 queue[KEY_QUEUE_SIZE] = {0};
 u32 queue_read_ptr = 0;
 u32 queue_write_ptr = 0;
 
+u8 keyboard_peek_key() {
+    if (queue_read_ptr == queue_write_ptr) {
+        return 0;
+    }
+
+    return queue[queue_read_ptr];
+}
+
 u8 keyboard_eat_key() {
     // If read and write ptrs are same, buffer is empty
     if (queue_read_ptr == queue_write_ptr) {
@@ -144,44 +205,75 @@ u8 keyboard_eat_key() {
 
 u0 keyboard_handle_keypress(registers_t *t) {
     u8 status = inb(0x64);
+    static u8 is_extended = 0;
 
     if (status & 0x01) {
         u8 sc = inb(0x60);
 
-        // Key release
+        // 1. Handle Extended Byte Prefix
+        if (sc == 0xE0) {
+            is_extended = 1;
+            return;
+        }
+
+        // 2. Handle Key Releases (Break Codes)
         if (sc & 0x80) {
             u8 released = sc & 0x7F;
 
-            if ((released == 0x2A || released == 0x36)) {
+            // Only reset shift if it's a non-extended left/right shift
+            if (!is_extended && (released == 0x2A || released == 0x36)) {
                 shift_down = 0;
+            }
+
+            // Always reset extended state after processing the byte
+            is_extended = 0;
+            return;
+        }
+
+        // 3. Handle Key Presses (Make Codes)
+
+        // Check for Shift Press (Left or Right)
+        if (!is_extended && (sc == 0x2A || sc == 0x36)) {
+            shift_down = 1;
+        }
+
+        u8 ascii = 0;
+
+        // If it's a standard key, get the ASCII mapping
+        if (!is_extended) {
+            ascii = get_ascii_from_scancode(sc);
+
+            // Apply shift modification if applicable
+            if (shift_down) {
+                ascii = keyboard_shift(ascii);
+            }
+        } else {
+            switch (sc) {
+                case 0x48:
+                    ascii = KEY_UP;
+                    break;
+                case 0x50:
+                    ascii = KEY_DOWN;
+                    break;
+                case 0x4B:
+                    ascii = KEY_LEFT;
+                    break;
+                case 0x4D:
+                    ascii = KEY_RIGHT;
+                    break;
             }
         }
 
-        if (sc >= 0x80) {
-            return;
-        }
-
-        if ((sc == 0x2A || sc == 0x36)) {
-            shift_down = 1;
-            return;
-        }
-
-        u8 ascii = get_ascii_from_scancode(sc);
-
-        if (shift_down) {
-            ascii = keyboard_shift(ascii);
-        }
-
-        // Add to queue if we have a valid character
+        // 4. Add to queue if we have a valid character
         if (ascii != 0) {
-            // Calculate next write position
             u32 next_write = (queue_write_ptr + 1) % KEY_QUEUE_SIZE;
-
-            // Only write if queue is not full (next write != read)
             if (next_write != queue_read_ptr) {
                 queue[queue_write_ptr] = ascii;
                 queue_write_ptr = next_write;
             }
         }
+
+        // 5. CRITICAL: Reset extended state so the next key isn't treated as extended
+        is_extended = 0;
     }
 }

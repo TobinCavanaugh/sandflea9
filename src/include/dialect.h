@@ -3,6 +3,7 @@
 
 #define u0 void
 
+#define purefn __attribute__((pure))
 
 #define NULL ((void*) 0)
 #define null NULL
@@ -65,10 +66,10 @@
 #define uint32_t u32
 #define uint64_t u64
 
-#define int8_t u8
-#define int16_t u16
-#define int32_t u32
-#define int64_t u64
+#define int8_t i8
+#define int16_t i16
+#define int32_t i32
+#define int64_t i64
 
 #define iif(__condition, ...) ({ __condition ? ({ __VA_ARGS__; }) : 0; })
 
@@ -83,6 +84,10 @@
     typeof(b) _b = (b); \
     _a < _b ? _a : _b; \
 })
+
+static u8 i32_min(i32 a, i32 b){
+    return min(a, b);
+}
 
 #define clamp(x, low, high) ({ \
     typeof(x) _x = (x); \

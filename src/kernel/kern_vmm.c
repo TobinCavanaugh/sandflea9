@@ -18,6 +18,10 @@ u0 init_vmm_globals(struct limine_hhdm_request hhdm_request) {
     }
 }
 
+u64 vmm_get_hhdm() {
+    return hhdm_offset;
+}
+
 u0 pmm_free(u64 phys_addr);
 
 u0 init_pmm(struct limine_memmap_request memmap_request) {
@@ -130,6 +134,12 @@ u0 kmalloc_init() {
     heap_ptr->next = null;
 
     serial_outs("Kernel Heap Initialized\n");
+}
+
+u0* kmallocz(u64 size){
+    void * ptr = kmalloc(size);
+    mem_set(ptr, 0, size);
+    return ptr;
 }
 
 u0 *kmalloc(u64 size) {

@@ -32,4 +32,4 @@ qemu-system-x86_64.exe -cdrom sandfleaOS.iso ^
     -bios ovmf/DEBUGX64_OVMF.fd ^
     -serial stdio -s ^
     -device pci-serial,chardev=myserial ^
-    -chardev file,id=myserial,path=serial_output.log
+    -chardev file,id=myserial,path=pci_serial_output.log

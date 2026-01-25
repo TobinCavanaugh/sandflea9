@@ -26,7 +26,7 @@ u0 ext2_init(struct limine_module_request module_request) {
         return;
     }
 
-    u8* base = null;
+    u8 *base = null;
     if (module_request.response && module_request.response->module_count > 0) {
         struct limine_file *disk = module_request.response->modules[0];
         u8 *disk_base = (u8 *) disk->address;
@@ -54,7 +54,7 @@ u0 ext2_init(struct limine_module_request module_request) {
     ////
 
     struct limine_file *disk_module = module_request.response->modules[0];
-    u64 disk_addr = disk_module->address;
+    u64 disk_addr = (u64) disk_module->address;
     u64 disk_size = disk_module->size;
     serial_outs("Disk image loaded at: 0x");
     serial_outu64(disk_addr, BASE_HEX);
@@ -70,6 +70,31 @@ u8 *get_block_ptr(u32 block_id) {
     return fs_base + (block_id * block_size);
 }
 
+//ext2_inode_t **ext2_list_files() {
+//
+//    // Load root
+//    u32 bgdt_block = (block_size == 1024) ? 2 : 1; // if in block 1, our bgdt root is at 2, otherwise its at 1
+//    ext2_bgd_t *bgdt = (ext2_bgd_t *) get_block_ptr(bgdt_block);
+//    u8 *inode_table_ptr = get_block_ptr(bgdt->inode_table);
+//    u32 inode_size = 128;
+//
+//    if (sb_ptr->major_version >= 1) {
+//        inode_size = sb_ptr->inode_size;
+//    }
+//
+//    // Get the first entry of our inode table, our root
+//    ext2_inode_t *root_inode = (ext2_inode_t *) (inode_table_ptr + (inode_size * (2 - 1)));
+//
+//    u8 *dir_data = get_block_ptr(root_inode->block[0]);
+//
+//    // This is assuming our directory fits in one block, so no indirection at all
+//    u32 cur_offset = 0;
+//    while (cur_offset < block_size) {
+//        ext2_dir_entry_t *entry = (ext2_dir_entry_t *) (dir_data + cur_offset);
+//        if (entry->rec_len == 0) break;
+//    }
+//}
+
 ext2_inode_t *find_file_in_root(char *target_name) {
     // Load root
     u32 bgdt_block = (block_size == 1024) ? 2 : 1; // if in block 1, our bgdt root is at 2, otherwise its at 1
@@ -84,7 +109,6 @@ ext2_inode_t *find_file_in_root(char *target_name) {
         inode_size = sb_ptr->inode_size;
     }
 
-    // never reaching
     serial_outs("inode size: ");
     serial_outi64(inode_size, 10);
     serial_outs("\n");
