@@ -1,35 +1,26 @@
 @echo off
 
-@REM call SSFN_tools/fontbuild.bat
+@REM Build the project
 call wb.bat
 
-echo Running with qemu
+echo Running with qemu (Optimized with IDE Drive)
 echo --- Running ---
-@REM qemu-system-i386.exe -cdrom sandfleaOS.iso -m 2G -monitor stdio -accel whpx
-@REM qemu-system-i386.exe -cdrom sandfleaOS.iso -m 2G -qmp tcp:localhost:4444,server,nowait -serial tcp:localhost:5555,server,nowait -d guest_errors,unimp
-@REM -accel whpx
-@REM -drive if=pflash,format=raw,unit=0,readonly,file=OVMF-pure-efi.fd
-@REM -drive if=pflash,format=raw,unit=1,file=OVMF_VARS-pure-efi.fd
-
-@REM qemu-system-x86_64.exe -cdrom sandfleaOS.iso -m 2G -bios ovmf/DEBUGX64_OVMF.fd -serial stdio -s \
-@REM -device pci-serial,chardev=myserial -chardev stdio,id=myserial
-
-
-@REM Newline ^^
-
-@REM qemu-system-x86_64.exe -cdrom sandfleaOS.iso -m 2G -bios ovmf/DEBUGX64_OVMF.fd -serial stdio -s \
-@REM     -device pci-serial,chardev=myserial \
-@REM     -chardev socket,id=myserial,host=localhost,port=4555,server=on,wait=off
-
-@REM qemu-system-x86_64.exe -cdrom sandfleaOS.iso -m 2G -bios ovmf/DEBUGX64_OVMF.fd -serial stdio -s \
-@REM -device pci-serial,chardev=myserial \
-@REM -chardev pipe,id=myserial,path=\\.\pipe\sandfleadebug
 
 break > serial_output.log
+
+@REM Performance Tweaks:
+@REM 1. -accel whpx: Use Windows Hypervisor Platform (HW Acceleration)
+@REM 2. -display sdl: Faster than the default GTK on Windows
+@REM 3. -vga std: Reliable display driver
+@REM 4. -drive ...: Attaching our disk image as a physical IDE drive
 
 qemu-system-x86_64.exe -cdrom sandfleaOS.iso ^
     -m 2G ^
     -bios ovmf/DEBUGX64_OVMF.fd ^
-    -serial stdio -s ^
+    -accel whpx ^
+    -display sdl ^
+    -vga std ^
+    -drive file=disk.img,format=raw,index=0,media=disk ^
+    -serial stdio ^
     -device pci-serial,chardev=myserial ^
     -chardev file,id=myserial,path=pci_serial_output.log

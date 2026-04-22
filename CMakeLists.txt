@@ -19,6 +19,7 @@ add_executable(sandflea9 src/kernel/main.c
         src/util/util_str.c
         src/util/util_str.h
         src/include/stbsupport.h
+        src/kernel/stbsupport.c
         src/include/limine_requests.h
         src/kernel/kern_pci.c
         src/include/kern_pci.h
@@ -28,4 +29,11 @@ add_executable(sandflea9 src/kernel/main.c
         src/include/kern_sched.h
         src/util/util_cmd.c
         src/include/util_cmd.h
+        src/kernel/kern_terminal.c
+        src/include/kern_terminal.h
+        src/kernel/kern_tests.c
+        src/include/kern_tests.h
+        src/kernel/ssfn.c
+        src/kernel/kern_ide.c
+        src/include/kern_ide.h
 )

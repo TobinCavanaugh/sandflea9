@@ -8,16 +8,21 @@ set -e
 C_SOURCES=(
     "src/kernel/arith64.c"
     "src/kernel/kern_asmstubs.c"
+    "src/kernel/kern_ext2.c"
+    "src/kernel/kern_ide.c"
     "src/kernel/kern_interrupts.c"
     "src/kernel/kern_keyboard.c"
     "src/kernel/kern_mem.c"
+    "src/kernel/kern_pci.c"
+    "src/kernel/kern_sched.c"
     "src/kernel/kern_screen.c"
     "src/kernel/kern_serial.c"
+    "src/kernel/kern_terminal.c"
+    "src/kernel/kern_tests.c"
     "src/kernel/kern_vmm.c"
-    "src/kernel/kern_pci.c"
     "src/kernel/main.c"
-    "src/kernel/kern_sched.c"
-    "src/kernel/kern_ext2.c"
+    "src/kernel/ssfn.c"
+    "src/kernel/stbsupport.c"
     "src/util/util_str.c"
     "src/util/util_cmd.c"
 )
@@ -59,24 +64,55 @@ LINK_LIST=""
 
 echo "--- Compiling ---"
 
+# Find the newest header file to handle global dependency changes safely
+NEWEST_HEADER=$(find src/include -type f -name "*.h" -printf '%T@\n' | sort -n | tail -1)
+
 for src in "${ASM_SOURCES[@]}"; do
     filename=$(basename "$src" .asm)
     obj_path="obj/${filename}.o"
-    nasm $ASMFLAGS "$src" -o "$obj_path"
+    
+    SHOULD_REBUILD=0
+    if [ ! -f "$obj_path" ] || [ "$src" -nt "$obj_path" ]; then
+        SHOULD_REBUILD=1
+    fi
+
+    if [ $SHOULD_REBUILD -eq 1 ]; then
+        echo "  AS  $src"
+        nasm $ASMFLAGS "$src" -o "$obj_path"
+    fi
     LINK_LIST="$LINK_LIST $obj_path"
 done
 
 for src in "${C_SOURCES[@]}"; do
     filename=$(basename "$src" .c)
     obj_path="obj/${filename}.o"
-    gcc $CFLAGS "$src" -o "$obj_path"
+
+    SHOULD_REBUILD=0
+    if [ ! -f "$obj_path" ] || [ "$src" -nt "$obj_path" ]; then
+        SHOULD_REBUILD=1
+    else
+        # Check if any header is newer than the object file
+        OBJ_TIME=$(stat -c %Y "$obj_path")
+        # Use bc for float comparison if needed, or just integer comparison
+        if [ "${NEWEST_HEADER%.*}" -gt "$OBJ_TIME" ]; then
+            SHOULD_REBUILD=1
+        fi
+    fi
+
+    if [ $SHOULD_REBUILD -eq 1 ]; then
+        echo "  CC  $src"
+        gcc $CFLAGS "$src" -o "$obj_path"
+    fi
     LINK_LIST="$LINK_LIST $obj_path"
 done
 
 echo "--- Processing Font ---"
-# Convert the binary font file into an ELF object file
-objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
-    src/blob/regularfont.sfn obj/font.o
+# Only re-process font if it changed or object is missing
+if [ ! -f "obj/font.o" ] || [ "src/blob/regularfont.sfn" -nt "obj/font.o" ]; then
+    echo "  OBJCOPY src/blob/regularfont.sfn"
+    objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+        src/blob/regularfont.sfn obj/font.o
+fi
 LINK_LIST="$LINK_LIST obj/font.o"
 
 echo "--- Linking ---"
@@ -88,20 +124,17 @@ echo "--- Creating Test Filesystem ---"
 dd if=/dev/zero of=disk.img bs=1M count=32
 
 # 2. Format it as ext2 (force it to not complain about it being a file)
-# Note: You may need to install e2fsprogs (sudo apt install e2fsprogs)
 /usr/sbin/mkfs.ext2 -F disk.img
 
 # (Optional) Copy a test file into it using debugfs so you don't need to mount it
-# This writes a text file "hello.txt" into the root of the image
-#echo "write src/blob/testfile.txt testfile.txt" | /usr/sbin/debugfs -w disk.img
 /usr/sbin/debugfs -w disk.img <<EOF
 write src/blob/testfile.txt testfile.txt
 write src/blob/a.txt a.txt
 write src/blob/b.txt b.txt
 write src/blob/c.txt c.txt
+mkdir folder
+write src/blob/c.txt folder/a.txt
 EOF
-
-cp disk.img iso_root/
 
 echo "--- Packaging UEFI ISO ---"
 
