@@ -220,23 +220,6 @@ u0 handle_command() {
     }
 
 
-    Label_Fail:
-    // Fail here
-    const char *failure = "Failure to parse command";
-    screen_push_line(failure);
-    serial_outsf("%s\n", failure);
-//    screen_puts_r(failure, V2I(0, font_height * 2), COLOR_WHITE, COLOR_BLACK);
-//    screen_draw();
-//    while (!keyboard_peek_key()) { asm volatile("hlt"); }
-
-//    screen_puts_r(failure, V2I(0, font_height * 2), COLOR_RED, COLOR_BLACK);
-
-    Label_Free:
-    cmd_parse_free(word, kfree);
-
-    return;
-
-
     if (str_eq(typingbuf, "pci")) {
         ssfn_dst.y = font_height * 2;
         ssfn_dst.x = 0;
@@ -261,8 +244,18 @@ u0 handle_command() {
 
     if (str_eq(typingbuf, "cls")) {
         typingbuf[0] = 0;
-        content = null;
+        // TODO CLEAR THE BUFFER
     }
+
+    Label_Fail:
+    // Fail here
+    const char *failure = "Failure to parse command";
+    screen_push_line(failure);
+    serial_outsf("%s\n", failure);
+
+    Label_Free:
+    cmd_parse_free(word, kfree);
+
 }
 
 
@@ -281,14 +274,14 @@ u0 shimmy3() {
 u0 shimmy2() {
     while (1) {
         heartbeat2 = heartbeat2 == 0 ? 1 : 0;
-        delay(100);
+        delay(500);
     }
 }
 
 u0 shimmy() {
     while (1) {
         heartbeat1 = heartbeat1 == 0 ? 1 : 0;
-        delay(100);
+        delay(1000);
     }
 }
 
