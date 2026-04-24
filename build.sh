@@ -9,6 +9,7 @@ C_SOURCES=(
     "src/kernel/arith64.c"
     "src/kernel/kern_asmstubs.c"
     "src/kernel/kern_ext2.c"
+    "src/kernel/kern_fs.c"
     "src/kernel/kern_ide.c"
     "src/kernel/kern_interrupts.c"
     "src/kernel/kern_keyboard.c"

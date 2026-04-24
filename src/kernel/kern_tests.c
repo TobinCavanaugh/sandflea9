@@ -9,7 +9,11 @@
 #include "../include/ssfn.h"
 #include "../include/kern_keyboard.h"
 #include "../include/kern_vmm.h"
+#include "../include/kern_vmm.h"
+#include "../include/kern_fs.h"
 
+// TODO Ditch arith64
+// TODO Running kmalloc2 and then kmalloc causes early page fault? I think
 
 u0 handle_command() {
     char workingbuf[256] = {0};
@@ -21,6 +25,7 @@ u0 handle_command() {
     if (!word) return;
 
     serial_outsf("[[%s]]\n", word->loc);
+
 
     if (str_eql(word->loc, "kmalloc", word->len)) {
         u64 size = 0;
@@ -40,6 +45,7 @@ u0 handle_command() {
         goto Label_Free;
     }
 
+
     if (str_eql(word->loc, "cls", word->len)) {
         typingbuf[0] = 0;
         screen_terminal_clear();
@@ -55,14 +61,14 @@ u0 handle_command() {
 
         u32 inode_no = 2;
         ext2_inode_t *start_inode = ext2_find_path(path, &inode_no);
-        
+
         if (start_inode) {
             ext2_explorer_t exp;
             ext2_explorer_init(&exp, inode_no);
             ext2_explore_result_t res;
-            
+
             while (ext2_explorer_next(&exp, &res)) {
-                screen_push_linef("%*s|-- %s", (int)res.depth * 2, "", res.name);
+                screen_push_linef("%*s|-- %s", (int) res.depth * 2, "", res.name);
             }
             kfree(start_inode);
         } else {
@@ -70,6 +76,35 @@ u0 handle_command() {
         }
 
         if (word->next != null) kfree(path);
+        goto Label_Free;
+    }
+
+
+    if (str_eql(word->loc, "open", word->len) && word->next != null) {
+        char *path = str_dup(word->next->loc, kmalloc);
+        path[word->next->len] = 0;
+
+        i32 w = fs_open(path);
+
+        if (w < 0) {
+            screen_push_linef("Failed to open file at `%s`", path);
+            goto Label_Free;
+        }
+
+        fs_seek(w, 0, SEEK_END);
+        i32 len = fs_tell(w);
+        fs_seek(w, 0, SEEK_SET);
+
+
+        char *dat = kmalloc(len + 1);
+        fs_read(w, dat, len);
+        dat[len] = '\0';
+        fs_close(w);
+
+        screen_push_line(dat);
+
+        kfree(dat);
+
         goto Label_Free;
     }
 
@@ -98,6 +133,33 @@ u0 handle_command() {
             kfree(i);
         } else {
             screen_push_linef("Path not found: %s", path);
+        }
+
+        kfree(path);
+        goto Label_Free;
+    }
+
+    if (str_eql(word->loc, "cat", word->len) && word->next != null) {
+        char *path = str_dup(word->next->loc, kmalloc);
+        path[word->next->len] = 0;
+
+        i32 fd = fs_open(path);
+        if (fd >= 0) {
+            u32 size = fs_size(fd);
+            screen_push_linef("Reading %s (%d bytes) via FD %d", path, size, fd);
+
+            u8 *buf = kmallocz(size + 1);
+            i32 read = fs_read(fd, buf, size);
+            if (read >= 0) {
+                screen_push_line((char *) buf);
+                serial_outsf("CAT: %s\n", (char *) buf);
+            } else {
+                screen_push_line("Error reading file");
+            }
+            kfree(buf);
+            fs_close(fd);
+        } else {
+            screen_push_linef("Could not open: %s", path);
         }
 
         kfree(path);

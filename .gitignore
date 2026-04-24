@@ -3,3 +3,6 @@ obj/
 iso_root/disk.img
 iso_root/kernel.elf
 disk.img
+
+
+src/kernel/wasm3-0.5.0

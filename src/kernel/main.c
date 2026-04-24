@@ -18,10 +18,12 @@
 #include "../include/kern_terminal.h"
 #include "../include/kern_tests.h"
 #include "../include/kern_ide.h"
+#include "../include/kern_fs.h"
 
 display_t *display_main = 0;
 
 extern char _binary_src_blob_regularfont_sfn_start;
+
 extern u0 enable_sse(u0);
 
 volatile u64 sw = 0;
@@ -100,7 +102,8 @@ void kern_entry(void) {
     while (pci_uart) {
         // Look specifically for the WCH CH382 (1C00:3253)
         if (pci_uart->class_code == 0x7 && pci_uart->subclass == 0x0) {
-            serial_outsf("PCI: Found Serial Controller (Class 0x7, Sub 0x0) at %X:%X\n", pci_uart->vendor_id, pci_uart->device_id);
+            serial_outsf("PCI: Found Serial Controller (Class 0x7, Sub 0x0) at %X:%X\n", pci_uart->vendor_id,
+                         pci_uart->device_id);
             break;
         }
         pci_uart = pci_uart->next;
@@ -139,7 +142,7 @@ void kern_entry(void) {
     display_t displays[32];
     u8 fb_count = screen_init(framebuffer_request.response, displays, 32);
     display_main = &displays[0];
-    serial_outsf("Video: %d framebuffer(s) found. Primary: %dx%d %dbpp\n", 
+    serial_outsf("Video: %d framebuffer(s) found. Primary: %dx%d %dbpp\n",
                  fb_count, display_main->surface.width, display_main->surface.height, display_main->surface.bpp);
 
     ssfn_src = (ssfn_font_t *) &_binary_src_blob_regularfont_sfn_start;
@@ -193,6 +196,9 @@ void kern_entry(void) {
 
     ext2_init();
     serial_outsl("FS: Ext2 driver initialized");
+
+    fs_init();
+    serial_outsl("FS: FS initialized");
 
     char buf[255];
 
