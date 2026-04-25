@@ -80,7 +80,34 @@ u0 mem_set(void *dest, u32 val, u32 count) {
 }
 
 u0 mem_copy(u8 *dest, const u8 *src, u32 n) {
-    for (i64 v = 0; v < n; v++) {
-        dest[v] = src[v];
+    u64 *d = (u64 *) dest;
+    const u64 *s = (const u64 *) src;
+    u32 count = n / 8;
+    u32 rem = n % 8;
+
+    while (count--) {
+        *d++ = *s++;
+    }
+
+    u8 *d8 = (u8 *) d;
+    const u8 *s8 = (const u8 *) s;
+    while (rem--) {
+        *d8++ = *s8++;
+    }
+}
+
+u0 mem_set32(u32 *dest, u32 val, u32 count) {
+    // Fill 32-bit values directly
+    u64 wide_val = ((u64)val << 32) | val;
+    u64 *wide_ptr = (u64 *)dest;
+    u32 wide_count = count / 2;
+    u32 rem = count % 2;
+
+    while (wide_count--) {
+        *wide_ptr++ = wide_val;
+    }
+
+    if (rem) {
+        dest[count - 1] = val;
     }
 }

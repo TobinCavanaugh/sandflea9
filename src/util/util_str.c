@@ -158,3 +158,41 @@ char *str_dup_len(const char *a, u32 len, void *(*Alloc_Func)(u64)) {
     res[len] = 0;
     return res;
 }
+
+i64 sn_to_i64(const char *str, u32 max_len, u8 base) {
+    if (max_len == 0 || base < 2 || base > 36) return 0;
+
+    i64 result = 0;
+    i64 sign = 1;
+    u32 i = 0;
+
+    // Handle sign
+    if (str[0] == '-') {
+        sign = -1;
+        i = 1;
+    } else if (str[0] == '+') {
+        i = 1;
+    }
+
+    for (; i < max_len; i++) {
+        char c = str[i];
+        if (c == '\0') break;
+
+        u8 digit;
+        if (c >= '0' && c <= '9') {
+            digit = c - '0';
+        } else if (c >= 'a' && c <= 'z') {
+            digit = c - 'a' + 10;
+        } else if (c >= 'A' && c <= 'Z') {
+            digit = c - 'A' + 10;
+        } else {
+            break; // Invalid character
+        }
+
+        if (digit >= base) break; // Digit not in range for base
+
+        result = (result * base) + digit;
+    }
+
+    return result * sign;
+}

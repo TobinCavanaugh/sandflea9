@@ -10,7 +10,9 @@
 
 u0 *mem_move(u0 *dest, const u0 *src, u32 n);
 
-u0 mem_set(void *start, u32 data, u32 size);
+u0 mem_set(void *dest, u32 val, u32 count);
+
+u0 mem_set32(u32 *dest, u32 val, u32 count);
 
 u0 mem_copy(u8 * dest, const u8 * src, u32 n);
 

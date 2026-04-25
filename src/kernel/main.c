@@ -212,7 +212,6 @@ void kern_entry(void) {
 
     serial_outsl("--- Initialization Complete. Entering Main Loop ---");
 
-
     for (;;) {
         // Keyboard input
         u8 k = 0;
@@ -227,17 +226,14 @@ void kern_entry(void) {
                 if (len > 0) typingbuf[len - 1] = '\0';
             } else if (k == KEY_DOWN) {
                 ++screen_text_scroll;
-                serial_outsf("DOWN");
             } else if (k == KEY_UP) {
                 --screen_text_scroll;
                 screen_text_scroll = max(screen_text_scroll, 0);
-                serial_outsf("UP");
             } else {
                 if (len < 254) {
                     typingbuf[len] = k;
                     typingbuf[len + 1] = 0;
                 }
-                sw = 0;
             }
         }
 
@@ -271,10 +267,10 @@ void kern_entry(void) {
             u64 free_ram = pmm_get_free_count() * PAGE_SIZE;
             u64 used_ram = usable_ram - free_ram;
 
-            stbsp_snprintf(buf, 255, " %lld MiB ", used_ram / 1024 / 1024);
+            stbsp_snprintf(buf, 255, " %4lld MiB ", used_ram / 1024 / 1024);
             p.x = 1 + screen_puts_r(buf, p, COLOR_GREEN, COLOR_BLACK).x;
 
-            stbsp_snprintf(buf, 255, " %lld MiB ", usable_ram / 1024 / 1024);
+            stbsp_snprintf(buf, 255, " %4lld MiB ", usable_ram / 1024 / 1024);
             p.x = 1 + screen_puts_r(buf, p, COLOR_BLUE, COLOR_BLACK).x;
 
             stbsp_snprintf(buf, 255, " Display %-2d ", display_main->index);

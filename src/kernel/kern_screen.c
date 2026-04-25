@@ -99,11 +99,7 @@ u0 screen_draw_box(v2i_t p1, v2i_t p2, u32 color) {
     for (i64 y = y0; y <= y1; y++) {
         // Pointer to the start of the row + x offset
         u32 *pixel_cursor = fb_ptr + (y * pitch_pixels) + x0;
-
-        // Fill the row
-        for (i64 x = x0; x <= x1; x++) {
-            *pixel_cursor++ = color;
-        }
+        mem_set32(pixel_cursor, color, x1 - x0 + 1);
     }
 }
 
@@ -152,9 +148,7 @@ u0 screen_draw_line(v2i_t a, v2i_t b, COLOR color) {
 u0 screen_clear(u32 color) {
     u32 *fb_ptr = (u32 *) current_display->surface.address;
     u64 pixel_count = current_display->surface.width * current_display->surface.height;
-    for (u64 i = 0; i < pixel_count; i++) {
-        fb_ptr[i] = color;
-    }
+    mem_set32(fb_ptr, color, pixel_count);
 }
 
 u32 color_rgb(u32 r, u32 g, u32 b) {

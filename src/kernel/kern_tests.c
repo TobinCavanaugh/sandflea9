@@ -47,13 +47,14 @@ u0 dotest(u0 *arg) {
     kern_process_t *proc = sched_get_current_process();
     kern_task_t *task = sched_get_current_task();
 
+    i64 iterations = (i64) arg;
+    if (iterations <= 0) iterations = 5;
 
-    char *buf = pmalloc(4096*64*10);
-
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < iterations; i++) {
         serial_outsf("[PID %d | TID %d] Heartbeat %d\n", proc->pid, task->tid, i);
         screen_push_linef("[PID %d | TID %d] Heartbeat %d", proc->pid, task->tid, i);
         delay(1000);
+        pmalloc(4096 * 1024);
     }
 
     serial_outsf("[PID %d | TID %d] Exiting\n", proc->pid, task->tid);
@@ -73,8 +74,13 @@ u0 handle_command() {
 
 
     if (str_eql(word->loc, "do", word->len)) {
+        i64 val = 5;
+        if (word->next && word->next->val_type == CMD_WT_i64) {
+            val = word->next->val_i64;
+        }
+
         kern_process_t *new_proc = process_create();
-        sched_create_process_thread(new_proc, dotest, null);
+        sched_create_process_thread(new_proc, dotest, (u0 *) val);
         goto Label_Free;
     }
 
