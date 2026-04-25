@@ -151,3 +151,10 @@ char *str_dup(const char *a, void *(*Alloc_Func)(u64)) {
     mem_copy(res, a, len + 1);
     return res;
 }
+
+char *str_dup_len(const char *a, u32 len, void *(*Alloc_Func)(u64)) {
+    char *res = Alloc_Func(len + 1);
+    mem_copy(res, a, len);
+    res[len] = 0;
+    return res;
+}

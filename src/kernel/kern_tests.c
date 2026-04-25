@@ -11,9 +11,36 @@
 #include "../include/kern_vmm.h"
 #include "../include/kern_vmm.h"
 #include "../include/kern_fs.h"
+#include "../include/kern_sched.h"
 
 // TODO Ditch arith64
 // TODO Running kmalloc2 and then kmalloc causes early page fault? I think
+
+cmd_word_t *word;
+
+u0 lsrtest(char *path_arg) {
+    char *path = path_arg ? path_arg : "/";
+
+    u32 inode_no = 2;
+    ext2_inode_t *start_inode = ext2_find_path(path, &inode_no);
+
+    if (start_inode) {
+        ext2_explorer_t exp;
+        ext2_explorer_init(&exp, inode_no);
+        ext2_explore_result_t res;
+
+        while (ext2_explorer_next(&exp, &res)) {
+            screen_push_linef("%*s|-- %s", (int) res.depth * 2, "", res.name);
+        }
+        ext2_explorer_deinit(&exp);
+        kfree(start_inode);
+    } else {
+        screen_push_linef("lsr: Path not found: %s", path);
+    }
+
+    if (path_arg) kfree(path_arg);
+}
+// Page faults when ran in a thread ^^^ FIXED!
 
 u0 handle_command() {
     char workingbuf[256] = {0};
@@ -21,7 +48,7 @@ u0 handle_command() {
 
     if (typingbuf[0] == '\0') return;
 
-    cmd_word_t *word = cmd_parse(typingbuf, kmalloc);
+    word = cmd_parse(typingbuf, kmalloc);
     if (!word) return;
 
     serial_outsf("[[%s]]\n", word->loc);
@@ -53,29 +80,12 @@ u0 handle_command() {
     }
 
     if (str_eql(word->loc, "lsr", word->len)) {
-        char *path = "/";
+        char *path = null;
         if (word->next != null) {
-            path = str_dup(word->next->loc, kmalloc);
-            path[word->next->len] = 0;
+            path = str_dup_len(word->next->loc, word->next->len, kmalloc);
         }
-
-        u32 inode_no = 2;
-        ext2_inode_t *start_inode = ext2_find_path(path, &inode_no);
-
-        if (start_inode) {
-            ext2_explorer_t exp;
-            ext2_explorer_init(&exp, inode_no);
-            ext2_explore_result_t res;
-
-            while (ext2_explorer_next(&exp, &res)) {
-                screen_push_linef("%*s|-- %s", (int) res.depth * 2, "", res.name);
-            }
-            kfree(start_inode);
-        } else {
-            screen_push_linef("lsr: Path not found: %s", path);
-        }
-
-        if (word->next != null) kfree(path);
+        sched_create_thread((u0 (*)(u0 *)) lsrtest, path);
+//        lsrtest(); // works fine
         goto Label_Free;
     }
 

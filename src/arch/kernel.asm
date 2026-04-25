@@ -91,6 +91,8 @@ task_switch_asm:
     pushfq
     push rbx
     push rbp
+    push rdi
+    push rsi
     push r12
     push r13
     push r14
@@ -103,6 +105,8 @@ task_switch_asm:
     pop r14
     pop r13
     pop r12
+    pop rsi
+    pop rdi
     pop rbp
     pop rbx
     popfq

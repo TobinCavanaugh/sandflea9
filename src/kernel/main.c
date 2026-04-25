@@ -48,21 +48,21 @@ i64 heartbeat1 = 0;
 i64 heartbeat2 = 0;
 i64 heartbeat3 = 0;
 
-u0 shimmy3() {
+u0 shimmy3(u0 *arg) {
     while (1) {
         heartbeat3 = heartbeat3 == 0 ? 1 : 0;
         delay(100);
     }
 }
 
-u0 shimmy2() {
+u0 shimmy2(u0 *arg) {
     while (1) {
         heartbeat2 = heartbeat2 == 0 ? 1 : 0;
         delay(500);
     }
 }
 
-u0 shimmy() {
+u0 shimmy(u0 *arg) {
     while (1) {
         heartbeat1 = heartbeat1 == 0 ? 1 : 0;
         delay(1000);
@@ -202,9 +202,9 @@ void kern_entry(void) {
 
     char buf[255];
 
-    sched_create_thread(shimmy);
-    sched_create_thread(shimmy2);
-    sched_create_thread(shimmy3);
+    sched_create_thread(shimmy, null);
+    sched_create_thread(shimmy2, null);
+    sched_create_thread(shimmy3, null);
     serial_outsl("Threads: Heartbeat threads spawned");
 
     interrupt_register(32, timer_handler);

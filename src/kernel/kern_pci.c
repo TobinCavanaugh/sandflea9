@@ -11,7 +11,7 @@ u32 pci_serial_base = 0;
 pci_device_t *pci_list_head = null;
 
 u0 pci_register_device(u8 bus, u8 slot, u8 func, u16 vendor, u16 device) {
-    pci_device_t *dev = (pci_device_t *) kmalloc(sizeof(pci_device_t));
+    pci_device_t *dev = (pci_device_t *) kmalloc(sizeof(pci_device_t)); // TODO This should be on 1024 byte aligned
 
     dev->bus = bus;
     dev->slot = slot;
@@ -35,9 +35,11 @@ u0 pci_register_device(u8 bus, u8 slot, u8 func, u16 vendor, u16 device) {
 pci_device_t *pci_init_system() {
     serial_outsl("Enumerating pci...");
 
-    // Takes like 20s
     for (u16 bus = 0; bus < 256; bus++) {
+
+        // TODO Check ports implemented instead of brute forcing them
         for (u8 slot = 0; slot < 32; slot++) {
+
             u16 vendor_id = pci_read_16(bus, slot, 0, 0x00);
             if (vendor_id == 0xFFff) continue;
 

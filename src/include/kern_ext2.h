@@ -87,6 +87,9 @@ typedef struct {
 typedef struct {
     ext2_stack_frame_t stack[16];
     int stack_ptr;
+    u8 *block_buf;      // Cache for current directory block
+    ext2_inode_t *inode_buf; // Cache for current inode
+    u32 last_read_block; // Track last read block to avoid redundant IDE reads
 } ext2_explorer_t;
 
 typedef struct {
@@ -107,6 +110,7 @@ u8 *get_block_ptr(u32 block_id);
 
 // Explorer API
 u0 ext2_explorer_init(ext2_explorer_t *explorer, u32 start_inode);
+u0 ext2_explorer_deinit(ext2_explorer_t *explorer);
 bool ext2_explorer_next(ext2_explorer_t *explorer, ext2_explore_result_t *result);
 
 #endif //KERN_EXT2_H
