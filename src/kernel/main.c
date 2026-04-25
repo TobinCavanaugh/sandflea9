@@ -212,6 +212,7 @@ void kern_entry(void) {
 
     serial_outsl("--- Initialization Complete. Entering Main Loop ---");
 
+
     for (;;) {
         // Keyboard input
         u8 k = 0;
@@ -267,11 +268,14 @@ void kern_entry(void) {
             v2i_t p = V2I(0, 0);
             p.x = 1 + screen_puts_r(" sandfleaOS ", p, COLOR_WHITE, COLOR_BLACK).x;
 
-            stbsp_snprintf(buf, 255, " %.1fMiB ", (f32) usable_ram / 1024 / 1024.);
-            p.x = 1 + screen_puts_r(buf, p, COLOR_BLUE, COLOR_BLACK).x;
+            u64 free_ram = pmm_get_free_count() * PAGE_SIZE;
+            u64 used_ram = usable_ram - free_ram;
 
-            stbsp_snprintf(buf, 255, " %.1fMiB ", (f32) total_ram / 1024 / 1024.);
+            stbsp_snprintf(buf, 255, " %lld MiB ", used_ram / 1024 / 1024);
             p.x = 1 + screen_puts_r(buf, p, COLOR_GREEN, COLOR_BLACK).x;
+
+            stbsp_snprintf(buf, 255, " %lld MiB ", usable_ram / 1024 / 1024);
+            p.x = 1 + screen_puts_r(buf, p, COLOR_BLUE, COLOR_BLACK).x;
 
             stbsp_snprintf(buf, 255, " Display %-2d ", display_main->index);
             p.x = 1 + screen_puts_r(buf, p, COLOR_GRAY, COLOR_BLACK).x;

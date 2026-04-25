@@ -53,9 +53,19 @@ u0 init_vmm_globals(struct limine_hhdm_request hhdm_request);
 u0 init_pmm(struct limine_memmap_request memmap_request);
 
 u64 pmm_alloc_page();
+u0 pmm_free(u64 phys_addr);
+u64 pmm_get_free_count();
 
 u64 vmm_get_hhdm();
 
+u64 read_cr3();
+
 u0 vmm_map_page(u64 phys_addr, u64 virt_addr, u64 flags);
+
+u0 vmm_map_page_in_pml4(u64 pml4_phys, u64 phys_addr, u64 virt_addr, u64 flags);
+
+u64 vmm_get_phys_in_pml4(u64 pml4_phys, u64 virt_addr);
+
+u0 vmm_unmap_page_in_pml4(u64 pml4_phys, u64 virt_addr);
 
 #endif //KERN_VMM_H

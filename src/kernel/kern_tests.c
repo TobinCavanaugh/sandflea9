@@ -40,7 +40,25 @@ u0 lsrtest(char *path_arg) {
 
     if (path_arg) kfree(path_arg);
 }
-// Page faults when ran in a thread ^^^ FIXED!
+
+extern u0 delay(u64 ms);
+
+u0 dotest(u0 *arg) {
+    kern_process_t *proc = sched_get_current_process();
+    kern_task_t *task = sched_get_current_task();
+
+
+    char *buf = pmalloc(4096*64*10);
+
+    for (int i = 0; i < 5; i++) {
+        serial_outsf("[PID %d | TID %d] Heartbeat %d\n", proc->pid, task->tid, i);
+        screen_push_linef("[PID %d | TID %d] Heartbeat %d", proc->pid, task->tid, i);
+        delay(1000);
+    }
+
+    serial_outsf("[PID %d | TID %d] Exiting\n", proc->pid, task->tid);
+    screen_push_linef("[PID %d | TID %d] Exiting", proc->pid, task->tid);
+}
 
 u0 handle_command() {
     char workingbuf[256] = {0};
@@ -52,6 +70,13 @@ u0 handle_command() {
     if (!word) return;
 
     serial_outsf("[[%s]]\n", word->loc);
+
+
+    if (str_eql(word->loc, "do", word->len)) {
+        kern_process_t *new_proc = process_create();
+        sched_create_process_thread(new_proc, dotest, null);
+        goto Label_Free;
+    }
 
 
     if (str_eql(word->loc, "kmalloc", word->len)) {

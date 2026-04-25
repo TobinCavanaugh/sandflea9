@@ -62,6 +62,16 @@ u64 pmm_alloc_page() {
     return ret;
 }
 
+u64 pmm_get_free_count() {
+    u64 count = 0;
+    u64 curr = free_list_head;
+    while (curr != 0) {
+        count++;
+        curr = *(u64 *)(curr + hhdm_offset);
+    }
+    return count;
+}
+
 u64 read_cr3() {
     u64 cr3;
     asm volatile("mov %%cr3, %0" : "=r"(cr3));
@@ -73,36 +83,147 @@ u0 invlpg(u64 vaddr) {
 }
 
 u0 vmm_map_page(u64 phys_addr, u64 virt_addr, u64 flags) {
-    u64 pml4_phys = read_cr3();
+    vmm_map_page_in_pml4(read_cr3(), phys_addr, virt_addr, flags);
+}
 
+u0 vmm_map_page_in_pml4(u64 pml4_phys, u64 phys_addr, u64 virt_addr, u64 flags) {
     u64 *pml4 = (u64 *) (pml4_phys + hhdm_offset);
 
     u64 pml4_idx = PML4_INDEX(virt_addr);
     if (!(pml4[pml4_idx] & PAGE_PRESENT)) {
         u64 new_table = pmm_alloc_page();
-        pml4[pml4_idx] = new_table | PAGE_PRESENT | PAGE_RW;
+        pml4[pml4_idx] = new_table | PAGE_PRESENT | PAGE_RW | (flags & PAGE_USER);
     }
 
     u64 *pdpt = (u64 *) ((pml4[pml4_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
     u64 pdpt_idx = PDPT_INDEX(virt_addr);
     if (!(pdpt[pdpt_idx] & PAGE_PRESENT)) {
         u64 new_table = pmm_alloc_page();
-        pdpt[pdpt_idx] = new_table | PAGE_PRESENT | PAGE_RW;
+        pdpt[pdpt_idx] = new_table | PAGE_PRESENT | PAGE_RW | (flags & PAGE_USER);
     }
 
     u64 *pd = (u64 *) ((pdpt[pdpt_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
     u64 pd_idx = PD_INDEX(virt_addr);
     if (!(pd[pd_idx] & PAGE_PRESENT)) {
         u64 new_table = pmm_alloc_page();
-        pd[pd_idx] = new_table | PAGE_PRESENT | PAGE_RW;
+        pd[pd_idx] = new_table | PAGE_PRESENT | PAGE_RW | (flags & PAGE_USER);
     }
 
     u64 *pt = (u64 *) ((pd[pd_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
     u64 pt_idx = PT_INDEX(virt_addr);
     pt[pt_idx] = phys_addr | flags | PAGE_PRESENT;
-    invlpg(virt_addr);
+
+    if (pml4_phys == read_cr3()) {
+        invlpg(virt_addr);
+    }
 }
 
+u64 vmm_get_phys_in_pml4(u64 pml4_phys, u64 virt_addr) {
+    u64 *pml4 = (u64 *) (pml4_phys + hhdm_offset);
+    u64 pml4_idx = PML4_INDEX(virt_addr);
+    if (!(pml4[pml4_idx] & PAGE_PRESENT)) return 0;
+
+    u64 *pdpt = (u64 *) ((pml4[pml4_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
+    u64 pdpt_idx = PDPT_INDEX(virt_addr);
+    if (!(pdpt[pdpt_idx] & PAGE_PRESENT)) return 0;
+
+    u64 *pd = (u64 *) ((pdpt[pdpt_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
+    u64 pd_idx = PD_INDEX(virt_addr);
+    if (!(pd[pd_idx] & PAGE_PRESENT)) return 0;
+
+    u64 *pt = (u64 *) ((pd[pd_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
+    u64 pt_idx = PT_INDEX(virt_addr);
+    if (!(pt[pt_idx] & PAGE_PRESENT)) return 0;
+
+    return (pt[pt_idx] & 0xFFFFFFFFFF000);
+}
+
+u0 vmm_unmap_page_in_pml4(u64 pml4_phys, u64 virt_addr) {
+    u64 *pml4 = (u64 *) (pml4_phys + hhdm_offset);
+    u64 pml4_idx = PML4_INDEX(virt_addr);
+    if (!(pml4[pml4_idx] & PAGE_PRESENT)) return;
+
+    u64 *pdpt = (u64 *) ((pml4[pml4_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
+    u64 pdpt_idx = PDPT_INDEX(virt_addr);
+    if (!(pdpt[pdpt_idx] & PAGE_PRESENT)) return;
+
+    u64 *pd = (u64 *) ((pdpt[pdpt_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
+    u64 pd_idx = PD_INDEX(virt_addr);
+    if (!(pd[pd_idx] & PAGE_PRESENT)) return;
+
+    u64 *pt = (u64 *) ((pd[pd_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
+    u64 pt_idx = PT_INDEX(virt_addr);
+    pt[pt_idx] = 0;
+
+    if (pml4_phys == read_cr3()) {
+        invlpg(virt_addr);
+    }
+}
+
+
+#include "../include/kern_sched.h"
+
+// ... existing code ...
+
+u0* pmalloc(u64 size) {
+    if (size == 0) return null;
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc) return kmalloc(size); // Fallback to kmalloc if no process context
+
+    u64 page_count = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    u64 virt_start = proc->heap_vptr;
+    
+    // Tracking metadata
+    kern_mem_region_t *region = kmalloc(sizeof(kern_mem_region_t));
+    region->virt = virt_start;
+    region->page_count = page_count;
+    region->phys = 0; 
+    
+    for (u64 i = 0; i < page_count; i++) {
+        u64 phys = pmm_alloc_page();
+        if (i == 0) region->phys = phys; 
+        
+        vmm_map_page_in_pml4(proc->cr3, phys, virt_start + (i * PAGE_SIZE), PAGE_PRESENT | PAGE_RW | PAGE_USER);
+    }
+
+    region->next = proc->mem_regions;
+    proc->mem_regions = region;
+    
+    proc->heap_vptr += page_count * PAGE_SIZE;
+    return (u0*)virt_start;
+}
+
+u0 pfree(void *ptr) {
+    if (!ptr) return;
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc) return;
+
+    kern_mem_region_t *curr = proc->mem_regions;
+    kern_mem_region_t *prev = null;
+
+    while (curr) {
+        if (curr->virt == (u64)ptr) {
+            // Free all pages
+            for (u64 i = 0; i < curr->page_count; i++) {
+                u64 vaddr = curr->virt + (i * PAGE_SIZE);
+                u64 phys = vmm_get_phys_in_pml4(proc->cr3, vaddr);
+                if (phys) {
+                    pmm_free(phys);
+                    vmm_unmap_page_in_pml4(proc->cr3, vaddr);
+                }
+            }
+
+            // Unlink
+            if (prev) prev->next = curr->next;
+            else proc->mem_regions = curr->next;
+
+            kfree(curr);
+            return;
+        }
+        prev = curr;
+        curr = curr->next;
+    }
+}
 
 heap_header_t *heap_ptr = (heap_header_t *) (KHEAP_START_ADDR);
 

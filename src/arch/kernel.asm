@@ -98,7 +98,23 @@ task_switch_asm:
     push r14
     push r15
 
-    mov [rdi], rsp ; save current stack pointer so [rdi] points at it
+    mov [rdi], rsp ; save current stack pointer
+
+    ; CR3 Switch Logic
+    mov rax, [rdi + 16] ; RAX = current_task->process
+    mov rbx, [rsi + 16] ; RBX = next_task->process
+    
+    ; If process is the same, skip CR3 reload to avoid TLB flush
+    cmp rax, rbx
+    je .skip_cr3
+
+    mov rcx, [rbx + 8]  ; RCX = next_task->process->cr3
+    mov rax, cr3
+    cmp rax, rcx
+    je .skip_cr3
+    mov cr3, rcx
+
+.skip_cr3:
     mov rsp, [rsi] ; Load stack pointer from next task struct
 
     pop r15
