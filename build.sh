@@ -26,6 +26,23 @@ C_SOURCES=(
     "src/kernel/stbsupport.c"
     "src/util/util_str.c"
     "src/util/util_cmd.c"
+    "src/kernel/wasm3-0.5.0/source/m3_api_libc.c"
+    "src/kernel/wasm3-0.5.0/source/m3_api_meta_wasi.c"
+    "src/kernel/wasm3-0.5.0/source/m3_api_tracer.c"
+    "src/kernel/wasm3-0.5.0/source/m3_api_uvwasi.c"
+    "src/kernel/wasm3-0.5.0/source/m3_api_wasi.c"
+    "src/kernel/wasm3-0.5.0/source/m3_bind.c"
+    "src/kernel/wasm3-0.5.0/source/m3_code.c"
+    "src/kernel/wasm3-0.5.0/source/m3_compile.c"
+    "src/kernel/wasm3-0.5.0/source/m3_core.c"
+    "src/kernel/wasm3-0.5.0/source/m3_emit.c"
+    "src/kernel/wasm3-0.5.0/source/m3_env.c"
+    "src/kernel/wasm3-0.5.0/source/m3_exec.c"
+    "src/kernel/wasm3-0.5.0/source/m3_function.c"
+    "src/kernel/wasm3-0.5.0/source/m3_info.c"
+    "src/kernel/wasm3-0.5.0/source/m3_module.c"
+    "src/kernel/wasm3-0.5.0/source/m3_optimize.c"
+    "src/kernel/wasm3-0.5.0/source/m3_parse.c"
 )
 
 ASM_SOURCES=(
@@ -34,9 +51,10 @@ ASM_SOURCES=(
 #    "src/arch/irqs.asm"
 )
 
-GCC_INCLUDE=$(gcc -print-file-name=include)
+# GCC_INCLUDE=$(gcc -print-file-name=include)
 
-CFLAGS="-m64 -c -O0 -ffreestanding -nostdlib -g -nostdinc -fno-pic -fno-pie -mno-red-zone -mcmodel=kernel -I $GCC_INCLUDE"
+# -I src/include must come FIRST
+CFLAGS="-m64 -c -O3 -ffreestanding -nostdlib -g -nostdinc -fno-pic -fno-pie -mno-red-zone -mcmodel=kernel -I src/include -I src/kernel/wasm3-0.5.0/source -D d_m3FixedHeap=false -DDEBUG"
 ASMFLAGS="-f elf64 -g"
 LDFLAGS="-m elf_x86_64 -T link.ld -build-id=none -z max-page-size=0x1000"
 
@@ -85,7 +103,8 @@ for src in "${ASM_SOURCES[@]}"; do
 done
 
 for src in "${C_SOURCES[@]}"; do
-    filename=$(basename "$src" .c)
+    # For nested directories, use a flattened name for the object file
+    filename=$(echo "$src" | sed 's/\//_/g' | sed 's/\.c$//')
     obj_path="obj/${filename}.o"
 
     SHOULD_REBUILD=0
@@ -94,7 +113,6 @@ for src in "${C_SOURCES[@]}"; do
     else
         # Check if any header is newer than the object file
         OBJ_TIME=$(stat -c %Y "$obj_path")
-        # Use bc for float comparison if needed, or just integer comparison
         if [ "${NEWEST_HEADER%.*}" -gt "$OBJ_TIME" ]; then
             SHOULD_REBUILD=1
         fi
@@ -133,6 +151,7 @@ write src/blob/testfile.txt testfile.txt
 write src/blob/a.txt a.txt
 write src/blob/b.txt b.txt
 write src/blob/c.txt c.txt
+write src/blob/test.wasm test.wasm
 mkdir folder
 write src/blob/c.txt folder/a.txt
 EOF
@@ -151,5 +170,3 @@ xorriso -as mkisofs \
 
 
 echo "--- Done ---"
-#echo "NOTE: To run this in QEMU, you now need OVMF (UEFI Firmware)."
-#echo "Run: qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd -cdrom sandfleaOS.iso"

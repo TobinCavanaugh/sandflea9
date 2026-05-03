@@ -14,10 +14,14 @@ break > serial_output.log
 @REM 3. -vga std: Reliable display driver
 @REM 4. -drive ...: Attaching our disk image as a physical IDE drive
 
+
+
+@REM     -accel whpx ^
+@REM     -s -S ^
+
 qemu-system-x86_64.exe -cdrom sandfleaOS.iso ^
     -m 2G ^
     -bios ovmf/DEBUGX64_OVMF.fd ^
-    -accel whpx ^
     -display sdl ^
     -vga std ^
     -drive file=disk.img,format=raw,index=0,media=disk ^

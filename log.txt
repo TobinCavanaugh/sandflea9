@@ -1,0 +1,91 @@
+--- Compiling WASM ---
+--- Compiling ---
+--- Processing Font ---
+--- Linking ---
+--- Creating Test Filesystem ---
+Creating filesystem with 8192 4k blocks and 8192 inodes
+
+Allocating group tables: 0/1   done                            
+Writing inode tables: 0/1   done                            
+Writing superblocks and filesystem accounting information: 0/1   done
+
+debugfs:  write src/blob/testfile.txt testfile.txt
+Allocated inode: 12
+debugfs:  write src/blob/a.txt a.txt
+Allocated inode: 13
+debugfs:  write src/blob/b.txt b.txt
+Allocated inode: 14
+debugfs:  write src/blob/c.txt c.txt
+Allocated inode: 15
+debugfs:  write src/blob/test.wasm test.wasm
+Allocated inode: 16
+debugfs:  mkdir folder
+debugfs:  write src/blob/c.txt folder/a.txt
+Allocated inode: 18
+debugfs:  --- Packaging UEFI ISO ---
+--- Done ---
+Running with qemu (Optimized with IDE Drive)
+--- Running ---
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[8;056;240t0[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[8;042;160t0[2J[01;01H[2J[01;01H[8;050;080t0[2J[01;01HBdsDxe: loading Boot0002 "UEFI QEMU DVD-ROM QM00003 " from PciRoot(0x0)/Pci(0x1,0x1)/Ata(Secondary,Master,0x0)
+BdsDxe: starting Boot0002 "UEFI QEMU DVD-ROM QM00003 " from PciRoot(0x0)/Pci(0x1,0x1)/Ata(Secondary,Master,0x0)
+[2J[01;01H[01;01H[2J[01;01H[01;01H--- sandfleaOS Kernel Entry ---
+Serial initialized: COM1 ready
+CPU: SSE extensions enabled
+VMM: Virtual Memory Management initialized
+PMM: Physical Memory Management initialized
+APIC timer initialized
+IDT: Interrupts and GDT stubs initialized
+VMM: Expanding heap from FFFFFFFF88000000 to FFFFFFFF88040000 (needed 40000)
+Kernel Heap Initialized
+Heap: kmalloc initialized and ready for allocations
+Scheduler: Multi-threading support initialized
+Enumerating pci...
+PCI: System bus scanned
+PCI: Found Serial Controller (Class 0x7, Sub 0x0) at 1B36:2
+UART: Initializing PCI UART Card...
+UART: Initialized Port at IO Base 0xC050 (BAR 0)
+VMM: Expanding heap from FFFFFFFF88040000 to FFFFFFFF88429000 (needed 3E8020)
+Video: 1 framebuffer(s) found. Primary: 1280x800 32bpp
+Kernel Stack Pointer: FFFF80007BBB4EB0
+Font: SSFN regular font loaded
+Memory: Total 2039 MiB, Usable 2005 MiB
+Terminal: Screen line buffer initialized
+IDE: Initializing Primary Bus...
+IDE: Primary Master drive detected!
+FS: IDE Initialized
+EXT2: Valid filesystem detected via IDE.
+EXT2: Block size 4096 bytes, BGDT cached.
+FS: Ext2 driver initialized
+FS: POSIX-like handle system initialized
+FS: FS initialized
+VMM: Expanding heap from FFFFFFFF88429000 to FFFFFFFF8844A000 (needed 20020)
+VMM: Expanding heap from FFFFFFFF8844A000 to FFFFFFFF8846B000 (needed 20020)
+Threads: Heartbeat threads spawned
+--- Initialization Complete. Entering Main Loop ---
+[[wasm]]
+VMM: Expanding heap from FFFFFFFF8846B000 to FFFFFFFF8848C000 (needed 20020)
+WASM: Loading test.wasm
+WASM: Initializing environment...
+m3_NewEnvironment: ffffffff800237a0
+WASM: Initializing runtime...
+m3_NewRuntime: ffffffff80023b90
+WASM: Parsing module...
+m3_ParseModule: ffffffff80028cf0
+    parse  |  load module: 41 bytes
+    parse  |  load module: 41 bytes
+    parse  |   parsing section: 1; length: 7
+    parse  |  ** Type [1]
+    parse  |      type  0: (i32, i32) -> i32
+    parse  |   parsing section: 3; length: 2
+    parse  |  ** Function [1]
+   module  |     added function:   0; sig: 0
+    parse  |   parsing section: 7; length: 7
+    parse  |  ** Export [1]
+
+!!! PAGE FAULT at FFFFFFFF8848C000 (Access: Not present, Write) !!!
+
+!!! EXCEPTION: Page Fault !!!
+  INT: 14 | ERR: 2
+  RIP: FFFFFFFF80003173 | CR2: FFFFFFFF8848C000
+  RAX: FFFFFFFF88035138 | RBX: 0 | RCX: FFFFFFFF8848BFF8 | RDX: FFFFFFFB
+  RSP: FFFFFFFF8848AE60 | RBP: FFFFFFFF88035130

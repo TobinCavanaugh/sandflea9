@@ -6,3 +6,4 @@ disk.img
 
 
 src/kernel/wasm3-0.5.0
+src/kernel/musl-1.2.6

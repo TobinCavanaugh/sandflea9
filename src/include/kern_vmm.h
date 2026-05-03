@@ -37,6 +37,7 @@ typedef struct heap_header {
     u64 size; // Size of the data block (excluding header)
     u64 is_free; // 1 if free, 0 if used
     struct heap_header *next; // Pointer to the next block in the list
+    u64 padding; // Pad to 32 bytes for 16-byte alignment of data
 } heap_header_t;
 
 // API
@@ -45,6 +46,8 @@ u0 kmalloc_init();
 u0 *kmalloc(u64 size);
 
 u0* kmallocz(u64 size);
+
+u0* kern_realloc(void* ptr, u64 size);
 
 u0 kfree(void *ptr);
 

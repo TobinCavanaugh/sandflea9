@@ -139,23 +139,27 @@ void kern_entry(void) {
     }
 
 
-    display_t displays[32];
+    display_t *displays = kmalloc(sizeof(display_t) * 32);
     u8 fb_count = screen_init(framebuffer_request.response, displays, 32);
     display_main = &displays[0];
     serial_outsf("Video: %d framebuffer(s) found. Primary: %dx%d %dbpp\n",
                  fb_count, display_main->surface.width, display_main->surface.height, display_main->surface.bpp);
 
+    u64 stack_ptr;
+    asm volatile("mov %%rsp, %0" : "=r"(stack_ptr));
+    serial_outsf("Kernel Stack Pointer: %llX\n", stack_ptr);
+
     ssfn_src = (ssfn_font_t *) &_binary_src_blob_regularfont_sfn_start;
     serial_outsl("Font: SSFN regular font loaded");
 
-    u32 width = displays[0].surface.width, height = displays[0].surface.height;
+    u32 width = display_main->surface.width, height = display_main->surface.height;
     u32 row_len = width / font_width;
 
     // 3. Configure SSFN destination using the Limine framebuffer data
-    ssfn_dst.ptr = (u8 *) displays->surface.address;
+    ssfn_dst.ptr = (u8 *) display_main->surface.address;
     ssfn_dst.w = width;
     ssfn_dst.h = height;
-    ssfn_dst.p = displays->surface.pitch;
+    ssfn_dst.p = display_main->surface.pitch;
     ssfn_dst.x = 0; // Start cursor at 0,0
     ssfn_dst.y = 0;
     ssfn_dst.fg = 0xFFFFFFFF; // White text

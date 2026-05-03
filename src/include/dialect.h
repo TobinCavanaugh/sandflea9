@@ -13,22 +13,39 @@
 #define false 0
 
 /* Use GCC's built-in types for fixed width integers */
-#define u8 __UINT8_TYPE__
-#define u16 __UINT16_TYPE__
-#define u32 __UINT32_TYPE__
-#define u64 __UINT64_TYPE__
-#define i8 __INT8_TYPE__
-#define i16 __INT16_TYPE__
-#define i32 __INT32_TYPE__
-#define i64 __INT64_TYPE__
-#define f32 float
-#define f128 long double
+typedef __UINT8_TYPE__   u8;
+typedef __UINT16_TYPE__  u16;
+typedef __UINT32_TYPE__  u32;
+typedef __UINT64_TYPE__  u64;
+typedef __INT8_TYPE__    i8;
+typedef __INT16_TYPE__   i16;
+typedef __INT32_TYPE__   i32;
+typedef __INT64_TYPE__   i64;
+
+typedef u8  uint8_t;
+typedef u16 uint16_t;
+typedef u32 uint32_t;
+typedef u64 uint64_t;
+
+typedef i8  int8_t;
+typedef i16 int16_t;
+typedef i32 int32_t;
+typedef i64 int64_t;
+
+typedef u64 uintptr_t;
+typedef i64 intptr_t;
+
+typedef float           f32;
+typedef long double     f128;
 
 /* Maximum values for unsigned types */
 #define u8_MAX __UINT8_MAX__
 #define u16_MAX __UINT16_MAX__
 #define u32_MAX __UINT32_MAX__
 #define u64_MAX __UINT64_MAX__
+
+#define UINT32_MAX u32_MAX
+#define UINT64_MAX u64_MAX
 
 /* Maximum and minimum values for signed types */
 #define i8_MAX 127
@@ -61,15 +78,8 @@
 #define F32(__a) ((f32)(__a))
 #define F128(__a) ((f128)(__a))
 
-#define uint8_t u8
-#define uint16_t u16
-#define uint32_t u32
-#define uint64_t u64
-
-#define int8_t i8
-#define int16_t i16
-#define int32_t i32
-#define int64_t i64
+typedef u64 size_t;
+typedef i64 ssize_t;
 
 #define iif(__condition, ...) ({ __condition ? ({ __VA_ARGS__; }) : 0; })
 

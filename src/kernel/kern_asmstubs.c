@@ -51,9 +51,19 @@ u32 pci_read_32(u8 bus, u8 slot, u8 func, u8 offset) {
     return inl(0xCFC);
 }
 
-u16 pci_read_16(u8 bus, u8 slot, u8 func, u8 offset) {
+u32 pci_read_16(u8 bus, u8 slot, u8 func, u8 offset) {
     u32 addr = (u32) ((bus << 16) | (slot << 11) | (func << 8) | (offset & 0xFC) | (u32) 0x80000000);
     outl(PCI_CONFIG_PORT, addr);
     u32 val = inl(PCI_DATA_PORT);
     return U16((val >> ((offset & 2) * 8)) & 0xFFff);
+}
+
+u64 save_irq_and_disable() {
+    u64 flags;
+    asm volatile ("pushfq; pop %0; cli" : "=r"(flags));
+    return flags;
+}
+
+u0 restore_irq(u64 flags) {
+    asm volatile ("push %0; popfq" : : "r"(flags));
 }

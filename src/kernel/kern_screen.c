@@ -203,7 +203,7 @@ u0 ssfn_putc2(char c, u8 wrapx) {
     // why doesn't this clamp work....
     u32 maxw = current_display->surface.width - 1 - font_width;
     ssfn_dst.x = clamp(ssfn_dst.x, 0, maxw);
-    ssfn_dst.y = clamp(ssfn_dst.y, 0, current_display->surface.height - 1 - font_width);
+    ssfn_dst.y = clamp(ssfn_dst.y, 0, current_display->surface.height - 1 - font_height);
 
     if (c > 31) {
         if (wrapx && ssfn_dst.x >= maxw) {

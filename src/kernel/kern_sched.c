@@ -108,11 +108,9 @@ kern_task_t *sched_create_thread(u0 (*function)(u0 *), u0 *arg) {
     task->state = TASK_STATE_READY;
     task->process = kernel_process; // Default to kernel process
 
-    u64 stack_phys = pmm_alloc_page();
-    u64 stack_virt = stack_phys + vmm_get_hhdm();
-
-    // Create the stack and set its top value to be the function address
-    u64 stack_top = (stack_virt + PAGE_SIZE);
+    u64 stack_size = 128 * 1024;
+    u0 *stack_ptr_base = kmalloc(stack_size);
+    u64 stack_top = (u64) stack_ptr_base + stack_size;
     u64 *stack_ptr = (u64 *) stack_top;
 
     *(--stack_ptr) = (u64) sched_thread_exit;
@@ -130,8 +128,10 @@ kern_task_t *sched_create_thread(u0 (*function)(u0 *), u0 *arg) {
 
     task->rsp = (u64) stack_ptr;
 
+    u64 irq = save_irq_and_disable();
     task->next = task_list_head->next;
     task_list_head->next = task;
+    restore_irq(irq);
 
     return task;
 }

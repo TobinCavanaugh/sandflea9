@@ -41,6 +41,7 @@ u0 screen_push_line(const char *str) {
 }
 
 static char *screen_line_stb_callback(char *buf, void *user, i32 len) {
+    if (len <= 0) return buf;
     char save = buf[len];
     buf[len] = '\0';
     screen_push_line(buf);
