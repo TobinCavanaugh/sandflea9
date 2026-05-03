@@ -67,6 +67,7 @@ ext2_inode_t *ext2_get_inode(u32 inode_no, ext2_inode_t *out_inode) {
 
     u32 inode_table_block = bgdt[group].inode_table;
     u32 inode_size = (sb_ptr->major_version >= 1) ? sb_ptr->inode_size : 128;
+    u32 copy_size = (inode_size < sizeof(ext2_inode_t)) ? inode_size : sizeof(ext2_inode_t);
     
     u32 block_offset = (index * inode_size) / block_size;
     u32 final_block = inode_table_block + block_offset;
@@ -74,7 +75,7 @@ ext2_inode_t *ext2_get_inode(u32 inode_no, ext2_inode_t *out_inode) {
 
     u8 *buf = kmalloc(block_size);
     ext2_read_block(final_block, buf);
-    mem_copy((u8*)out_inode, buf + offset_in_block, inode_size);
+    mem_copy((u8*)out_inode, buf + offset_in_block, copy_size);
     kfree(buf);
 
     return out_inode;

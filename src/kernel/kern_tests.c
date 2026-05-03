@@ -14,7 +14,6 @@
 #include "wasm3-0.5.0/source/wasm3.h"
 #include "wasm3-0.5.0/source/m3_api_libc.h"
 
-// TODO Ditch arith64
 // TODO Running kmalloc2 and then kmalloc causes early page fault? I think
 
 cmd_word_t *word;
@@ -114,46 +113,44 @@ u0 wasm_test(u0 *arg) {
     const char *wasm_path = (const char *) arg;
     if (!wasm_path) wasm_path = "add_test.wasm";
 
+    IM3Environment env = null;
+    IM3Runtime runtime = null;
+    u8 *wasm_data = null;
+
     serial_outsf("WASM: Loading %s\n", wasm_path);
     i32 fd = fs_open(wasm_path);
     if (fd < 0) {
         screen_push_linef("WASM: Could not open %s", wasm_path);
-        return;
+        goto Label_Done;
     }
 
     u32 size = fs_size(fd);
-    u8 *wasm_data = kmalloc(size);
+    wasm_data = kmalloc(size);
     if (!wasm_data) {
         screen_push_line("WASM: Out of memory for WASM data");
         fs_close(fd);
-        return;
+        goto Label_Done;
     }
     fs_read(fd, wasm_data, size);
     fs_close(fd);
 
     serial_outsl("WASM: Initializing environment...");
-    serial_outsf("m3_NewEnvironment: %p\n", m3_NewEnvironment);
-    IM3Environment env = m3_NewEnvironment();
+    env = m3_NewEnvironment();
     if (!env) {
         screen_push_line("WASM: Could not create environment");
-        kfree(wasm_data);
-        return;
+        goto Label_Done;
     }
 
     serial_outsl("WASM: Initializing runtime...");
-    serial_outsf("m3_NewRuntime: %p\n", m3_NewRuntime);
-    IM3Runtime runtime = m3_NewRuntime(env, 64 * 1024, NULL);
+    runtime = m3_NewRuntime(env, 64 * 1024, NULL);
     if (!runtime) {
         screen_push_line("WASM: Could not create runtime");
-        m3_FreeEnvironment(env);
-        kfree(wasm_data);
-        return;
+        goto Label_Done;
     }
 
 
     IM3Module module = NULL;
     serial_outsl("WASM: Parsing module...");
-    serial_outsf("m3_ParseModule: %p\n", m3_ParseModule);
     M3Result result = m3_ParseModule(env, &module, wasm_data, size);
     if (result) {
         screen_push_linef("WASM: Parse error: %s", result);
@@ -177,15 +174,12 @@ u0 wasm_test(u0 *arg) {
     m3_LinkRawFunction(module, "env", "sys_close", "i(i)", &wasm_fs_close);
 
     serial_outsl("WASM: Linking LibC...");
-    serial_outsf("m3_LinkLibC: %p\n", m3_LinkLibC);
     result = m3_LinkLibC(module);
     if (result) {
         screen_push_linef("WASM: Link error: %s", result);
         goto Label_Done;
     }
 
-
-    serial_outsf("m3_FindFunction: %p\n", m3_FindFunction);
     IM3Function f;
     result = m3_FindFunction(&f, runtime, "entry");
     if (result) {
@@ -209,8 +203,6 @@ u0 wasm_test(u0 *arg) {
     if (env) m3_FreeEnvironment(env);
     if (wasm_data) kfree(wasm_data);
     if (arg) kfree(arg);
-
-    process_exit(sched_get_current_process());
 }
 
 u0 handle_command() {
