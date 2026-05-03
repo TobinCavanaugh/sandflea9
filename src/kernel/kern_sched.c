@@ -115,11 +115,11 @@ u0 process_exit(kern_process_t *proc) {
     serial_outsf("Process PID %d resources freed\n", old_pid);
 }
 
-kern_task_t *sched_create_thread(u0 (*function)(u0 *), u0 *arg) {
+static kern_task_t *task_create_internal(kern_process_t *proc, u0 (*function)(u0 *), u0 *arg) {
     kern_task_t *task = kmalloc(sizeof(kern_task_t));
     task->tid = ++task_id_c;
     task->state = TASK_STATE_READY;
-    task->process = kernel_process; // Default to kernel process
+    task->process = proc ? proc : kernel_process;
 
     u64 stack_size = 128 * 1024;
     u0 *stack_ptr_base = kmalloc(stack_size);
@@ -153,19 +153,12 @@ kern_task_t *sched_create_thread(u0 (*function)(u0 *), u0 *arg) {
     return task;
 }
 
+kern_task_t *sched_create_thread(u0 (*function)(u0 *), u0 *arg) {
+    return task_create_internal(kernel_process, function, arg);
+}
+
 kern_task_t *sched_create_process_thread(kern_process_t *proc, u0 (*function)(u0 *), u0 *arg) {
-    kern_task_t *task = sched_create_thread(function, arg);
-    
-    u64 irq = save_irq_and_disable();
-    // Correct the process assignment and thread counts
-    task->process->thread_count--; 
-    serial_outsf("Thread TID %d migration: PID %d count: %d\n", task->tid, task->process->pid, task->process->thread_count);
-    task->process = proc;
-    task->process->thread_count++;
-    serial_outsf("Thread TID %d migration: PID %d count: %d\n", task->tid, task->process->pid, task->process->thread_count);
-    restore_irq(irq);
-    
-    return task;
+    return task_create_internal(proc, function, arg);
 }
 
 kern_task_t *sched_get_current_task() {

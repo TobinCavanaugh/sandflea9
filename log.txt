@@ -37,135 +37,17 @@ VMM: Expanding heap from FFFFFFFF8844A000 to FFFFFFFF8846B000 (needed 20020)
 Thread created: TID 3 in PID 0 (new count: 4)
 Threads: Heartbeat threads spawned
 --- Initialization Complete. Entering Main Loop ---
-[[wasm]]
+[[wasm w]]
 VMM: Expanding heap from FFFFFFFF8846B000 to FFFFFFFF8848C000 (needed 20020)
 Thread created: TID 4 in PID 0 (new count: 5)
 Thread TID 4 migration: PID 0 count: 4
 Thread TID 4 migration: PID 1 count: 1
-WASM: Loading add_test.wasm
+WASM: Loading w
 WASM: Initializing environment...
-WASM: Initializing runtime...
-WASM: Parsing module...
-    parse  |  load module: 43 bytes
-    parse  |  load module: 43 bytes
-    parse  |   parsing section: 1; length: 7
-    parse  |  ** Type [1]
-    parse  |      type  0: (i32, i32) -> i32
-    parse  |   parsing section: 3; length: 2
-    parse  |  ** Function [1]
-   module  |     added function:   0; sig: 0
-    parse  |   parsing section: 7; length: 9
-    parse  |  ** Export [1]
-    parse  |      index:   0; kind: 0; export: 'entry';
-    parse  |   parsing section: 10; length: 9
-    parse  |  ** Code [1]
-m3_LoadModule: ffffffff80025ea0
-WASM: Linking LibC...
-WASM: Calling entry()...
-   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
-Reaping process PID 1 (CR3: 7fa1f000)
-Process PID 1 resources freed
-[[wasm file_test.wasm]]
-Thread created: TID 5 in PID 0 (new count: 5)
-Thread TID 5 migration: PID 0 count: 4
-Thread TID 5 migration: PID 2 count: 1
-WASM: Loading file_test.wasm
-WASM: Initializing environment...
-WASM: Initializing runtime...
-WASM: Parsing module...
-    parse  |  load module: 179 bytes
-    parse  |  load module: 179 bytes
-    parse  |   parsing section: 1; length: 17
-    parse  |  ** Type [3]
-    parse  |      type  0: (i32) -> i32
-    parse  |      type  1: (i32, i32, i32) -> i32
-    parse  |      type  2: () -> i32
-    parse  |   parsing section: 2; length: 47
-    parse  |  ** Import [3]
-    parse  |      kind: 0 'env.sys_open'
-   module  |     added function:   0; sig: 0
-    parse  |      kind: 0 'env.sys_read'
-   module  |     added function:   1; sig: 1
-    parse  |      kind: 0 'env.sys_close'
-   module  |     added function:   2; sig: 0
-    parse  |   parsing section: 3; length: 2
-    parse  |  ** Function [1]
-   module  |     added function:   3; sig: 2
-    parse  |   parsing section: 5; length: 3
-    parse  |  ** Memory [1]
-    parse  |   parsing section: 7; length: 9
-    parse  |  ** Export [1]
-    parse  |      index:   3; kind: 0; export: 'entry';
-    parse  |   parsing section: 10; length: 66
-    parse  |  ** Code [1]
-    parse  |   parsing section: 11; length: 13
-    parse  |  ** Data [1]
-    parse  |      segment [0]  memory: 0;  expr-size: 4;  size: 6
-m3_LoadModule: ffffffff80025ea0
-VMM: Expanding heap from FFFFFFFF8848C000 to FFFFFFFF8849D000 (needed 10040)
-WASM: Linking LibC...
-WASM: Calling entry()...
-WASM: Open called for path: a.txt
-wasm close: 0
-WASM: entry() returned 97
-   module  |  freeing module: .unnamed (funcs: 4; segments: 1)
-Reaping process PID 2 (CR3: 7f9fd000)
-Process PID 2 resources freed
-[[wasm file_test.wasm]]
-Thread created: TID 6 in PID 0 (new count: 5)
-Thread TID 6 migration: PID 0 count: 4
-Thread TID 6 migration: PID 3 count: 1
-WASM: Loading file_test.wasm
-WASM: Initializing environment...
-WASM: Initializing runtime...
-WASM: Parsing module...
-    parse  |  load module: 179 bytes
-    parse  |  load module: 179 bytes
-    parse  |   parsing section: 1; length: 17
-    parse  |  ** Type [3]
-    parse  |      type  0: (i32) -> i32
-    parse  |      type  1: (i32, i32, i32) -> i32
-    parse  |      type  2: () -> i32
-    parse  |   parsing section: 2; length: 47
-    parse  |  ** Import [3]
-    parse  |      kind: 0 'env.sys_open'
-   module  |     added function:   0; sig: 0
-    parse  |      kind: 0 'env.sys_read'
-   module  |     added function:   1; sig: 1
-    parse  |      kind: 0 'env.sys_close'
-   module  |     added function:   2; sig: 0
-    parse  |   parsing section: 3; length: 2
-    parse  |  ** Function [1]
-   module  |     added function:   3; sig: 2
-    parse  |   parsing section: 5; length: 3
-    parse  |  ** Memory [1]
-    parse  |   parsing section: 7; length: 9
-    parse  |  ** Export [1]
-    parse  |      index:   3; kind: 0; export: 'entry';
-    parse  |   parsing section: 10; length: 66
-    parse  |  ** Code [1]
-    parse  |   parsing section: 11; length: 13
-    parse  |  ** Data [1]
-    parse  |      segment [0]  memory: 0;  expr-size: 4;  size: 6
-m3_LoadModule: ffffffff80025ea0
-WASM: Linking LibC...
-WASM: Calling entry()...
-WASM: Calling entry()...
-WASM: Open called for path: a.txt
-wasm close: 0
-WASM: entry() returned 97
-   module  |  freeing module: .unnamed (funcs: 4; segments: 1)
-Reaping process PID 3 (CR3: 7f9eb000)
-Process PID 3 resources freed
-[[wasm file_test.wasm]]
-Thread created: TID 7 in PID 0 (new count: 5)
-Thread TID 7 migration: PID 0 count: 4
-Thread TID 7 migration: PID 4 count: 1
-WASM: Loading file_test.wasm
-WASM: Initializing environment...
+
 
 !!! EXCEPTION: General Protection Fault !!!
   INT: 13 | ERR: 0
   RIP: FFFFFFFF80026757 | CR2: FF000000FF000008
   RAX: 0 | RBX: FF000000FF000000 | RCX: 0 | RDX: 1
-  RSP: FFFFFFFF88489FA8 | RBP: FFFFFFFF88022950
+  RSP: FFFFFFFF8848AF88 | RBP: FFFFFFFF88022680

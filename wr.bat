@@ -18,6 +18,7 @@ break > serial_output.log
 
 @REM     -accel whpx ^
 @REM     -s -S ^
+@REM     -serial tcp:127.0.0.1:5555,server,wait ^
 
 qemu-system-x86_64.exe -cdrom sandfleaOS.iso ^
     -m 2G ^
