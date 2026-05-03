@@ -114,6 +114,11 @@ u32 u64_to_sn(u64 val, char *out_buf, u8 base, u32 max_size) {
     return out_len;
 }
 
+purefn u8 str_eq2(const char *a, const char *b) {
+    return str_eql(a, b, max(str_len(a), str_len(b)));
+
+}
+
 purefn u8 str_eql(const char *a, const char *b, u32 len) {
     if (a == b) return true;
     if (a == null || b == null) return false;

@@ -121,7 +121,25 @@ u0 vmm_map_page_in_pml4(u64 pml4_phys, u64 phys_addr, u64 virt_addr, u64 flags) 
 }
 
 u0 vmm_map_page(u64 phys_addr, u64 virt_addr, u64 flags) {
-    vmm_map_page_in_pml4(read_cr3(), phys_addr, virt_addr, flags);
+    if (virt_addr >= 0xFFFF800000000000) {
+        kern_process_t *kp = sched_get_kernel_process();
+        u64 master_cr3 = kp ? kp->cr3 : read_cr3();
+        vmm_map_page_in_pml4(master_cr3, phys_addr, virt_addr, flags);
+
+        if (master_cr3 != read_cr3()) {
+            u64 pml4_idx = PML4_INDEX(virt_addr);
+            u64 *current_pml4 = (u64 *) (read_cr3() + hhdm_offset);
+            u64 *master_pml4 = (u64 *) (master_cr3 + hhdm_offset);
+            current_pml4[pml4_idx] = master_pml4[pml4_idx];
+            
+            // Full TLB flush by reloading CR3
+            u64 cr3;
+            asm volatile("mov %%cr3, %0" : "=r"(cr3));
+            asm volatile("mov %0, %%cr3" : : "r"(cr3) : "memory");
+        }
+    } else {
+        vmm_map_page_in_pml4(read_cr3(), phys_addr, virt_addr, flags);
+    }
 }
 
 u64 vmm_get_phys_in_pml4(u64 pml4_phys, u64 virt_addr) {

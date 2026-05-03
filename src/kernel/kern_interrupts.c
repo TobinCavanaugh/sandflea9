@@ -9,6 +9,7 @@
 #include "../include/kern_screen.h"
 #include "../include/kern_serial.h"
 #include "../include/stbsupport.h"
+#include "../include/kern_sched.h"
 
 u0 apic_timer_init(u64 lapic_base, u8 vector, u32 ms);
 
@@ -146,6 +147,30 @@ u0 kern_interrupt_handler(const registers_t *t) {
     if (t->int_no == 14) {
         u64 cr2_val;
         asm volatile("mov %%cr2, %0" : "=r"(cr2_val));
+
+        // Lazy sync for kernel mappings (higher half)
+        if (cr2_val >= 0xFFFF800000000000) {
+            kern_process_t *kp = sched_get_kernel_process();
+            if (kp) {
+                u64 current_cr3 = read_cr3();
+                if (current_cr3 != kp->cr3) {
+                    u64 pml4_idx = PML4_INDEX(cr2_val);
+                    u64 *current_pml4 = (u64 *) (current_cr3 + vmm_get_hhdm());
+                    u64 *master_pml4 = (u64 *) (kp->cr3 + vmm_get_hhdm());
+
+                    if (!(current_pml4[pml4_idx] & PAGE_PRESENT) && (master_pml4[pml4_idx] & PAGE_PRESENT)) {
+                        current_pml4[pml4_idx] = master_pml4[pml4_idx];
+                        
+                        // Full TLB flush
+                        u64 cr3_val;
+                        asm volatile("mov %%cr3, %0" : "=r"(cr3_val));
+                        asm volatile("mov %0, %%cr3" : : "r"(cr3_val) : "memory");
+                        
+                        return; // Resume execution
+                    }
+                }
+            }
+        }
 
         // Check if it's a page fault in the kernel heap range
         // DISABLED auto-mapping to catch stack overflows and use-after-free

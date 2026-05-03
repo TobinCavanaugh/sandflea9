@@ -19,6 +19,7 @@ typedef struct kern_process {
     u64 cr3; // Physical address of PML4
     u64 heap_vptr; // Current virtual address for next allocation
     kern_mem_region_t *mem_regions; // List of all allocated regions
+    i32 thread_count;
     // Future: WASM context, file descriptors, etc.
 } kern_process_t;
 
@@ -26,6 +27,7 @@ typedef struct kern_task {
     u64 rsp; // MUST BE FIRST
     i32 tid;
     i32 state; // 0 ready, 1 running, 2 blocked, 3 dead
+    u0 *stack_base;
     kern_process_t *process;
     struct kern_task * next;
 } kern_task_t;
@@ -47,6 +49,8 @@ u0 process_exit(kern_process_t *proc);
 
 kern_task_t * sched_get_current_task();
 kern_process_t * sched_get_current_process();
+kern_task_t * sched_get_task_list_head();
+kern_process_t * sched_get_kernel_process();
 
 u0* pmalloc(u64 size);
 u0 pfree(void *ptr);

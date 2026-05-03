@@ -1,34 +1,6 @@
---- Compiling WASM ---
---- Compiling ---
---- Processing Font ---
---- Linking ---
---- Creating Test Filesystem ---
-Creating filesystem with 8192 4k blocks and 8192 inodes
-
-Allocating group tables: 0/1   done                            
-Writing inode tables: 0/1   done                            
-Writing superblocks and filesystem accounting information: 0/1   done
-
-debugfs:  write src/blob/testfile.txt testfile.txt
-Allocated inode: 12
-debugfs:  write src/blob/a.txt a.txt
-Allocated inode: 13
-debugfs:  write src/blob/b.txt b.txt
-Allocated inode: 14
-debugfs:  write src/blob/c.txt c.txt
-Allocated inode: 15
-debugfs:  write src/blob/test.wasm test.wasm
-Allocated inode: 16
-debugfs:  mkdir folder
-debugfs:  write src/blob/c.txt folder/a.txt
-Allocated inode: 18
-debugfs:  --- Packaging UEFI ISO ---
---- Done ---
-Running with qemu (Optimized with IDE Drive)
---- Running ---
-[2J[01;01H[=3h[2J[01;01H[2J[01;01H[8;056;240t0[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[8;042;160t0[2J[01;01H[2J[01;01H[8;050;080t0[2J[01;01HBdsDxe: loading Boot0002 "UEFI QEMU DVD-ROM QM00003 " from PciRoot(0x0)/Pci(0x1,0x1)/Ata(Secondary,Master,0x0)
+BdsDxe: loading Boot0002 "UEFI QEMU DVD-ROM QM00003 " from PciRoot(0x0)/Pci(0x1,0x1)/Ata(Secondary,Master,0x0)
 BdsDxe: starting Boot0002 "UEFI QEMU DVD-ROM QM00003 " from PciRoot(0x0)/Pci(0x1,0x1)/Ata(Secondary,Master,0x0)
-[2J[01;01H[01;01H[2J[01;01H[01;01H--- sandfleaOS Kernel Entry ---
+--- sandfleaOS Kernel Entry ---
 Serial initialized: COM1 ready
 CPU: SSE extensions enabled
 VMM: Virtual Memory Management initialized
@@ -66,11 +38,11 @@ Threads: Heartbeat threads spawned
 VMM: Expanding heap from FFFFFFFF8846B000 to FFFFFFFF8848C000 (needed 20020)
 WASM: Loading test.wasm
 WASM: Initializing environment...
-m3_NewEnvironment: ffffffff800237a0
+m3_NewEnvironment: ffffffff80023ba0
 WASM: Initializing runtime...
-m3_NewRuntime: ffffffff80023b90
+m3_NewRuntime: ffffffff80023f90
 WASM: Parsing module...
-m3_ParseModule: ffffffff80028cf0
+m3_ParseModule: ffffffff800290f0
     parse  |  load module: 41 bytes
     parse  |  load module: 41 bytes
     parse  |   parsing section: 1; length: 7
@@ -81,11 +53,343 @@ m3_ParseModule: ffffffff80028cf0
    module  |     added function:   0; sig: 0
     parse  |   parsing section: 7; length: 7
     parse  |  ** Export [1]
+    parse  |      index:   0; kind: 0; export: 'add';
+    parse  |   parsing section: 10; length: 9
+    parse  |  ** Code [1]
+m3_LoadModule: ffffffff80025cb0
+WASM: Linking LibC...
+m3_LinkLibC: ffffffff80010b80
+m3_FindFunction: ffffffff800261c0
+   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
+Reaping process PID 1
+[[wasm]]
+VMM: Expanding heap from FFFFFFFF8848C000 to FFFFFFFF884AD000 (needed 20020)
+WASM: Loading test.wasm
+WASM: Initializing environment...
+m3_NewEnvironment: ffffffff80023ba0
+WASM: Initializing runtime...
+m3_NewRuntime: ffffffff80023f90
+WASM: Parsing module...
+m3_ParseModule: ffffffff800290f0
+Reaping process PID 536872705
+    parse  |  load module: 41 bytes
+    parse  |  load module: 41 bytes
+    parse  |   parsing section: 1; length: 7
+    parse  |  ** Type [1]
+    parse  |      type  0: (i32, i32) -> i32
+    parse  |   parsing section: 3; length: 2
+    parse  |  ** Function [1]
+   module  |     added function:   0; sig: 0
+    parse  |   parsing section: 7; length: 7
+    parse  |  ** Export [1]
+    parse  |      index:   0; kind: 0; export: 'add';
+    parse  |   parsing section: 10; length: 9
+    parse  |  ** Code [1]
+m3_LoadModule: ffffffff80025cb0
+WASM: Linking LibC...
+m3_LinkLibC: ffffffff80010b80
+m3_FindFunction: ffffffff800261c0
+   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
+Reaping process PID 2
+Reaping process PID 2
+[[wasm]]
+WASM: Loading test.wasm
+WASM: Initializing environment...
+m3_NewEnvironment: ffffffff80023ba0
+WASM: Initializing runtime...
+m3_NewRuntime: ffffffff80023f90
+WASM: Parsing module...
+m3_ParseModule: ffffffff800290f0
+    parse  |  load module: 41 bytes
+    parse  |  load module: 41 bytes
+    parse  |   parsing section: 1; length: 7
+    parse  |  ** Type [1]
+    parse  |      type  0: (i32, i32) -> i32
+    parse  |   parsing section: 3; length: 2
+    parse  |  ** Function [1]
+   module  |     added function:   0; sig: 0
+    parse  |   parsing section: 7; length: 7
+    parse  |  ** Export [1]
+    parse  |      index:   0; kind: 0; export: 'add';
+    parse  |   parsing section: 10; length: 9
+    parse  |  ** Code [1]
+m3_LoadModule: ffffffff80025cb0
+WASM: Linking LibC...
+m3_LinkLibC: ffffffff80010b80
+m3_FindFunction: ffffffff800261c0
+   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
+Reaping process PID 3
+Reaping process PID 3
+[[wasm]]
+WASM: Loading test.wasm
+WASM: Initializing environment...
+m3_NewEnvironment: ffffffff80023ba0
+WASM: Initializing runtime...
+m3_NewRuntime: ffffffff80023f90
+WASM: Parsing module...
+m3_ParseModule: ffffffff800290f0
+    parse  |  load module: 41 bytes
+    parse  |  load module: 41 bytes
+    parse  |   parsing section: 1; length: 7
+    parse  |  ** Type [1]
+    parse  |      type  0: (i32, i32) -> i32
+    parse  |   parsing section: 3; length: 2
+    parse  |  ** Function [1]
+[[wasm]]
+   module  |     added function:   0; sig: 0
+    parse  |   parsing section: 7; length: 7
+    parse  |  ** Export [1]
+    parse  |      index:   0; kind: 0; export: 'add';
+    parse  |   parsing section: 10; length: 9
+    parse  |  ** Code [1]
+m3_LoadModule: ffffffff80025cb0
+WASM: Loading test.wasm
+WASM: Linking LibC...
+m3_LinkLibC: ffffffff80010b80
+m3_FindFunction: ffffffff800261c0
+   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
+Reaping process PID 4
+Reaping process PID 4
+WASM: Initializing environment...
+m3_NewEnvironment: ffffffff80023ba0
+WASM: Initializing runtime...
+m3_NewRuntime: ffffffff80023f90
+WASM: Parsing module...
+m3_ParseModule: ffffffff800290f0
+    parse  |  load module: 41 bytes
+    parse  |  load module: 41 bytes
+    parse  |   parsing section: 1; length: 7
+    parse  |  ** Type [1]
+    parse  |      type  0: (i32, i32) -> i32
+    parse  |   parsing section: 3; length: 2
+    parse  |  ** Function [1]
+   module  |     added function:   0; sig: 0
+ [[wasm]]
+WASM: Loading test.wasm
+   parse  |   parsing section: 7; length: 7
+    parse  |  ** Export [1]
+    parse  |      index:   0; kind: 0; export: 'add';
+    parse  |   parsing section: 10; length: 9
+    parse  |  ** Code [1]
+m3_LoadModule: ffffffff80025cb0
+WASM: Linking LibC...
+m3_LinkLibC: ffffffff80010b80
+m3_FindFunction: ffffffff800261c0
+   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
+Reaping process PID 5
+WASM: Initializing environment...
+m3_NewEnvironment: ffffffff80023ba0
+WASM: Initializing runtime...
+m3_NewRuntime: ffffffff80023f90
+Reaping process PID 5
+WASM: Parsing module...
+m3_ParseModule: ffffffff800290f0
+    parse  |  load module: 41 bytes
+    parse  |  load module: 41 bytes
+    parse  |   parsing section: 1; length: 7
+    parse  |  ** Type [1]
+    parse  |      type  0: (i32, i32) -> i32
+    parse  |   parsing section: 3; length: 2
+    parse  |  ** Function [1]
+   module  |     added function:   0; sig: 0
+    parse  |   parsing section: 7; length: 7
+ [[awsm]]
+Failure to parse command: awsm
+   parse  |  ** Export [1]
+    parse  |      index:   0; kind: 0; export: 'add';
+    parse  |   parsing section: 10; length: 9
+    parse  |  ** Code [1]
+m3_LoadModule: ffffffff80025cb0
+WASM: Linking LibC...
+m3_LinkLibC: ffffffff80010b80
+m3_FindFunction: ffffffff800261c0
+   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
+Reaping process PID 6
+Reaping process PID 6
+[[awsm]]
+Failure to parse command: awsm
+[[awsm]]
+Failure to parse command: awsm
+[[awsm]]
+Failure to parse command: awsm
+[[wasm]]
+WASM: Loading test.wasm
+WASM: Initializing environment...
+m3_NewEnvironment: ffffffff80023ba0
+WASM: Initializing runtime...
+m3_NewRuntime: ffffffff80023f90
+WASM: Parsing module...
+m3_ParseModule: ffffffff800290f0
+    parse  |  load module: 41 bytes
+    parse  |  load module: 41 bytes
+    parse  |   parsing section: 1; length: 7
+    parse  |  ** Type [1]
+    parse  |      type  0: (i32, i32) -> i32
+    parse  |   parsing section: 3; length: 2
+    parse  |  ** Function [1]
+   module  |     added function:   0; sig: 0
+    parse  |   parsing section: 7; length: 7
+    parse  |  ** Export [1]
+    parse  |      index:   0; kind: 0; export: 'add';
+    parse  |   parsing section: 10; length: 9
+    parse  |  ** Code [1]
+m3_LoadModule: ffffffff80025cb0
+WASM: Linking LibC...
+m3_LinkLibC: ffffffff80010b80
+m3_FindFunction: ffffffff800261c0
+[[awsm]]
+Failure to parse command: awsm
+Assertion failed at src/kernel/wasm3-0.5.0/source/m3_compile.c:371 : o->m3Slots [maxSlot] == 0
+ABORT CALLED
+[[wasm]]
+VMM: Expanding heap from FFFFFFFF884AD000 to FFFFFFFF884CE000 (needed 20020)
+WASM: Loading test.wasm
+WASM: Initializing environment...
+m3_NewEnvironment: ffffffff80023ba0
+WASM: Initializing runtime...
+m3_NewRuntime: ffffffff80023f90
+WASM: Parsing module...
+m3_ParseModule: ffffffff800290f0
+    parse  |  load module: 41 bytes
+    parse  |  load module: 41 bytes
+    parse  |   parsing section: 1; length: 7
+    parse  |  ** Type [1]
+    parse  |      type  0: (i32, i32) -> i32
+    parse  |   parsing section: 3; length: 2
+    parse  |  ** Function [1]
+   module  |     added function:   0; sig: 0
+    parse  |   parsing section: 7; length: 7
+    parse  |  ** Export [1]
+    parse  |      index:   0; kind: 0; export: 'add';
+    parse  |   parsing section: 10; length: 9
+    parse  |  ** Code [1]
+m3_LoadModule: ffffffff80025cb0
+WASM: Linking LibC...
+m3_LinkLibC: ffffffff80010b80
+m3_FindFunction: ffffffff800261c0
+   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
+Reaping process PID 8
+Reaping process PID 8
+[[wasm]]
+WASM: Loading test.wasm
+WASM: Initializing environment...
+m3_NewEnvironment: ffffffff80023ba0
+WASM: Initializing runtime...
+m3_NewRuntime: ffffffff80023f90
+WASM: Parsing module...
+m3_ParseModule: ffffffff800290f0
+    parse  |  load module: 41 bytes
+    parse  |  load module: 41 bytes
+    parse  |   parsing section: 1; length: 7
+    parse  |  ** Type [1]
+    parse  |      type  0: (i32, i32) -> i32
+    parse  |   parsing section: 3; length: 2
+    parse  |  ** Function [1]
+   module  |     added function:   0; sig: 0
+    parse  |   parsing section: 7; length: 7
+    parse  |  ** Export [1]
+ [[wasm]]
+VMM: Expanding heap from FFFFFFFF884CE000 to FFFFFFFF884EF000 (needed 20020)
+WASM: Loading test.wasm
+   parse  |      index:   0; kind: 0; export: 'add';
+    parse  |   parsing section: 10; length: 9
+    parse  |  ** Code [1]
+m3_LoadModule: ffffffff80025cb0
+WASM: Linking LibC...
+m3_LinkLibC: ffffffff80010b80
+m3_FindFunction: ffffffff800261c0
+   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
+Reaping process PID 9
+WASM: Initializing environment...
+m3_NewEnvironment: ffffffff80023ba0
+WASM: Initializing runtime...
+m3_NewRuntime: ffffffff80023f90
+WASM: Parsing module...
+m3_ParseModule: ffffffff800290f0
+Reaping process PID 0
+    parse  |  load module: 41 bytes
+    parse  |  load module: 41 bytes
+    parse  |   parsing section: 1; length: 7
+    parse  |  ** Type [1]
+    parse  |      type  0: (i32, i32) -> i32
+    parse  |   parsing section: 3; length: 2
+    parse  |  ** Function [1]
+   module  |     added function:   0; sig: 0
+    parse  |   parsing section: 7; length: 7
+    parse  |  ** Export [1]
+    parse  |      index:   0; kind: 0; export: 'add';
+    parse  |   parsing section: 10; length: 9
+    parse  |  ** Code [1]
+m3_LoadModule: ffffffff80025cb0
+WASM: Linking LibC...
+m3_LinkLibC: ffffffff80010b80
+m3_FindFunction: ffffffff800261c0
+   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
+[[proc]]
+Reaping process PID 10
+Reaping process PID 10
+[[wasm]]
+WASM: Loading test.wasm
+WASM: Initializing environment...
+m3_NewEnvironment: ffffffff80023ba0
+WASM: Initializing runtime...
+m3_NewRuntime: ffffffff80023f90
+WASM: Parsing module...
+m3_ParseModule: ffffffff800290f0
+    parse  |  load module: 41 bytes
+    parse  |  load module: 41 bytes
+    parse  |   parsing section: 1; length: 7
+    parse  |  ** Type [1]
+    parse  |      type  0: (i32, i32) -> i32
+ [[wasm]]
+WASM: Loading test.wasm
+   parse  |   parsing section: 3; length: 2
+    parse  |  ** Function [1]
+   module  |     added function:   0; sig: 0
+    parse  |   parsing section: 7; length: 7
+    parse  |  ** Export [1]
+    parse  |      index:   0; kind: 0; export: 'add';
+    parse  |   parsing section: 10; length: 9
+    parse  |  ** Code [1]
+m3_LoadModule: ffffffff80025cb0
+WASM: Linking LibC...
+m3_LinkLibC: ffffffff80010b80
+m3_FindFunction: ffffffff800261c0
+   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
+Reaping process PID 11
+WASM: Initializing environment...
+m3_NewEnvironment: ffffffff80023ba0
+WASM: Initializing runtime...
+m3_NewRuntime: ffffffff80023f90
+WASM: Parsing module...
+m3_ParseModule: ffffffff800290f0
+    parse  |  load module: 41 bytes
+    parse  |  load module: 41 bytes
+    parse  |   parsing section: 1; length: 7
+    parse  |  ** Type [1]
+    parse  |      type  0: (i32, i32) -> i32
+ Reaping process PID 0
+   parse  |   parsing section: 3; length: 2
+    parse  |  ** Function [1]
+   module  |     added function:   0; sig: 0
+    parse  |   parsing section: 7; length: 7
+    parse  |  ** Export [1]
+    parse  |      index:   0; kind: 0; export: 'add';
+    parse  |   parsing section: 10; length: 9
+    parse  |  ** Code [1]
+m3_LoadModule: ffffffff80025cb0
+WASM: Linking LibC...
+m3_LinkLibC: ffffffff80010b80
+m3_FindFunction: ffffffff800261c0
+   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
+   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
+[[wasm]]
+WASM: Loading test.wasm
 
-!!! PAGE FAULT at FFFFFFFF8848C000 (Access: Not present, Write) !!!
+!!! PAGE FAULT at 16D736100 (Access: Not present, Read) !!!
 
 !!! EXCEPTION: Page Fault !!!
-  INT: 14 | ERR: 2
-  RIP: FFFFFFFF80003173 | CR2: FFFFFFFF8848C000
-  RAX: FFFFFFFF88035138 | RBX: 0 | RCX: FFFFFFFF8848BFF8 | RDX: FFFFFFFB
-  RSP: FFFFFFFF8848AE60 | RBP: FFFFFFFF88035130
+  INT: 14 | ERR: 0
+  RIP: FFFFFFFF80023D13 | CR2: 16D736100
+  RAX: FFFFFFFF88035300 | RBX: 16D736100 | RCX: FFFFFFFF884EA0E0 | RDX: 0
+  RSP: FFFFFFFF884EA050 | RBP: FFFFFFFF88028120

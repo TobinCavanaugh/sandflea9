@@ -63,7 +63,7 @@ u0 dotest(u0 *arg) {
 }
 
 u0 wasm_test(u0 *arg) {
-    const char* wasm_path = (const char*)arg;
+    const char *wasm_path = (const char *) arg;
     if (!wasm_path) wasm_path = "test.wasm";
 
     serial_outsf("WASM: Loading %s\n", wasm_path);
@@ -74,7 +74,7 @@ u0 wasm_test(u0 *arg) {
     }
 
     u32 size = fs_size(fd);
-    u8* wasm_data = kmalloc(size);
+    u8 *wasm_data = kmalloc(size);
     if (!wasm_data) {
         screen_push_line("WASM: Out of memory for WASM data");
         fs_close(fd);
@@ -140,7 +140,7 @@ u0 wasm_test(u0 *arg) {
         goto Label_Done;
     }
 
-    const char* args[] = { "10", "20", NULL };
+    const char *args[] = {"10", "20", NULL};
     result = m3_CallArgv(f, 2, args);
     if (result) {
         screen_push_linef("WASM: Call error: %s", result);
@@ -150,11 +150,13 @@ u0 wasm_test(u0 *arg) {
         screen_push_linef("WASM: add(10, 20) = %d", res);
     }
 
-Label_Done:
+    Label_Done:
     if (runtime) m3_FreeRuntime(runtime);
     if (env) m3_FreeEnvironment(env);
     if (wasm_data) kfree(wasm_data);
     if (arg) kfree(arg);
+
+    process_exit(sched_get_current_process());
 }
 
 u0 handle_command() {
@@ -169,17 +171,103 @@ u0 handle_command() {
     serial_outsf("[[%s]]\n", word->loc);
 
 
-    if (str_eql(word->loc, "wasm", word->len)) {
+    if (str_eql(word->loc, "proc", word->len)) {
+        kern_task_t *head = sched_get_task_list_head();
+        if (!head) {
+            screen_push_line("No tasks found.");
+            goto Label_Free;
+        }
+
+        screen_push_line("PROCESSES:");
+        screen_push_line("PID  CR3               HEAP_VPTR     MEM (KB)  THREADS");
+        screen_push_line("---  ---               ---------     ---       -------");
+
+        kern_task_t *curr = head;
+        kern_process_t *visited[64] = {0};
+        int visited_count = 0;
+
+        do {
+            kern_process_t *proc = curr->process;
+            if (proc) {
+                bool already_visited = false;
+                for (int i = 0; i < visited_count; i++) {
+                    if (visited[i] == proc) {
+                        already_visited = true;
+                        break;
+                    }
+                }
+
+                if (!already_visited && visited_count < 64) {
+                    visited[visited_count++] = proc;
+
+                    int thread_count = 0;
+                    kern_task_t *t_curr = head;
+                    do {
+                        if (t_curr->process == proc) thread_count++;
+                        t_curr = t_curr->next;
+                    } while (t_curr != head);
+
+                    u64 total_mem = 0;
+                    kern_mem_region_t *region = proc->mem_regions;
+                    while (region) {
+                        total_mem += region->page_count * PAGE_SIZE;
+                        region = region->next;
+                    }
+
+                    screen_push_linef("%-3d  %016llx  %012llx  %-8lld  %d",
+                                      proc->pid, proc->cr3, proc->heap_vptr, total_mem / 1024, thread_count);
+                }
+            }
+            curr = curr->next;
+        } while (curr != head);
+
+        screen_push_line("");
+
+        screen_push_line("THREADS:");
+        screen_push_line("TID  PID  STATE    RSP");
+        screen_push_line("---  ---  -----    ---");
+
+        curr = head;
+        do {
+            const char *state_str = "UNKNOWN";
+            switch (curr->state) {
+                case TASK_STATE_READY:
+                    state_str = "READY";
+                    break;
+                case TASK_STATE_RUNNING:
+                    state_str = "RUNNING";
+                    break;
+                case TASK_STATE_BLOCKED:
+                    state_str = "BLOCKED";
+                    break;
+                case TASK_STATE_DEAD:
+                    state_str = "DEAD";
+                    break;
+            }
+
+            screen_push_linef("%-3d  %-3d  %-7s  %016llx",
+                              curr->tid, curr->process ? curr->process->pid : -1, state_str, curr->rsp);
+
+            curr = curr->next;
+        } while (curr != head);
+
+        goto Label_Free;
+    }
+
+    if (str_eq2(word->loc, "wasm")) {
         char *path = null;
         if (word->next != null) {
             path = str_dup_len(word->next->loc, word->next->len, kmalloc);
         }
-        sched_create_thread(wasm_test, path);
+//        sched_create_thread(wasm_test, path);
+
+        kern_process_t *proc = process_create();
+        sched_create_process_thread(proc, wasm_test, path);
         goto Label_Free;
     }
 
 
-    if (str_eql(word->loc, "do", word->len)) {
+    if (str_eq2(word->loc, "do")) {
         i64 val = 5;
         if (word->next && word->next->val_type == CMD_WT_i64) {
             val = word->next->val_i64;
@@ -191,7 +279,7 @@ u0 handle_command() {
     }
 
 
-    if (str_eql(word->loc, "kmalloc", word->len)) {
+    if (str_eq2(word->loc, "kmalloc")) {
         u64 size = 0;
         serial_outs("Testing Kmalloc and page fault handling.\n");
         i64 inc = 0;
@@ -210,13 +298,13 @@ u0 handle_command() {
     }
 
 
-    if (str_eql(word->loc, "cls", word->len)) {
+    if (str_eq2(word->loc, "cls")) {
         typingbuf[0] = 0;
         screen_terminal_clear();
         goto Label_Free;
     }
 
-    if (str_eql(word->loc, "lsr", word->len)) {
+    if (str_eq2(word->loc, "lsr")) {
         char *path = null;
         if (word->next != null) {
             path = str_dup_len(word->next->loc, word->next->len, kmalloc);
@@ -227,7 +315,7 @@ u0 handle_command() {
     }
 
 
-    if (str_eql(word->loc, "open", word->len) && word->next != null) {
+    if (str_eq2(word->loc, "open") && word->next != null) {
         char *path = str_dup(word->next->loc, kmalloc);
         path[word->next->len] = 0;
 
@@ -255,7 +343,7 @@ u0 handle_command() {
         goto Label_Free;
     }
 
-    if (str_eql(word->loc, "ext2", word->len) && word->next != null) {
+    if (str_eq2(word->loc, "ext2") && word->next != null) {
         char *path = str_dup(word->next->loc, kmalloc);
         path[word->next->len] = 0;
 
@@ -286,7 +374,7 @@ u0 handle_command() {
         goto Label_Free;
     }
 
-    if (str_eql(word->loc, "cat", word->len) && word->next != null) {
+    if (str_eq2(word->loc, "cat") && word->next != null) {
         char *path = str_dup(word->next->loc, kmalloc);
         path[word->next->len] = 0;
 
@@ -313,7 +401,7 @@ u0 handle_command() {
         goto Label_Free;
     }
 
-    if (str_eql(word->loc, "kmalloc2", word->len)) {
+    if (str_eq2(word->loc, "kmalloc2")) {
         u64 sum = 0;
         serial_outs("Testing Kmalloc and freeing.\n");
         while (sum < system.total_mem_size * 4) {
@@ -329,7 +417,7 @@ u0 handle_command() {
     }
 
 
-    if (str_eql(word->loc, "pci", word->len)) {
+    if (str_eq2(word->loc, "pci")) {
         ssfn_dst.y = font_height * 2;
         ssfn_dst.x = 0;
         pci_device_t *dev = system.pci_list_head;

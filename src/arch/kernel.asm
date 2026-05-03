@@ -133,9 +133,9 @@ task_switch_asm:
     mov [rdi], rsp ; save current stack pointer
 
     ; CR3 Switch Logic
-    mov rax, [rdi + 16] ; RAX = current_task->process
-    mov rbx, [rsi + 16] ; RBX = next_task->process
-    
+    mov rax, [rdi + 24] ; RAX = current_task->process
+    mov rbx, [rsi + 24] ; RBX = next_task->process
+
     ; If process is the same, skip CR3 reload to avoid TLB flush
     cmp rax, rbx
     je .skip_cr3

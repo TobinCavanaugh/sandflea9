@@ -5,6 +5,7 @@
 #include "../include/kern_sched.h"
 
 #include "../include/kern_vmm.h"
+#include "../include/kern_asmstubs.h"
 
 extern u0 task_switch_asm(kern_task_t *current, kern_task_t *next);
 
@@ -20,11 +21,13 @@ u0 sched_init() {
     kernel_process->cr3 = read_cr3();
     kernel_process->heap_vptr = 0x1000000; // Arbitrary start for user-space heap
     kernel_process->mem_regions = null;
+    kernel_process->thread_count = 1;
 
     kern_task_t *root_task = kmalloc(sizeof(kern_task_t));
     root_task->tid = 0;
     root_task->state = TASK_STATE_RUNNING;
     root_task->process = kernel_process;
+    root_task->stack_base = null; // We don't know the root stack base easily
     root_task->next = root_task;
 
     current_task = root_task;
@@ -37,21 +40,6 @@ i32 process_id_c = 0;
 u0 sched_thread_exit() {
     current_task->state = TASK_STATE_DEAD;
     
-    // Check if this was the last thread in the process
-    bool other_threads = false;
-    kern_task_t *curr = current_task->next;
-    while (curr != current_task) {
-        if (curr->process == current_task->process && curr->state != TASK_STATE_DEAD) {
-            other_threads = true;
-            break;
-        }
-        curr = curr->next;
-    }
-
-    if (!other_threads) {
-        process_exit(current_task->process);
-    }
-
     while (1) {
         sched_yield();
     }
@@ -62,6 +50,7 @@ kern_process_t *process_create() {
     proc->pid = ++process_id_c;
     proc->heap_vptr = 0x1000000;
     proc->mem_regions = null;
+    proc->thread_count = 0;
 
     // Create a new PML4
     u64 pml4_phys = pmm_alloc_page();
@@ -79,6 +68,11 @@ kern_process_t *process_create() {
 
 u0 process_exit(kern_process_t *proc) {
     if (proc == kernel_process) return; // Never exit kernel process
+    if (proc->pid == -1) return; // Already reaped
+
+    serial_outsf("Reaping process PID %d (CR3: %llx)\n", proc->pid, proc->cr3);
+    i32 old_pid = proc->pid;
+    proc->pid = -1; // Mark as reaped immediately
 
     // Free all memory regions
     kern_mem_region_t *region = proc->mem_regions;
@@ -99,7 +93,8 @@ u0 process_exit(kern_process_t *proc) {
     }
 
     // TODO: Free PML4 structure (requires recursive walk)
-    // kfree(proc); 
+    kfree(proc); 
+    serial_outsf("Process PID %d resources freed\n", old_pid);
 }
 
 kern_task_t *sched_create_thread(u0 (*function)(u0 *), u0 *arg) {
@@ -110,6 +105,8 @@ kern_task_t *sched_create_thread(u0 (*function)(u0 *), u0 *arg) {
 
     u64 stack_size = 128 * 1024;
     u0 *stack_ptr_base = kmalloc(stack_size);
+    task->stack_base = stack_ptr_base;
+
     u64 stack_top = (u64) stack_ptr_base + stack_size;
     u64 *stack_ptr = (u64 *) stack_top;
 
@@ -129,6 +126,8 @@ kern_task_t *sched_create_thread(u0 (*function)(u0 *), u0 *arg) {
     task->rsp = (u64) stack_ptr;
 
     u64 irq = save_irq_and_disable();
+    task->process->thread_count++;
+    serial_outsf("Thread created: TID %d in PID %d (new count: %d)\n", task->tid, task->process->pid, task->process->thread_count);
     task->next = task_list_head->next;
     task_list_head->next = task;
     restore_irq(irq);
@@ -138,7 +137,16 @@ kern_task_t *sched_create_thread(u0 (*function)(u0 *), u0 *arg) {
 
 kern_task_t *sched_create_process_thread(kern_process_t *proc, u0 (*function)(u0 *), u0 *arg) {
     kern_task_t *task = sched_create_thread(function, arg);
+    
+    u64 irq = save_irq_and_disable();
+    // Correct the process assignment and thread counts
+    task->process->thread_count--; 
+    serial_outsf("Thread TID %d migration: PID %d count: %d\n", task->tid, task->process->pid, task->process->thread_count);
     task->process = proc;
+    task->process->thread_count++;
+    serial_outsf("Thread TID %d migration: PID %d count: %d\n", task->tid, task->process->pid, task->process->thread_count);
+    restore_irq(irq);
+    
     return task;
 }
 
@@ -151,30 +159,64 @@ kern_process_t *sched_get_current_process() {
     return current_task->process;
 }
 
-u0 sched_run_next() {
-    if (!current_task) return; // This would be bad lol
+kern_task_t *sched_get_task_list_head() {
+    return task_list_head;
+}
 
-    kern_task_t *last = current_task;
+kern_process_t *sched_get_kernel_process() {
+    return kernel_process;
+}
+
+u0 sched_run_next() {
+    if (!current_task) return;
+
+    u64 irq = save_irq_and_disable();
+    
+    // Prune DEAD tasks that are NOT the current one and NOT the root task
+    kern_task_t *prev = current_task;
     kern_task_t *next = current_task->next;
 
-    while (next->state > 1 && next != last) {
-        next = next->next;
+    while (next != current_task) {
+        if (next->state == TASK_STATE_DEAD && next->tid != 0) {
+            kern_task_t *dead_task = next;
+            prev->next = next->next;
+            
+            if (dead_task == task_list_head) {
+                task_list_head = prev;
+            }
+
+            dead_task->process->thread_count--;
+            if (dead_task->process->thread_count == 0) {
+                process_exit(dead_task->process);
+            }
+
+            if (dead_task->stack_base) {
+                kfree(dead_task->stack_base);
+            }
+
+            next = prev->next;
+            kfree(dead_task);
+        } else if (next->state > 1) {
+            // Skip BLOCKED tasks (or DEAD ones we can't reap yet)
+            prev = next;
+            next = next->next;
+        } else {
+            // Found a READY or RUNNING task
+            break;
+        }
     }
 
     current_task = next;
 
-    if (last == current_task) return;
-    task_switch_asm(last, current_task);
+    if (prev == current_task) {
+        restore_irq(irq);
+        return;
+    }
+
+    task_switch_asm(prev, current_task);
+    restore_irq(irq);
 }
 
 u0 sched_yield() {
-    kern_task_t *last = current_task;
-    kern_task_t *next = current_task->next;
-
-    while (next->state > 1 && next != last) {
-        next = next->next;
-    }
-
-    current_task = next;
-    task_switch_asm(last, current_task);
+    sched_run_next();
 }
