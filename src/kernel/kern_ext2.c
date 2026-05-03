@@ -12,17 +12,6 @@
 #define EXT2_DEBUG 0  
 #define DEBUG_LOG(expr) do { if (EXT2_DEBUG) { expr; } } while (0)
 
-u8 name_equals(char *name, char *entry_name, u8 entry_len) {
-    i32 name_len = str_len(name);
-    if (name_len != entry_len) return 0;
-
-    for (i32 i = 0; i < name_len; i++) {
-        if (name[i] != entry_name[i]) return 0;
-    }
-
-    return 1;
-}
-
 ext2_superblock_t sb_static;
 ext2_superblock_t *sb_ptr = &sb_static;
 u32 block_size = 0;
@@ -94,8 +83,9 @@ static u32 ext2_find_child(ext2_inode_t *dir_inode, const char *name) {
         u32 cur_offset = 0;
         while (cur_offset < block_size) {
             ext2_dir_entry_t *entry = (ext2_dir_entry_t *) (dir_data + cur_offset);
-            if (entry->rec_len < 8) break; 
-            if (entry->inode != 0 && name_equals((char *) name, entry->name, entry->name_len)) {
+            if (entry->rec_len < 8) break;
+
+            if (entry->inode != 0 && str_eql((char *) name, entry->name, entry->name_len)) {
                 u32 result = entry->inode;
                 kfree(dir_data);
                 return result;
@@ -149,7 +139,6 @@ ext2_inode_t *ext2_find_path(const char *path, u32 *out_inode_no) {
     return ext2_get_inode(current_inode_no, current_inode);
 }
 
-// ... existing find_file_in_root ...
 
 u0 ext2_explorer_init(ext2_explorer_t *explorer, u32 start_inode) {
     explorer->stack_ptr = 0;

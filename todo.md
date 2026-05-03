@@ -7,7 +7,9 @@
 - Need to be able to execute ELFs, WASM is good for now
 
 ### Multicore
+- MADT / ACPI parsing
 - Multicore support / HW threads
+- give each process an affinity, if multicore give core 0 kernel stuff, mux other threads to processes
 
 ### FS
 - EXT2 Needs indirect inode support 
@@ -20,4 +22,5 @@
 ### IPC
 - Needs research
 
-
+### WM 
+- Should probably be a wasm process, idk. If perf sucks, switch it to C native
