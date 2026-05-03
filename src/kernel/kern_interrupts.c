@@ -149,7 +149,8 @@ u0 kern_interrupt_handler(const registers_t *t) {
         asm volatile("mov %%cr2, %0" : "=r"(cr2_val));
 
         // Lazy sync for kernel mappings (higher half)
-        if (cr2_val >= 0xFFFF800000000000) {
+        // Skip APIC/IOAPIC range (mapped specifically in each process's PML4 during init)
+        if (cr2_val >= 0xFFFF800000000000 && (cr2_val < 0xFFFFFFFF10000000 || cr2_val >= 0xFFFFFFFF10002000)) {
             kern_process_t *kp = sched_get_kernel_process();
             if (kp) {
                 u64 current_cr3 = read_cr3();

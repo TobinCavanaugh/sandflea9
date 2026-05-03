@@ -18,11 +18,14 @@ u8 str_eq(const char *a, const char *b);
 
 u8 str_eql(const char *a, const char *b, u32 len);
 
-u8 str_eq2(const char *a, const char *b);
+u8 str_eqlb(const char *a, const char *b);
+
+u8 str_eqla(const char *a, const char *b);
 
 u8 str_sw(const char *a, const char *b);
 
 char *str_dup(const char *a, void *(*Alloc_Func)(u64));
+
 char *str_dup_len(const char *a, u32 len, void *(*Alloc_Func)(u64));
 
 i64 sn_to_i64(const char *str, u32 max_len, u8 base);

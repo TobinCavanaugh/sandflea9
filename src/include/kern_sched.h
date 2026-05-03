@@ -6,6 +6,7 @@
 #define KERN_SCHED_H
 
 #include "dialect.h"
+#include "kern_fs.h"
 
 typedef struct kern_mem_region {
     u64 phys;
@@ -18,9 +19,10 @@ typedef struct kern_process {
     i32 pid;
     u64 cr3; // Physical address of PML4
     u64 heap_vptr; // Current virtual address for next allocation
-    kern_mem_region_t *mem_regions; // List of all allocated regions
+    struct kern_mem_region *mem_regions; // List of all allocated regions
     i32 thread_count;
-    // Future: WASM context, file descriptors, etc.
+    file_handle_t *fd_table[128]; // MAX_FILE_HANDLES
+    // Future: WASM context, etc.
 } kern_process_t;
 
 typedef struct kern_task {

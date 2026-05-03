@@ -301,7 +301,9 @@ u0 *kmalloc(u64 size) {
 
         while (curr != null) {
             if (curr->is_free && curr->size >= aligned_size) {
-                if (curr->size > aligned_size + sizeof(heap_header_t) + 16) {
+                // Ensure we have enough room for a header (32 bytes) and some data (16 bytes)
+                u64 total_needed = aligned_size + sizeof(heap_header_t) + 16;
+                if (curr->size >= total_needed) {
                     heap_header_t *new_block = (heap_header_t *) ((u64) curr + sizeof(heap_header_t) + aligned_size);
                     new_block->is_free = 1;
                     new_block->size = curr->size - aligned_size - sizeof(heap_header_t);

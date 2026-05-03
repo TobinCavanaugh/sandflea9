@@ -6,6 +6,10 @@
 
 #include "../include/kern_vmm.h"
 #include "../include/kern_asmstubs.h"
+#include "../include/kern_serial.h"
+#include "../include/kern_fs.h"
+
+extern u0 task_switch_asm(kern_task_t *current, kern_task_t *next);
 
 extern u0 task_switch_asm(kern_task_t *current, kern_task_t *next);
 
@@ -22,6 +26,7 @@ u0 sched_init() {
     kernel_process->heap_vptr = 0x1000000; // Arbitrary start for user-space heap
     kernel_process->mem_regions = null;
     kernel_process->thread_count = 1;
+    for (int i = 0; i < MAX_FILE_HANDLES; i++) kernel_process->fd_table[i] = null;
 
     kern_task_t *root_task = kmalloc(sizeof(kern_task_t));
     root_task->tid = 0;
@@ -51,6 +56,7 @@ kern_process_t *process_create() {
     proc->heap_vptr = 0x1000000;
     proc->mem_regions = null;
     proc->thread_count = 0;
+    for (int i = 0; i < MAX_FILE_HANDLES; i++) proc->fd_table[i] = null;
 
     // Create a new PML4
     u64 pml4_phys = pmm_alloc_page();
@@ -73,6 +79,18 @@ u0 process_exit(kern_process_t *proc) {
     serial_outsf("Reaping process PID %d (CR3: %llx)\n", proc->pid, proc->cr3);
     i32 old_pid = proc->pid;
     proc->pid = -1; // Mark as reaped immediately
+
+    // Close all open files
+    for (int i = 0; i < MAX_FILE_HANDLES; i++) {
+        if (proc->fd_table[i]) {
+            // We need a way to close this without relying on 'current_task'
+            // For now, let's just free the handle memory if fs_close is too tied to current_task
+            // Better: modify fs_close to be more flexible.
+            // For now, let's just use kfree if it was kmalloc'd in fs_open.
+            kfree(proc->fd_table[i]);
+            proc->fd_table[i] = null;
+        }
+    }
 
     // Free all memory regions
     kern_mem_region_t *region = proc->mem_regions;

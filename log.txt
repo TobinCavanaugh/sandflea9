@@ -28,368 +28,65 @@ FS: IDE Initialized
 EXT2: Valid filesystem detected via IDE.
 EXT2: Block size 4096 bytes, BGDT cached.
 FS: Ext2 driver initialized
-FS: POSIX-like handle system initialized
+FS: Per-process handle system ready
 FS: FS initialized
+Thread created: TID 1 in PID 0 (new count: 2)
 VMM: Expanding heap from FFFFFFFF88429000 to FFFFFFFF8844A000 (needed 20020)
+Thread created: TID 2 in PID 0 (new count: 3)
 VMM: Expanding heap from FFFFFFFF8844A000 to FFFFFFFF8846B000 (needed 20020)
+Thread created: TID 3 in PID 0 (new count: 4)
 Threads: Heartbeat threads spawned
 --- Initialization Complete. Entering Main Loop ---
-[[wasm]]
+[[ext2 testfile.txt]]
+vvv
+Laborumratione ipsam sed modi id odio. Culpaut quas, nihil illo, sit elit. Quasidicta odio ipsam quas autem quo! Quisit, culpa vel, ut tempore, neque. Quisnihil quam dolor, ea lorem illo. Laborumnisi facilis ut tempora hic iusto! Quisid eveniet natus id, nihil rem. Adnesciunt, sunt ullam, elit qui animi. Sitelit qui ratione, nihil sed in! Sitquis, totam sint libero sed nisi. Laborumanimi sit velit cumque ipsum minima! Temporaharum eveniet, quis eveniet quis, dolor. Quisculpa quam culpa, sint eveniet amet.
+^^^[[wasm file_test.wasm]]
 VMM: Expanding heap from FFFFFFFF8846B000 to FFFFFFFF8848C000 (needed 20020)
-WASM: Loading test.wasm
+Thread created: TID 4 in PID 0 (new count: 5)
+Thread TID 4 migration: PID 0 count: 4
+Thread TID 4 migration: PID 1 count: 1
+WASM: Loading file_test.wasm
 WASM: Initializing environment...
-m3_NewEnvironment: ffffffff80023ba0
+m3_NewEnvironment: ffffffff80023e10
 WASM: Initializing runtime...
-m3_NewRuntime: ffffffff80023f90
+m3_NewRuntime: ffffffff80024200
 WASM: Parsing module...
-m3_ParseModule: ffffffff800290f0
-    parse  |  load module: 41 bytes
-    parse  |  load module: 41 bytes
-    parse  |   parsing section: 1; length: 7
-    parse  |  ** Type [1]
-    parse  |      type  0: (i32, i32) -> i32
+m3_ParseModule: ffffffff80029360
+    parse  |  load module: 179 bytes
+    parse  |  load module: 179 bytes
+    parse  |   parsing section: 1; length: 17
+    parse  |  ** Type [3]
+    parse  |      type  0: (i32) -> i32
+    parse  |      type  1: (i32, i32, i32) -> i32
+    parse  |      type  2: () -> i32
+    parse  |   parsing section: 2; length: 47
+    parse  |  ** Import [3]
+    parse  |      kind: 0 'env.sys_open'
+   module  |     added function:   0; sig: 0
+    parse  |      kind: 0 'env.sys_read'
+   module  |     added function:   1; sig: 1
+    parse  |      kind: 0 'env.sys_close'
+   module  |     added function:   2; sig: 0
     parse  |   parsing section: 3; length: 2
     parse  |  ** Function [1]
-   module  |     added function:   0; sig: 0
-    parse  |   parsing section: 7; length: 7
+   module  |     added function:   3; sig: 2
+    parse  |   parsing section: 5; length: 3
+    parse  |  ** Memory [1]
+    parse  |   parsing section: 7; length: 9
     parse  |  ** Export [1]
-    parse  |      index:   0; kind: 0; export: 'add';
-    parse  |   parsing section: 10; length: 9
+    parse  |      index:   3; kind: 0; export: 'entry';
+    parse  |   parsing section: 10; length: 66
     parse  |  ** Code [1]
-m3_LoadModule: ffffffff80025cb0
-WASM: Linking LibC...
-m3_LinkLibC: ffffffff80010b80
-m3_FindFunction: ffffffff800261c0
-   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
-Reaping process PID 1
-[[wasm]]
-VMM: Expanding heap from FFFFFFFF8848C000 to FFFFFFFF884AD000 (needed 20020)
-WASM: Loading test.wasm
-WASM: Initializing environment...
-m3_NewEnvironment: ffffffff80023ba0
-WASM: Initializing runtime...
-m3_NewRuntime: ffffffff80023f90
-WASM: Parsing module...
-m3_ParseModule: ffffffff800290f0
-Reaping process PID 536872705
-    parse  |  load module: 41 bytes
-    parse  |  load module: 41 bytes
-    parse  |   parsing section: 1; length: 7
-    parse  |  ** Type [1]
-    parse  |      type  0: (i32, i32) -> i32
-    parse  |   parsing section: 3; length: 2
-    parse  |  ** Function [1]
-   module  |     added function:   0; sig: 0
-    parse  |   parsing section: 7; length: 7
-    parse  |  ** Export [1]
-    parse  |      index:   0; kind: 0; export: 'add';
-    parse  |   parsing section: 10; length: 9
-    parse  |  ** Code [1]
-m3_LoadModule: ffffffff80025cb0
-WASM: Linking LibC...
-m3_LinkLibC: ffffffff80010b80
-m3_FindFunction: ffffffff800261c0
-   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
-Reaping process PID 2
-Reaping process PID 2
-[[wasm]]
-WASM: Loading test.wasm
-WASM: Initializing environment...
-m3_NewEnvironment: ffffffff80023ba0
-WASM: Initializing runtime...
-m3_NewRuntime: ffffffff80023f90
-WASM: Parsing module...
-m3_ParseModule: ffffffff800290f0
-    parse  |  load module: 41 bytes
-    parse  |  load module: 41 bytes
-    parse  |   parsing section: 1; length: 7
-    parse  |  ** Type [1]
-    parse  |      type  0: (i32, i32) -> i32
-    parse  |   parsing section: 3; length: 2
-    parse  |  ** Function [1]
-   module  |     added function:   0; sig: 0
-    parse  |   parsing section: 7; length: 7
-    parse  |  ** Export [1]
-    parse  |      index:   0; kind: 0; export: 'add';
-    parse  |   parsing section: 10; length: 9
-    parse  |  ** Code [1]
-m3_LoadModule: ffffffff80025cb0
-WASM: Linking LibC...
-m3_LinkLibC: ffffffff80010b80
-m3_FindFunction: ffffffff800261c0
-   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
-Reaping process PID 3
-Reaping process PID 3
-[[wasm]]
-WASM: Loading test.wasm
-WASM: Initializing environment...
-m3_NewEnvironment: ffffffff80023ba0
-WASM: Initializing runtime...
-m3_NewRuntime: ffffffff80023f90
-WASM: Parsing module...
-m3_ParseModule: ffffffff800290f0
-    parse  |  load module: 41 bytes
-    parse  |  load module: 41 bytes
-    parse  |   parsing section: 1; length: 7
-    parse  |  ** Type [1]
-    parse  |      type  0: (i32, i32) -> i32
-    parse  |   parsing section: 3; length: 2
-    parse  |  ** Function [1]
-[[wasm]]
-   module  |     added function:   0; sig: 0
-    parse  |   parsing section: 7; length: 7
-    parse  |  ** Export [1]
-    parse  |      index:   0; kind: 0; export: 'add';
-    parse  |   parsing section: 10; length: 9
-    parse  |  ** Code [1]
-m3_LoadModule: ffffffff80025cb0
-WASM: Loading test.wasm
-WASM: Linking LibC...
-m3_LinkLibC: ffffffff80010b80
-m3_FindFunction: ffffffff800261c0
-   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
-Reaping process PID 4
-Reaping process PID 4
-WASM: Initializing environment...
-m3_NewEnvironment: ffffffff80023ba0
-WASM: Initializing runtime...
-m3_NewRuntime: ffffffff80023f90
-WASM: Parsing module...
-m3_ParseModule: ffffffff800290f0
-    parse  |  load module: 41 bytes
-    parse  |  load module: 41 bytes
-    parse  |   parsing section: 1; length: 7
-    parse  |  ** Type [1]
-    parse  |      type  0: (i32, i32) -> i32
-    parse  |   parsing section: 3; length: 2
-    parse  |  ** Function [1]
-   module  |     added function:   0; sig: 0
- [[wasm]]
-WASM: Loading test.wasm
-   parse  |   parsing section: 7; length: 7
-    parse  |  ** Export [1]
-    parse  |      index:   0; kind: 0; export: 'add';
-    parse  |   parsing section: 10; length: 9
-    parse  |  ** Code [1]
-m3_LoadModule: ffffffff80025cb0
-WASM: Linking LibC...
-m3_LinkLibC: ffffffff80010b80
-m3_FindFunction: ffffffff800261c0
-   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
-Reaping process PID 5
-WASM: Initializing environment...
-m3_NewEnvironment: ffffffff80023ba0
-WASM: Initializing runtime...
-m3_NewRuntime: ffffffff80023f90
-Reaping process PID 5
-WASM: Parsing module...
-m3_ParseModule: ffffffff800290f0
-    parse  |  load module: 41 bytes
-    parse  |  load module: 41 bytes
-    parse  |   parsing section: 1; length: 7
-    parse  |  ** Type [1]
-    parse  |      type  0: (i32, i32) -> i32
-    parse  |   parsing section: 3; length: 2
-    parse  |  ** Function [1]
-   module  |     added function:   0; sig: 0
-    parse  |   parsing section: 7; length: 7
- [[awsm]]
-Failure to parse command: awsm
-   parse  |  ** Export [1]
-    parse  |      index:   0; kind: 0; export: 'add';
-    parse  |   parsing section: 10; length: 9
-    parse  |  ** Code [1]
-m3_LoadModule: ffffffff80025cb0
-WASM: Linking LibC...
-m3_LinkLibC: ffffffff80010b80
-m3_FindFunction: ffffffff800261c0
-   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
-Reaping process PID 6
-Reaping process PID 6
-[[awsm]]
-Failure to parse command: awsm
-[[awsm]]
-Failure to parse command: awsm
-[[awsm]]
-Failure to parse command: awsm
-[[wasm]]
-WASM: Loading test.wasm
-WASM: Initializing environment...
-m3_NewEnvironment: ffffffff80023ba0
-WASM: Initializing runtime...
-m3_NewRuntime: ffffffff80023f90
-WASM: Parsing module...
-m3_ParseModule: ffffffff800290f0
-    parse  |  load module: 41 bytes
-    parse  |  load module: 41 bytes
-    parse  |   parsing section: 1; length: 7
-    parse  |  ** Type [1]
-    parse  |      type  0: (i32, i32) -> i32
-    parse  |   parsing section: 3; length: 2
-    parse  |  ** Function [1]
-   module  |     added function:   0; sig: 0
-    parse  |   parsing section: 7; length: 7
-    parse  |  ** Export [1]
-    parse  |      index:   0; kind: 0; export: 'add';
-    parse  |   parsing section: 10; length: 9
-    parse  |  ** Code [1]
-m3_LoadModule: ffffffff80025cb0
-WASM: Linking LibC...
-m3_LinkLibC: ffffffff80010b80
-m3_FindFunction: ffffffff800261c0
-[[awsm]]
-Failure to parse command: awsm
-Assertion failed at src/kernel/wasm3-0.5.0/source/m3_compile.c:371 : o->m3Slots [maxSlot] == 0
-ABORT CALLED
-[[wasm]]
-VMM: Expanding heap from FFFFFFFF884AD000 to FFFFFFFF884CE000 (needed 20020)
-WASM: Loading test.wasm
-WASM: Initializing environment...
-m3_NewEnvironment: ffffffff80023ba0
-WASM: Initializing runtime...
-m3_NewRuntime: ffffffff80023f90
-WASM: Parsing module...
-m3_ParseModule: ffffffff800290f0
-    parse  |  load module: 41 bytes
-    parse  |  load module: 41 bytes
-    parse  |   parsing section: 1; length: 7
-    parse  |  ** Type [1]
-    parse  |      type  0: (i32, i32) -> i32
-    parse  |   parsing section: 3; length: 2
-    parse  |  ** Function [1]
-   module  |     added function:   0; sig: 0
-    parse  |   parsing section: 7; length: 7
-    parse  |  ** Export [1]
-    parse  |      index:   0; kind: 0; export: 'add';
-    parse  |   parsing section: 10; length: 9
-    parse  |  ** Code [1]
-m3_LoadModule: ffffffff80025cb0
-WASM: Linking LibC...
-m3_LinkLibC: ffffffff80010b80
-m3_FindFunction: ffffffff800261c0
-   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
-Reaping process PID 8
-Reaping process PID 8
-[[wasm]]
-WASM: Loading test.wasm
-WASM: Initializing environment...
-m3_NewEnvironment: ffffffff80023ba0
-WASM: Initializing runtime...
-m3_NewRuntime: ffffffff80023f90
-WASM: Parsing module...
-m3_ParseModule: ffffffff800290f0
-    parse  |  load module: 41 bytes
-    parse  |  load module: 41 bytes
-    parse  |   parsing section: 1; length: 7
-    parse  |  ** Type [1]
-    parse  |      type  0: (i32, i32) -> i32
-    parse  |   parsing section: 3; length: 2
-    parse  |  ** Function [1]
-   module  |     added function:   0; sig: 0
-    parse  |   parsing section: 7; length: 7
-    parse  |  ** Export [1]
- [[wasm]]
-VMM: Expanding heap from FFFFFFFF884CE000 to FFFFFFFF884EF000 (needed 20020)
-WASM: Loading test.wasm
-   parse  |      index:   0; kind: 0; export: 'add';
-    parse  |   parsing section: 10; length: 9
-    parse  |  ** Code [1]
-m3_LoadModule: ffffffff80025cb0
-WASM: Linking LibC...
-m3_LinkLibC: ffffffff80010b80
-m3_FindFunction: ffffffff800261c0
-   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
-Reaping process PID 9
-WASM: Initializing environment...
-m3_NewEnvironment: ffffffff80023ba0
-WASM: Initializing runtime...
-m3_NewRuntime: ffffffff80023f90
-WASM: Parsing module...
-m3_ParseModule: ffffffff800290f0
-Reaping process PID 0
-    parse  |  load module: 41 bytes
-    parse  |  load module: 41 bytes
-    parse  |   parsing section: 1; length: 7
-    parse  |  ** Type [1]
-    parse  |      type  0: (i32, i32) -> i32
-    parse  |   parsing section: 3; length: 2
-    parse  |  ** Function [1]
-   module  |     added function:   0; sig: 0
-    parse  |   parsing section: 7; length: 7
-    parse  |  ** Export [1]
-    parse  |      index:   0; kind: 0; export: 'add';
-    parse  |   parsing section: 10; length: 9
-    parse  |  ** Code [1]
-m3_LoadModule: ffffffff80025cb0
-WASM: Linking LibC...
-m3_LinkLibC: ffffffff80010b80
-m3_FindFunction: ffffffff800261c0
-   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
-[[proc]]
-Reaping process PID 10
-Reaping process PID 10
-[[wasm]]
-WASM: Loading test.wasm
-WASM: Initializing environment...
-m3_NewEnvironment: ffffffff80023ba0
-WASM: Initializing runtime...
-m3_NewRuntime: ffffffff80023f90
-WASM: Parsing module...
-m3_ParseModule: ffffffff800290f0
-    parse  |  load module: 41 bytes
-    parse  |  load module: 41 bytes
-    parse  |   parsing section: 1; length: 7
-    parse  |  ** Type [1]
-    parse  |      type  0: (i32, i32) -> i32
- [[wasm]]
-WASM: Loading test.wasm
-   parse  |   parsing section: 3; length: 2
-    parse  |  ** Function [1]
-   module  |     added function:   0; sig: 0
-    parse  |   parsing section: 7; length: 7
-    parse  |  ** Export [1]
-    parse  |      index:   0; kind: 0; export: 'add';
-    parse  |   parsing section: 10; length: 9
-    parse  |  ** Code [1]
-m3_LoadModule: ffffffff80025cb0
-WASM: Linking LibC...
-m3_LinkLibC: ffffffff80010b80
-m3_FindFunction: ffffffff800261c0
-   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
-Reaping process PID 11
-WASM: Initializing environment...
-m3_NewEnvironment: ffffffff80023ba0
-WASM: Initializing runtime...
-m3_NewRuntime: ffffffff80023f90
-WASM: Parsing module...
-m3_ParseModule: ffffffff800290f0
-    parse  |  load module: 41 bytes
-    parse  |  load module: 41 bytes
-    parse  |   parsing section: 1; length: 7
-    parse  |  ** Type [1]
-    parse  |      type  0: (i32, i32) -> i32
- Reaping process PID 0
-   parse  |   parsing section: 3; length: 2
-    parse  |  ** Function [1]
-   module  |     added function:   0; sig: 0
-    parse  |   parsing section: 7; length: 7
-    parse  |  ** Export [1]
-    parse  |      index:   0; kind: 0; export: 'add';
-    parse  |   parsing section: 10; length: 9
-    parse  |  ** Code [1]
-m3_LoadModule: ffffffff80025cb0
-WASM: Linking LibC...
-m3_LinkLibC: ffffffff80010b80
-m3_FindFunction: ffffffff800261c0
-   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
-   module  |  freeing module: .unnamed (funcs: 1; segments: 0)
-[[wasm]]
-WASM: Loading test.wasm
+    parse  |   parsing section: 11; length: 13
+    parse  |   parsing section: 11; length: 13
+    parse  |  ** Data [1]
+    parse  |      segment [0]  memory: 0;  expr-size: 4;  size: 6
+m3_LoadModule: ffffffff80025f20
 
-!!! PAGE FAULT at 16D736100 (Access: Not present, Read) !!!
+!!! PAGE FAULT at 310000004E0 (Access: Not present, Read) !!!
 
 !!! EXCEPTION: Page Fault !!!
   INT: 14 | ERR: 0
-  RIP: FFFFFFFF80023D13 | CR2: 16D736100
-  RAX: FFFFFFFF88035300 | RBX: 16D736100 | RCX: FFFFFFFF884EA0E0 | RDX: 0
-  RSP: FFFFFFFF884EA050 | RBP: FFFFFFFF88028120
+  RIP: FFFFFFFF80006ED4 | CR2: 310000004E0
+  RAX: 246 | RBX: 31000000500 | RCX: 0 | RDX: 0
+  RSP: FFFFFFFF8848AF50 | RBP: 518

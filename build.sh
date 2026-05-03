@@ -151,7 +151,8 @@ write src/blob/testfile.txt testfile.txt
 write src/blob/a.txt a.txt
 write src/blob/b.txt b.txt
 write src/blob/c.txt c.txt
-write src/blob/test.wasm test.wasm
+write src/blob/add_test.wasm add_test.wasm
+write src/blob/file_test.wasm file_test.wasm
 mkdir folder
 write src/blob/c.txt folder/a.txt
 EOF

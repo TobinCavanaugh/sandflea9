@@ -4,20 +4,16 @@
 #include "../include/kern_serial.h"
 #include "../util/util_str.h"
 #include "../include/kern_vmm.h"
-
-static file_handle_t fd_table[MAX_FILE_HANDLES];
+#include "../include/kern_sched.h"
 
 u0 fs_init() {
-    for (int i = 0; i < MAX_FILE_HANDLES; i++) {
-        fd_table[i].used = false;
-    }
-    serial_outsl("FS: POSIX-like handle system initialized");
+    serial_outsl("FS: Per-process handle system ready");
 }
 
-static i32 allocate_fd() {
+static i32 allocate_fd(kern_process_t *proc) {
+    if (!proc) return -1;
     for (i32 i = 0; i < MAX_FILE_HANDLES; i++) {
-        if (!fd_table[i].used) {
-            fd_table[i].used = true;
+        if (proc->fd_table[i] == null) {
             return i;
         }
     }
@@ -25,27 +21,39 @@ static i32 allocate_fd() {
 }
 
 i32 fs_open(const char *path) {
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc) return -1;
+
     u32 inode_no = 0;
     ext2_inode_t *inode_ptr = ext2_find_path(path, &inode_no);
     if (!inode_ptr) return -1;
 
-    i32 fd = allocate_fd();
+    i32 fd = allocate_fd(proc);
     if (fd == -1) {
         kfree(inode_ptr);
         return -1;
     }
 
-    fd_table[fd].inode_no = inode_no;
-    mem_copy((u8*)&fd_table[fd].inode, (u8*)inode_ptr, sizeof(ext2_inode_t));
-    fd_table[fd].pos = 0;
+    file_handle_t *h = kmalloc(sizeof(file_handle_t));
+    h->inode_no = inode_no;
+    mem_copy((u8*)&h->inode, (u8*)inode_ptr, sizeof(ext2_inode_t));
+    h->pos = 0;
+    h->used = true; // Still keep 'used' for internal checks if needed
+    
+    proc->fd_table[fd] = h;
     
     kfree(inode_ptr);
     return fd;
 }
 
 i32 fs_close(i32 fd) {
-    if (fd < 0 || fd >= MAX_FILE_HANDLES || !fd_table[fd].used) return -1;
-    fd_table[fd].used = false;
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc) return -1;
+
+    if (fd < 0 || fd >= MAX_FILE_HANDLES || proc->fd_table[fd] == null) return -1;
+    
+    kfree(proc->fd_table[fd]);
+    proc->fd_table[fd] = null;
     return 0;
 }
 
@@ -57,14 +65,16 @@ static u32 get_bmap(ext2_inode_t *inode, u32 logical_block) {
     }
     
     // TODO: Implement indirect, double indirect, and triple indirect blocks
-    // For now, only support direct blocks (first 12KB with 1KB blocks)
     return 0; 
 }
 
 i32 fs_read(i32 fd, u8 *buf, u32 count) {
-    if (fd < 0 || fd >= MAX_FILE_HANDLES || !fd_table[fd].used || !buf) return -1;
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc) return -1;
+
+    if (fd < 0 || fd >= MAX_FILE_HANDLES || proc->fd_table[fd] == null || !buf) return -1;
     
-    file_handle_t *h = &fd_table[fd];
+    file_handle_t *h = proc->fd_table[fd];
     if (h->pos >= h->inode.size) return 0;
     
     if (h->pos + count > h->inode.size) {
@@ -105,9 +115,12 @@ i32 fs_read(i32 fd, u8 *buf, u32 count) {
 }
 
 i32 fs_seek(i32 fd, i32 offset, seek_type_t whence) {
-    if (fd < 0 || fd >= MAX_FILE_HANDLES || !fd_table[fd].used) return -1;
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc) return -1;
+
+    if (fd < 0 || fd >= MAX_FILE_HANDLES || proc->fd_table[fd] == null) return -1;
     
-    file_handle_t *h = &fd_table[fd];
+    file_handle_t *h = proc->fd_table[fd];
     u32 new_pos = h->pos;
 
     switch (whence) {
@@ -130,11 +143,13 @@ i32 fs_seek(i32 fd, i32 offset, seek_type_t whence) {
 }
 
 u32 fs_tell(i32 fd) {
-    if (fd < 0 || fd >= MAX_FILE_HANDLES || !fd_table[fd].used) return 0;
-    return fd_table[fd].pos;
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc || fd < 0 || fd >= MAX_FILE_HANDLES || proc->fd_table[fd] == null) return 0;
+    return proc->fd_table[fd]->pos;
 }
 
 u32 fs_size(i32 fd) {
-    if (fd < 0 || fd >= MAX_FILE_HANDLES || !fd_table[fd].used) return 0;
-    return fd_table[fd].inode.size;
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc || fd < 0 || fd >= MAX_FILE_HANDLES || proc->fd_table[fd] == null) return 0;
+    return proc->fd_table[fd]->inode.size;
 }
