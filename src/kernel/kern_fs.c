@@ -20,6 +20,7 @@ static i32 allocate_fd(kern_process_t *proc) {
     return -1;
 }
 
+// Returns -1 if file could not be opened
 i32 fs_open(const char *path) {
     kern_process_t *proc = sched_get_current_process();
     if (!proc) return -1;

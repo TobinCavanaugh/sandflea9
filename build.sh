@@ -125,14 +125,14 @@ for src in "${C_SOURCES[@]}"; do
     LINK_LIST="$LINK_LIST $obj_path"
 done
 
-echo "--- Processing Font ---"
+echo "--- Processing Fonts ---"
 # Only re-process font if it changed or object is missing
-if [ ! -f "obj/font.o" ] || [ "src/blob/regularfont.sfn" -nt "obj/font.o" ]; then
+if [ ! -f "obj/regularfont.o" ] || [ "src/blob/regularfont.sfn" -nt "obj/regularfont.o" ]; then
     echo "  OBJCOPY src/blob/regularfont.sfn"
     objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
-        src/blob/regularfont.sfn obj/font.o
+        src/blob/regularfont.sfn obj/regularfont.o
 fi
-LINK_LIST="$LINK_LIST obj/font.o"
+LINK_LIST="$LINK_LIST obj/regularfont.o"
 
 echo "--- Linking ---"
 ld $LDFLAGS -o "iso_root/kernel.elf" $LINK_LIST

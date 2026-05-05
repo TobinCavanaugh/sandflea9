@@ -392,29 +392,23 @@ u0 handle_command() {
         char *path = str_dup(word->next->loc, kmalloc);
         path[word->next->len] = 0;
 
-        u32 inode_no = 0;
-        ext2_inode_t *i = ext2_find_path(path, &inode_no);
-        if (i != null) {
-            screen_push_linef("File Size: %dB", i->size);
-            if ((i->mode & 0xF000) == 0x8000) {
-                u8 *content = get_block_ptr(i->block[0]);
-                if (content) {
-                    u32 print_len = (i->size < 512) ? i->size : 511;
-                    char *safe_content = kmallocz(print_len + 1);
-                    mem_copy(safe_content, content, print_len);
-                    screen_push_line(safe_content);
-                    serial_outsf("vvv\n%s\n^^^", safe_content);
-                    kfree(safe_content);
-                    kfree(content);
-                }
-            } else {
-                screen_push_line("Target is not a regular file");
+        i32 i = fs_open(path);
+
+        const i32 bufSize = 4096;
+        char *buf = kmallocz(bufSize + 1);
+
+        if (i >= 0) {
+            while (true) {
+                i32 amt = fs_read(i, buf, bufSize);
+                if (amt <= 0) break;
+                buf[amt] = 0;
+                screen_push_line(buf);
             }
-            kfree(i);
-        } else {
-            screen_push_linef("Path not found: %s", path);
         }
 
+        fs_close(i);
+
+        kfree(buf);
         kfree(path);
         goto Label_Free;
     }
@@ -466,8 +460,8 @@ u0 handle_command() {
         pci_device_t *dev = system.pci_list_head;
         while (dev) {
             screen_push_linef("C:%X S:%X | V:%X D:%X\n",
-                           dev->class_code, dev->subclass,
-                           dev->vendor_id, dev->device_id);
+                              dev->class_code, dev->subclass,
+                              dev->vendor_id, dev->device_id);
             dev = dev->next;
         }
         goto Label_Free;
