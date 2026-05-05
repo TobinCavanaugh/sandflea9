@@ -189,6 +189,8 @@ u0 vmm_unmap_page_in_pml4(u64 pml4_phys, u64 virt_addr) {
     restore_irq(irq);
 }
 
+// Allocate memory in the current process, effectively malloc
+// Will allocate memory in the kernel process if no process is open
 u0* pmalloc(u64 size) {
     if (size == 0) return null;
     kern_process_t *proc = sched_get_current_process();

@@ -9,7 +9,7 @@
 #include "../util/util_str.h"
 
 // --- Logging Control ---
-#define EXT2_DEBUG 0  
+#define EXT2_DEBUG 0
 #define DEBUG_LOG(expr) do { if (EXT2_DEBUG) { expr; } } while (0)
 
 ext2_superblock_t sb_static;
@@ -26,18 +26,18 @@ u0 ext2_read_block(u32 block_id, u8 *buffer) {
 
 u0 ext2_init() {
     u8 sb_buf[1024];
-    ide_read_sectors(2, 2, sb_buf); 
-    mem_copy((u8*)sb_ptr, sb_buf, sizeof(ext2_superblock_t));
+    ide_read_sectors(2, 2, sb_buf);
+    mem_copy((u8 *) sb_ptr, sb_buf, sizeof(ext2_superblock_t));
 
     if (sb_ptr->magic_signature == EXT2_SIGNATURE) {
         serial_outsl("EXT2: Valid filesystem detected via IDE.");
         block_size = 1024 << sb_ptr->block_size;
-        
+
         // Cache BGDT
         u32 bgdt_block = (block_size == 1024) ? 2 : 1;
         bgdt_cache = kmalloc(block_size);
         ext2_read_block(bgdt_block, bgdt_cache);
-        
+
         serial_outsf("EXT2: Block size %d bytes, BGDT cached.\n", block_size);
     } else {
         serial_outsl("EXT2: Invalid magic signature on IDE drive!");
@@ -57,17 +57,79 @@ ext2_inode_t *ext2_get_inode(u32 inode_no, ext2_inode_t *out_inode) {
     u32 inode_table_block = bgdt[group].inode_table;
     u32 inode_size = (sb_ptr->major_version >= 1) ? sb_ptr->inode_size : 128;
     u32 copy_size = (inode_size < sizeof(ext2_inode_t)) ? inode_size : sizeof(ext2_inode_t);
-    
+
     u32 block_offset = (index * inode_size) / block_size;
     u32 final_block = inode_table_block + block_offset;
     u32 offset_in_block = (index * inode_size) % block_size;
 
     u8 *buf = kmalloc(block_size);
     ext2_read_block(final_block, buf);
-    mem_copy((u8*)out_inode, buf + offset_in_block, copy_size);
+    mem_copy((u8 *) out_inode, buf + offset_in_block, copy_size);
     kfree(buf);
 
     return out_inode;
+}
+
+u32 ext2_get_bmap(ext2_inode_t *inode, u32 logical_block) {
+    if (block_size == 0) return 0;
+    u32 n = block_size / 4;
+
+    if (logical_block < 12) {
+        return inode->block[logical_block];
+    }
+    logical_block -= 12;
+
+    if (logical_block < n) {
+        u32 indirect_block = inode->block[12];
+        if (indirect_block == 0) return 0;
+        u32 *table = kmalloc(block_size);
+        ext2_read_block(indirect_block, (u8 *) table);
+        u32 phys = table[logical_block];
+        kfree(table);
+        return phys;
+    }
+    logical_block -= n;
+
+    if (logical_block < n * n) {
+        u32 d_indirect_block = inode->block[13];
+        if (d_indirect_block == 0) return 0;
+        u32 *d_table = kmalloc(block_size);
+        ext2_read_block(d_indirect_block, (u8 *) d_table);
+        u32 indirect_block = d_table[logical_block / n];
+        kfree(d_table);
+        if (indirect_block == 0) return 0;
+
+        u32 *table = kmalloc(block_size);
+        ext2_read_block(indirect_block, (u8 *) table);
+        u32 phys = table[logical_block % n];
+        kfree(table);
+        return phys;
+    }
+    logical_block -= n * n;
+
+    if (logical_block < n * n * n) {
+        u32 t_indirect_block = inode->block[14];
+        if (t_indirect_block == 0) return 0;
+        u32 *t_table = kmalloc(block_size);
+        ext2_read_block(t_indirect_block, (u8 *) t_table);
+        u32 d_indirect_block = t_table[logical_block / (n * n)];
+        kfree(t_table);
+        if (d_indirect_block == 0) return 0;
+
+        u32 *d_table = kmalloc(block_size);
+        ext2_read_block(d_indirect_block, (u8 *) d_table);
+        u32 indirect_block = d_table[(logical_block / n) % n];
+        kfree(d_table);
+        if (indirect_block == 0) return 0;
+
+        u32 *table = kmalloc(block_size);
+        ext2_read_block(indirect_block, (u8 *) table);
+        u32 phys = table[logical_block % n];
+        kfree(table);
+        return phys;
+    }
+
+    return 0;
 }
 
 static u32 ext2_find_child(ext2_inode_t *dir_inode, const char *name) {
@@ -76,10 +138,13 @@ static u32 ext2_find_child(ext2_inode_t *dir_inode, const char *name) {
     u8 *dir_data = kmalloc(block_size);
     if (!dir_data) return 0;
 
-    for (int b = 0; b < 12; b++) {
-        if (dir_inode->block[b] == 0) break;
+    u32 total_blocks = (dir_inode->size + block_size - 1) / block_size;
 
-        ext2_read_block(dir_inode->block[b], dir_data);
+    for (u32 b = 0; b < total_blocks; b++) {
+        u32 phys_block = ext2_get_bmap(dir_inode, b);
+        if (phys_block == 0) continue;
+
+        ext2_read_block(phys_block, dir_data);
         u32 cur_offset = 0;
         while (cur_offset < block_size) {
             ext2_dir_entry_t *entry = (ext2_dir_entry_t *) (dir_data + cur_offset);
@@ -100,8 +165,8 @@ static u32 ext2_find_child(ext2_inode_t *dir_inode, const char *name) {
 ext2_inode_t *ext2_find_path(const char *path, u32 *out_inode_no) {
     if (!path || *path == '\0' || block_size == 0) return null;
 
-    u32 current_inode_no = 2; 
-    u32 actual_inode_size = max(sizeof(ext2_inode_t), (u32)sb_ptr->inode_size);
+    u32 current_inode_no = 2;
+    u32 actual_inode_size = max(sizeof(ext2_inode_t), (u32) sb_ptr->inode_size);
     ext2_inode_t *current_inode = kmalloc(actual_inode_size);
     if (!current_inode) return null;
 
@@ -111,7 +176,7 @@ ext2_inode_t *ext2_find_path(const char *path, u32 *out_inode_no) {
     }
 
     const char *ptr = path;
-    if (*ptr == '/') ptr++; 
+    if (*ptr == '/') ptr++;
 
     char name_buf[256];
     while (*ptr) {
@@ -145,9 +210,9 @@ u0 ext2_explorer_init(ext2_explorer_t *explorer, u32 start_inode) {
     explorer->stack[0].inode_no = start_inode;
     explorer->stack[0].block_idx = 0;
     explorer->stack[0].offset = 0;
-    
+
     explorer->block_buf = kmalloc(block_size);
-    u32 actual_inode_size = max(sizeof(ext2_inode_t), (u32)sb_ptr->inode_size);
+    u32 actual_inode_size = max(sizeof(ext2_inode_t), (u32) sb_ptr->inode_size);
     explorer->inode_buf = kmalloc(actual_inode_size);
     explorer->last_read_block = 0;
 }
@@ -161,27 +226,29 @@ u0 ext2_explorer_deinit(ext2_explorer_t *explorer) {
 
 bool ext2_explorer_next(ext2_explorer_t *explorer, ext2_explore_result_t *result) {
     if (block_size == 0 || !explorer->block_buf || !explorer->inode_buf) return false;
-    
+
     while (explorer->stack_ptr >= 0) {
         ext2_stack_frame_t *frame = &explorer->stack[explorer->stack_ptr];
-        
+
         if (!ext2_get_inode(frame->inode_no, explorer->inode_buf)) {
             explorer->stack_ptr--;
             continue;
         }
 
-        while (frame->block_idx < 12) {
-            u32 block_id = explorer->inode_buf->block[frame->block_idx];
+        u32 total_blocks = (explorer->inode_buf->size + block_size - 1) / block_size;
+        while (frame->block_idx < total_blocks) {
+            u32 block_id = ext2_get_bmap(explorer->inode_buf, frame->block_idx);
             if (block_id == 0) {
-                frame->block_idx = 12;
-                break;
+                frame->block_idx++;
+                frame->offset = 0;
+                continue;
             }
 
             if (explorer->last_read_block != block_id) {
                 ext2_read_block(block_id, explorer->block_buf);
                 explorer->last_read_block = block_id;
             }
-            
+
             if (frame->offset >= block_size) {
                 frame->block_idx++;
                 frame->offset = 0;
@@ -190,7 +257,7 @@ bool ext2_explorer_next(ext2_explorer_t *explorer, ext2_explore_result_t *result
 
             ext2_dir_entry_t *entry = (ext2_dir_entry_t *) (explorer->block_buf + frame->offset);
             if (entry->rec_len < 8 || frame->offset + entry->rec_len > block_size) {
-                frame->block_idx = 12;
+                frame->block_idx = total_blocks;
                 break;
             }
 
@@ -201,17 +268,17 @@ bool ext2_explorer_next(ext2_explorer_t *explorer, ext2_explore_result_t *result
             frame->offset += entry_rec_len;
 
             if (entry_inode == 0) continue;
-            
+
             // Skip . and ..
             if (entry_name_len == 1 && entry->name[0] == '.') continue;
             if (entry_name_len == 2 && entry->name[0] == '.' && entry->name[1] == '.') continue;
 
             mem_set(result->name, 0, 256);
-            mem_copy((u8*)result->name, (u8*)entry->name, entry_name_len);
+            mem_copy((u8 *) result->name, (u8 *) entry->name, entry_name_len);
             result->inode_no = entry_inode;
             result->file_type = entry_type;
             result->is_dir = (entry_type == 2);
-            result->depth = (u8)explorer->stack_ptr;
+            result->depth = (u8) explorer->stack_ptr;
 
             if (entry_type == 2 && explorer->stack_ptr < 15) {
                 explorer->stack_ptr++;

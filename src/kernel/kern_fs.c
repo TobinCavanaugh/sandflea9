@@ -59,13 +59,7 @@ i32 fs_close(i32 fd) {
 
 // Internal helper to get physical block ID from logical block index
 static u32 get_bmap(ext2_inode_t *inode, u32 logical_block) {
-    extern u32 block_size;
-    if (logical_block < 12) {
-        return inode->block[logical_block];
-    }
-    
-    // TODO: Implement indirect, double indirect, and triple indirect blocks
-    return 0; 
+    return ext2_get_bmap(inode, logical_block);
 }
 
 i32 fs_read(i32 fd, u8 *buf, u32 count) {

@@ -1,0 +1,62 @@
+UTF-8 ENCODING TEST SUITE
+==========================
+
+SECTION 1: BASIC LATIN (1-BYTE)
+-------------------------------
+Standard ASCII range (U+0000 to U+007F).
+Characters: abcdefghijklmnopqrstuvwxyz
+Uppercase: ABCDEFGHIJKLMNOPQRSTUVWXYZ
+Digits: 0123456789
+Punctuation: !@#$%^&*()_+-=[]{}|;':",./<>?
+
+SECTION 2: LATIN SUPPLEMENT & EXTENDED (2-BYTES)
+------------------------------------------------
+Common European diacritics and symbols (U+0080 to U+07FF).
+Western Europe: à, é, î, õ, ü, ñ, ç, ß, Ø, å
+Currency: £, €, ¥, ¢
+Math/Misc: ©, ®, ™, °, ±, ÷, ×, ¶
+
+SECTION 3: MULTI-SCRIPT ALPHABETS (2-BYTES)
+-------------------------------------------
+Cyrillic: Привет, мир (Russian), Прывітанне (Belarusian)
+Greek: Γειά σου κόσμε (Greek)
+Hebrew (RTL): שָׁלוֹם עוֹלָם
+Arabic (RTL): مرحبا بالعالم
+Armenian: Բարև աշխարհ
+
+SECTION 4: ASIAN SCRIPTS & SYMBOLS (3-BYTES)
+--------------------------------------------
+Most characters in the Basic Multilingual Plane (U+0800 to U+FFFF).
+Chinese (Simplified): 你好，世界
+Chinese (Traditional): 你好，世界
+Japanese (Hiragana/Katakana/Kanji): こんにちは世界
+Korean (Hangul): 안녕하세요
+Devanagari: नमस्ते दुनिया
+Thai: สวัสดีชาวโลก
+
+SECTION 5: SUPPLEMENTARY PLANES & EMOJI (4-BYTES)
+-------------------------------------------------
+Characters outside the BMP (U+10000 and above).
+Standard Emoji: 😀, 🚀, 🍎, 🌈
+Flag Sequences: 🇺🇸, 🇬🇧, 🇯🇵, 🇺🇳
+ZWJ Sequences (Complex Glyphs):
+- Family: 👨‍👩‍👧‍👦
+- Skintone Modifiers: 👍🏻, 👍🏼, 👍🏽, 👍🏾, 👍🏿
+Mathematical Alphanumeric Symbols: 𝔸, 𝔹, ℂ, 𝕯, 𝕰, 𝕱
+
+SECTION 6: SPECIAL CHARACTERS & EDGE CASES
+------------------------------------------
+Zero Width Space (between brackets): [​]
+Zero Width Joiner: ‍
+Right-to-Left Mark (RLM): ‏
+Left-to-Right Mark (LRM): ‎
+Object Replacement Character: ￼
+Replacement Character: 
+
+SECTION 7: BORDERLINE/STRESS TEST
+---------------------------------
+Combining Marks (Zalgo-style): Hͪeͤlͬlͭoͦ
+Directional Overrides:
+- Standard: [This is LTR text]
+- Forced RTL: [‮This text should appear reversed in supporting editors]
+- Back to Normal: [Normal text]

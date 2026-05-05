@@ -463,19 +463,13 @@ u0 handle_command() {
 
 
     if (str_eqlb(word->loc, "pci")) {
-        ssfn_dst.y = font_height * 2;
-        ssfn_dst.x = 0;
         pci_device_t *dev = system.pci_list_head;
         while (dev) {
-            stbsp_snprintf(workingbuf, 255, "C:%X S:%X | V:%X D:%X\n",
+            screen_push_linef("C:%X S:%X | V:%X D:%X\n",
                            dev->class_code, dev->subclass,
                            dev->vendor_id, dev->device_id);
-            ssfn_puts(workingbuf);
             dev = dev->next;
         }
-        ssfn_puts("Enter any key to continue\n");
-        screen_draw();
-        while (!keyboard_eat_key()) { asm volatile("hlt"); }
         goto Label_Free;
     }
 

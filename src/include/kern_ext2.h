@@ -107,6 +107,7 @@ ext2_inode_t *ext2_find_path(const char *path, u32 *out_inode_no);
 ext2_inode_t *ext2_get_inode(u32 inode_no, ext2_inode_t *out_inode);
 u0 ext2_read_block(u32 block_id, u8 *buffer);
 u8 *get_block_ptr(u32 block_id);
+u32 ext2_get_bmap(ext2_inode_t *inode, u32 logical_block);
 
 // Explorer API
 u0 ext2_explorer_init(ext2_explorer_t *explorer, u32 start_inode);

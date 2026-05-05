@@ -7,3 +7,4 @@ disk.img
 
 src/kernel/wasm3-0.5.0
 src/kernel/musl-1.2.6
+src/blob/doom-v0.1.0.wasm

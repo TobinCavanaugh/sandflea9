@@ -1,4 +1,7 @@
 
+Switch everything to UTF-8
+
+
 ### WASM
 - WASM permissions 
 - WASM modules / syscalls

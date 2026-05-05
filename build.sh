@@ -6,7 +6,6 @@ set -e
 # =============================================================================
 
 C_SOURCES=(
-    "src/kernel/arith64.c"
     "src/kernel/kern_asmstubs.c"
     "src/kernel/kern_ext2.c"
     "src/kernel/kern_fs.c"
@@ -21,6 +20,7 @@ C_SOURCES=(
     "src/kernel/kern_terminal.c"
     "src/kernel/kern_tests.c"
     "src/kernel/kern_vmm.c"
+    "src/kernel/libgcc_stubs.c"
     "src/kernel/main.c"
     "src/kernel/ssfn.c"
     "src/kernel/stbsupport.c"
@@ -154,6 +154,7 @@ write src/blob/c.txt c.txt
 write src/blob/add_test.wasm add_test.wasm
 write src/blob/file_test.wasm file_test.wasm
 write src/blob/file_test.wasm w
+write src/blob/utf8.txt utf8
 mkdir folder
 write src/blob/c.txt folder/a.txt
 EOF
