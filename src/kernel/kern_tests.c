@@ -18,7 +18,7 @@
 
 cmd_word_t *word;
 
-u0 lsrtest(char *path_arg) {
+u0 test_lsr(char *path_arg) {
     char *path = path_arg ? path_arg : "/";
 
     u32 inode_no = 2;
@@ -43,7 +43,35 @@ u0 lsrtest(char *path_arg) {
 
 extern u0 delay(u64 ms);
 
+u0 test_ext2(u0 *arg) {
+    char *path = (char *) arg;
+    if (!path) return;
+
+    i32 i = fs_open(path);
+
+    const i32 bufSize = 4096;
+    char *buf = pmallocz(bufSize + 1);
+
+    if (i >= 0) {
+        while (true) {
+            i32 amt = fs_read(i, buf, bufSize);
+            if (amt <= 0) break;
+            buf[amt] = 0;
+            screen_push_line(buf);
+        }
+        fs_close(i);
+    } else {
+        screen_push_linef("Unable to open file at path `%s`", path);
+    }
+
+    pfree(buf);
+    kfree(path); // This was kmalloc'd in handle_command
+}
+
 u0 dotest(u0 *arg) {
+
+    i32 tasks = (i32) (u64) arg;
+
     kern_process_t *proc = sched_get_current_process();
     kern_task_t *task = sched_get_current_task();
 
@@ -61,7 +89,7 @@ u0 dotest(u0 *arg) {
     screen_push_linef("[PID %d | TID %d] Exiting", proc->pid, task->tid);
 }
 
-m3ApiRawFunction(wasm_fs_open) {
+m3ApiRawFunction(wasm_fd_open) {
     m3ApiReturnType (i32)
     m3ApiGetArg     (u32, path_offset)
 
@@ -70,7 +98,6 @@ m3ApiRawFunction(wasm_fs_open) {
 
     if (mem && path_offset < memory_size) {
         const char *path = (const char *) (mem + path_offset);
-        screen_push_linef("wasm open: %s", path);
         serial_outsf("WASM: Open called for path: %s\n", path);
 
         i32 fd = fs_open(path);
@@ -81,7 +108,7 @@ m3ApiRawFunction(wasm_fs_open) {
     }
 }
 
-m3ApiRawFunction(wasm_fs_close) {
+m3ApiRawFunction(wasm_fd_close) {
     m3ApiReturnType(i32)
     m3ApiGetArg(i32, fd)
 
@@ -91,12 +118,13 @@ m3ApiRawFunction(wasm_fs_close) {
     m3ApiReturn(result);
 }
 
-m3ApiRawFunction(wasm_fs_read) {
+m3ApiRawFunction(wasm_fd_read) {
     m3ApiReturnType (i32)
     m3ApiGetArg     (i32, fd)
     m3ApiGetArg     (u32, buf_offset)
     m3ApiGetArg     (u32, count)
 
+    serial_outsf("WASM: Read called for fd: %d\n", fd);
     u32 memory_size = 0;
     u8 *mem = m3_GetMemory(runtime, &memory_size, 0);
 
@@ -107,6 +135,52 @@ m3ApiRawFunction(wasm_fs_read) {
     } else {
         m3ApiReturn(-1);
     }
+}
+
+typedef struct __wasi_ciovec_t {
+    uint32_t buf;      // Offset in Wasm memory
+    uint32_t buf_len;  // Length of this buffer
+} __wasi_ciovec_t;
+
+m3ApiRawFunction(wasm_fd_write) {
+    m3ApiGetArg     (i32, fd)
+    m3ApiGetArg     (u32, iovs_offset)
+    m3ApiGetArg     (i32, iovs_len)
+    m3ApiGetArg     (u32, nwritten_offset)
+    m3ApiReturnType (i32);
+
+    u32 memory_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &memory_size, 0);
+
+    if (!mem) m3ApiReturn(-1);
+
+    __wasi_ciovec_t *iovs = (__wasi_ciovec_t *) (mem + iovs_offset);
+    u32 *nwritten = (u32 *) (mem + nwritten_offset);
+
+    // Basic bounds check for iovs and nwritten
+    if (iovs_offset + iovs_len * sizeof(__wasi_ciovec_t) > memory_size ||
+        nwritten_offset + sizeof(u32) > memory_size) {
+        m3ApiReturn(-1);
+    }
+
+    u32 total_written = 0;
+
+    serial_outsf("WASM: Write called for fd: %d\n", fd);
+    for (i32 i = 0; i < iovs_len; i++) {
+        u32 buf_offset = iovs[i].buf;
+        u32 len = iovs[i].buf_len;
+
+        if (buf_offset + len <= memory_size) {
+            u8 *host_buf = mem + buf_offset;
+            if (len > 0) {
+                screen_push_buf(host_buf, len);
+                total_written += len;
+            }
+        }
+    }
+
+    if (nwritten) *nwritten = total_written;
+    m3ApiReturn(0);
 }
 
 u0 wasm_test(u0 *arg) {
@@ -169,9 +243,10 @@ u0 wasm_test(u0 *arg) {
         goto Label_Done;
     }
 
-    m3_LinkRawFunction(module, "env", "sys_open", "i(i)", &wasm_fs_open);
-    m3_LinkRawFunction(module, "env", "sys_read", "i(iii)", &wasm_fs_read);
-    m3_LinkRawFunction(module, "env", "sys_close", "i(i)", &wasm_fs_close);
+    m3_LinkRawFunction(module, "env", "fd_open", "i(i)", &wasm_fd_open);
+    m3_LinkRawFunction(module, "env", "fd_read", "i(iii)", &wasm_fd_read);
+    m3_LinkRawFunction(module, "env", "fd_close", "i(i)", &wasm_fd_close);
+    m3_LinkRawFunction(module, "env", "fd_write", "i(iiii)", &wasm_fd_write);
 
     serial_outsl("WASM: Linking LibC...");
     result = m3_LinkLibC(module);
@@ -181,21 +256,21 @@ u0 wasm_test(u0 *arg) {
     }
 
     IM3Function f;
-    result = m3_FindFunction(&f, runtime, "entry");
+    result = m3_FindFunction(&f, runtime, "_start");
     if (result) {
         screen_push_linef("WASM: Function error: %s", result);
         goto Label_Done;
     }
 
-    serial_outsl("WASM: Calling entry()...");
+    serial_outsl("WASM: Calling _start()...");
     result = m3_CallArgv(f, 0, NULL);
     if (result) {
         screen_push_linef("WASM: Call error: %s", result);
     } else {
         i32 res = 0;
         m3_GetResultsV(f, &res);
-        screen_push_linef("WASM: entry() returned %d", res);
-        serial_outsf("WASM: entry() returned %d\n", res);
+        screen_push_linef("WASM: _start() returned %d", res);
+        serial_outsf("WASM: _start() returned %d\n", res);
     }
 
     Label_Done:
@@ -216,8 +291,7 @@ u0 handle_command() {
 
     serial_outsf("[[%s]]\n", word->loc);
 
-
-    if (str_eql(word->loc, "proc", word->len)) {
+    if (cmd_word_eq(word, "proc")) {
         kern_task_t *head = sched_get_task_list_head();
         if (!head) {
             screen_push_line("No tasks found.");
@@ -300,7 +374,7 @@ u0 handle_command() {
         goto Label_Free;
     }
 
-    if (str_eqlb(word->loc, "wasm")) {
+    if (cmd_word_eq(word, "wasm")) {
         char *path = null;
         if (word->next != null) {
             path = str_dup_len(word->next->loc, word->next->len, kmalloc);
@@ -312,7 +386,21 @@ u0 handle_command() {
     }
 
 
-    if (str_eqlb(word->loc, "do")) {
+    if (cmd_word_eq(word, "dox")) {
+        i64 count = 10;
+        if (word->next && word->next->val_type == CMD_WT_i64) {
+            count = word->next->val_i64;
+        }
+
+        while (count--) {
+            kern_process_t *new_proc = process_create();
+            sched_create_process_thread(new_proc, dotest, (u0 *) 5);
+        }
+
+        goto Label_Free;
+    }
+
+    if (cmd_word_eq(word, "do")) {
         i64 val = 5;
         if (word->next && word->next->val_type == CMD_WT_i64) {
             val = word->next->val_i64;
@@ -324,7 +412,7 @@ u0 handle_command() {
     }
 
 
-    if (str_eqlb(word->loc, "kmalloc")) {
+    if (cmd_word_eq(word, "kmalloc")) {
         u64 size = 0;
         serial_outs("Testing Kmalloc and page fault handling.\n");
         i64 inc = 0;
@@ -342,25 +430,39 @@ u0 handle_command() {
         goto Label_Free;
     }
 
+    if (cmd_word_eq(word, "kill") && word->next) {
+        if (word->next->val_type != CMD_WT_i64) {
+            screen_push_line("Argument is not a valid i64 value");
+        } else {
+            i32 pid = (i32) word->next->val_i64;
+            if (sched_kill_process(pid)) {
+                screen_push_linef("Process %d marked for termination", pid);
+            } else {
+                screen_push_linef("Process %d not found or protected", pid);
+            }
+        }
+        goto Label_Free;
+    }
 
-    if (str_eqlb(word->loc, "cls")) {
+
+    if (cmd_word_eq(word, "cls")) {
         typingbuf[0] = 0;
         screen_terminal_clear();
         goto Label_Free;
     }
 
-    if (str_eqlb(word->loc, "lsr")) {
+    if (cmd_word_eq(word, "lsr")) {
         char *path = null;
         if (word->next != null) {
             path = str_dup_len(word->next->loc, word->next->len, kmalloc);
         }
-        sched_create_thread((u0 (*)(u0 *)) lsrtest, path);
-//        lsrtest(); // works fine
+        sched_create_thread((u0 (*)(u0 *)) test_lsr, path);
+//        test_lsr(); // works fine
         goto Label_Free;
     }
 
 
-    if (str_eqlb(word->loc, "open") && word->next != null) {
+    if (cmd_word_eq(word, "open") && word->next != null) {
         char *path = str_dup(word->next->loc, kmalloc);
         path[word->next->len] = 0;
 
@@ -388,32 +490,14 @@ u0 handle_command() {
         goto Label_Free;
     }
 
-    if (str_eqlb(word->loc, "ext2") && word->next != null) {
-        char *path = str_dup(word->next->loc, kmalloc);
-        path[word->next->len] = 0;
-
-        i32 i = fs_open(path);
-
-        const i32 bufSize = 4096;
-        char *buf = kmallocz(bufSize + 1);
-
-        if (i >= 0) {
-            while (true) {
-                i32 amt = fs_read(i, buf, bufSize);
-                if (amt <= 0) break;
-                buf[amt] = 0;
-                screen_push_line(buf);
-            }
-        }
-
-        fs_close(i);
-
-        kfree(buf);
-        kfree(path);
+    if (cmd_word_eq(word, "ext2") && word->next != null) {
+        char *path = str_dup_len(word->next->loc, word->next->len, kmalloc);
+        kern_process_t *proc = process_create();
+        sched_create_process_thread(proc, test_ext2, path);
         goto Label_Free;
     }
 
-    if (str_eqlb(word->loc, "cat") && word->next != null) {
+    if (cmd_word_eq(word, "cat") && word->next != null) {
         char *path = str_dup(word->next->loc, kmalloc);
         path[word->next->len] = 0;
 
@@ -440,7 +524,7 @@ u0 handle_command() {
         goto Label_Free;
     }
 
-    if (str_eqlb(word->loc, "kmalloc2")) {
+    if (cmd_word_eq(word, "kmalloc2")) {
         u64 sum = 0;
         serial_outs("Testing Kmalloc and freeing.\n");
         while (sum < system.total_mem_size * 4) {
@@ -456,7 +540,7 @@ u0 handle_command() {
     }
 
 
-    if (str_eqlb(word->loc, "pci")) {
+    if (cmd_word_eq(word, "pci")) {
         pci_device_t *dev = system.pci_list_head;
         while (dev) {
             screen_push_linef("C:%X S:%X | V:%X D:%X\n",

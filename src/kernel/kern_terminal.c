@@ -3,6 +3,7 @@
 #include "../include/kern_vmm.h"
 #include "../include/stbsupport.h"
 #include "../include/dialect.h"
+#include "../util/util_str.h"
 
 screen_text_row_t *screen_text_root = null;
 screen_text_row_t *screen_text_tail = null;
@@ -18,26 +19,49 @@ u0 screen_lines_init(u32 row_len) {
     stbsp_snprintf(screen_text_root->str, screen_text_row_len, "sandfleaOS v0.0");
 }
 
-u0 screen_push_line(const char *str) {
-    if (!screen_text_tail) return;
+i32 screen_get_line_count() {
+    i32 c = 0;
+    screen_text_row_t *row = screen_text_root;
+    while (row) {
+        ++c;
+        row = row->next;
+    }
+    return c;
+}
 
-    const char *ptr = str;
+u0 screen_push_buf(const char *buf, i32 len) {
+    if (!buf || len <= 0) return;
 
-    while (*ptr) {
-        screen_text_row_t *new_row = kmalloc(sizeof(screen_text_row_t));
-        new_row->next = null;
-        new_row->str = kmallocz(screen_text_row_len);
+    screen_text_row_t *cur = screen_text_root;
+    // Advance to the end of the current list
+    while (cur->next != null) {
+        cur = cur->next;
+    }
+
+    const char *ptr = buf;
+    const char *end = buf + len;
+
+    while (ptr < end) {
+        // Allocate and link new row
+        cur->next = kmalloc(sizeof(screen_text_row_t));
+        cur = cur->next;
+        cur->next = null;
+        cur->str = kmallocz(screen_text_row_len);
 
         i32 i = 0;
-        while (*ptr && *ptr != '\n' && i < screen_text_row_len - 1) {
-            new_row->str[i++] = *ptr++;
+        while (ptr < end && *ptr != '\n' && i < screen_text_row_len - 1) {
+            cur->str[i++] = *ptr++;
         }
-        new_row->str[i] = 0;
-        if (*ptr == '\n') ++ptr;
 
-        screen_text_tail->next = new_row;
-        screen_text_tail = new_row;
+        cur->str[i] = 0;
+        if (ptr < end && *ptr == '\n') {
+            ptr++;
+        }
     }
+}
+
+u0 screen_push_line(const char *str) {
+    screen_push_buf(str, str_len(str));
 }
 
 static char *screen_line_stb_callback(char *buf, void *user, i32 len) {

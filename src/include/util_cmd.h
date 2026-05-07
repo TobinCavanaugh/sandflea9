@@ -31,6 +31,8 @@ typedef struct cmd_word_t {
 
 cmd_word_t *cmd_parse(const char *str, void *(*Alloc_Func)(u64));
 
+u8 cmd_word_eq(cmd_word_t *word, const char *match);
+
 u0 cmd_parse_free(cmd_word_t *root, void (*Free_Func)(void *));
 
 #endif //SANDFLEA9_UTIL_CMD_H

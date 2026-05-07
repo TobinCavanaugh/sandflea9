@@ -193,10 +193,10 @@ u0 kern_interrupt_handler(const registers_t *t) {
     }
 
     if (t->int_no <= 31) {
-        serial_outs("\n!!! EXCEPTION: ");
+        serial_outs("\n[[[ EXCEPTION: ");
         char *err = isr_errors[t->int_no];
         serial_outs(err);
-        serial_outs(" !!!\n");
+        serial_outs(" ]]]\n");
 
         u64 cr2_val;
         asm volatile("mov %%cr2, %0" : "=r"(cr2_val));

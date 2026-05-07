@@ -50,9 +50,12 @@ kern_process_t * process_create();
 u0 process_exit(kern_process_t *proc);
 
 kern_task_t * sched_get_current_task();
-kern_process_t * sched_get_current_process();
+kern_task_t *sched_get_by_pid(i32 pid);
 kern_task_t * sched_get_task_list_head();
+
+kern_process_t * sched_get_current_process();
 kern_process_t * sched_get_kernel_process();
+u8 sched_kill_process(i32 pi);
 
 u0* pmalloc(u64 size);
 u0 pfree(void *ptr);

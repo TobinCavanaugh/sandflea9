@@ -70,7 +70,7 @@ u64 pmm_get_free_count() {
     u64 curr = free_list_head;
     while (curr != 0) {
         count++;
-        curr = *(u64 *)(curr + hhdm_offset);
+        curr = *(u64 *) (curr + hhdm_offset);
     }
     restore_irq(irq);
     return count;
@@ -131,7 +131,7 @@ u0 vmm_map_page(u64 phys_addr, u64 virt_addr, u64 flags) {
             u64 *current_pml4 = (u64 *) (read_cr3() + hhdm_offset);
             u64 *master_pml4 = (u64 *) (master_cr3 + hhdm_offset);
             current_pml4[pml4_idx] = master_pml4[pml4_idx];
-            
+
             // Full TLB flush by reloading CR3
             u64 cr3;
             asm volatile("mov %%cr3, %0" : "=r"(cr3));
@@ -146,19 +146,31 @@ u64 vmm_get_phys_in_pml4(u64 pml4_phys, u64 virt_addr) {
     u64 irq = save_irq_and_disable();
     u64 *pml4 = (u64 *) (pml4_phys + hhdm_offset);
     u64 pml4_idx = PML4_INDEX(virt_addr);
-    if (!(pml4[pml4_idx] & PAGE_PRESENT)) { restore_irq(irq); return 0; }
+    if (!(pml4[pml4_idx] & PAGE_PRESENT)) {
+        restore_irq(irq);
+        return 0;
+    }
 
     u64 *pdpt = (u64 *) ((pml4[pml4_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
     u64 pdpt_idx = PDPT_INDEX(virt_addr);
-    if (!(pdpt[pdpt_idx] & PAGE_PRESENT)) { restore_irq(irq); return 0; }
+    if (!(pdpt[pdpt_idx] & PAGE_PRESENT)) {
+        restore_irq(irq);
+        return 0;
+    }
 
     u64 *pd = (u64 *) ((pdpt[pdpt_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
     u64 pd_idx = PD_INDEX(virt_addr);
-    if (!(pd[pd_idx] & PAGE_PRESENT)) { restore_irq(irq); return 0; }
+    if (!(pd[pd_idx] & PAGE_PRESENT)) {
+        restore_irq(irq);
+        return 0;
+    }
 
     u64 *pt = (u64 *) ((pd[pd_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
     u64 pt_idx = PT_INDEX(virt_addr);
-    if (!(pt[pt_idx] & PAGE_PRESENT)) { restore_irq(irq); return 0; }
+    if (!(pt[pt_idx] & PAGE_PRESENT)) {
+        restore_irq(irq);
+        return 0;
+    }
 
     u64 ret = (pt[pt_idx] & 0xFFFFFFFFFF000);
     restore_irq(irq);
@@ -169,15 +181,24 @@ u0 vmm_unmap_page_in_pml4(u64 pml4_phys, u64 virt_addr) {
     u64 irq = save_irq_and_disable();
     u64 *pml4 = (u64 *) (pml4_phys + hhdm_offset);
     u64 pml4_idx = PML4_INDEX(virt_addr);
-    if (!(pml4[pml4_idx] & PAGE_PRESENT)) { restore_irq(irq); return; }
+    if (!(pml4[pml4_idx] & PAGE_PRESENT)) {
+        restore_irq(irq);
+        return;
+    }
 
     u64 *pdpt = (u64 *) ((pml4[pml4_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
     u64 pdpt_idx = PDPT_INDEX(virt_addr);
-    if (!(pdpt[pdpt_idx] & PAGE_PRESENT)) { restore_irq(irq); return; }
+    if (!(pdpt[pdpt_idx] & PAGE_PRESENT)) {
+        restore_irq(irq);
+        return;
+    }
 
     u64 *pd = (u64 *) ((pdpt[pdpt_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
     u64 pd_idx = PD_INDEX(virt_addr);
-    if (!(pd[pd_idx] & PAGE_PRESENT)) { restore_irq(irq); return; }
+    if (!(pd[pd_idx] & PAGE_PRESENT)) {
+        restore_irq(irq);
+        return;
+    }
 
     u64 *pt = (u64 *) ((pd[pd_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
     u64 pt_idx = PT_INDEX(virt_addr);
@@ -189,9 +210,15 @@ u0 vmm_unmap_page_in_pml4(u64 pml4_phys, u64 virt_addr) {
     restore_irq(irq);
 }
 
+u0 *pmallocz(u64 size) {
+    u0 *mem = pmalloc(size);
+    mem_set(mem, 0, size);
+    return mem;
+}
+
 // Allocate memory in the current process, effectively malloc
 // Will allocate memory in the kernel process if no process is open
-u0* pmalloc(u64 size) {
+u0 *pmalloc(u64 size) {
     if (size == 0) return null;
     kern_process_t *proc = sched_get_current_process();
     if (!proc) return kmalloc(size);
@@ -199,15 +226,15 @@ u0* pmalloc(u64 size) {
     u64 irq = save_irq_and_disable();
     u64 page_count = (size + PAGE_SIZE - 1) / PAGE_SIZE;
     u64 virt_start = proc->heap_vptr;
-    
+
     kern_mem_region_t *region = kmalloc(sizeof(kern_mem_region_t));
     region->virt = virt_start;
     region->page_count = page_count;
-    region->phys = 0; 
-    
+    region->phys = 0;
+
     for (u64 i = 0; i < page_count; i++) {
         u64 phys = pmm_alloc_page();
-        if (i == 0) region->phys = phys; 
+        if (i == 0) region->phys = phys;
         vmm_map_page_in_pml4(proc->cr3, phys, virt_start + (i * PAGE_SIZE), PAGE_PRESENT | PAGE_RW | PAGE_USER);
     }
 
@@ -215,7 +242,7 @@ u0* pmalloc(u64 size) {
     proc->mem_regions = region;
     proc->heap_vptr += page_count * PAGE_SIZE;
     restore_irq(irq);
-    return (u0*)virt_start;
+    return (u0 *) virt_start;
 }
 
 u0 pfree(void *ptr) {
@@ -228,7 +255,7 @@ u0 pfree(void *ptr) {
     kern_mem_region_t *prev = null;
 
     while (curr) {
-        if (curr->virt == (u64)ptr) {
+        if (curr->virt == (u64) ptr) {
             for (u64 i = 0; i < curr->page_count; i++) {
                 u64 vaddr = curr->virt + (i * PAGE_SIZE);
                 u64 phys = vmm_get_phys_in_pml4(proc->cr3, vaddr);
@@ -263,7 +290,7 @@ u0 heap_expand(u64 needed) {
     if (target_end % PAGE_SIZE != 0) {
         target_end = (target_end & ~(PAGE_SIZE - 1)) + PAGE_SIZE;
     }
-    
+
     serial_outsf("VMM: Expanding heap from %llX to %llX (needed %llX)\n", heap_end_addr, target_end, needed);
 
     while (heap_end_addr < target_end) {
@@ -285,8 +312,8 @@ u0 kmalloc_init() {
     serial_outs("Kernel Heap Initialized\n");
 }
 
-u0* kmallocz(u64 size){
-    void * ptr = kmalloc(size);
+u0 *kmallocz(u64 size) {
+    void *ptr = kmalloc(size);
     if (ptr) mem_set(ptr, 0, size);
     return ptr;
 }
@@ -345,7 +372,7 @@ u0 *kmalloc(u64 size) {
     }
 }
 
-u0* kern_realloc(void* ptr, u64 size) {
+u0 *kern_realloc(void *ptr, u64 size) {
     if (!ptr) return kmalloc(size);
     if (size == 0) {
         kfree(ptr);

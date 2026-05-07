@@ -137,7 +137,6 @@ LINK_LIST="$LINK_LIST obj/regularfont.o"
 echo "--- Linking ---"
 ld $LDFLAGS -o "iso_root/kernel.elf" $LINK_LIST
 
-
 echo "--- Creating Test Filesystem ---"
 # 1. Create a 32MB empty file
 dd if=/dev/zero of=disk.img bs=1M count=32

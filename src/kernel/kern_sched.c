@@ -44,7 +44,7 @@ i32 process_id_c = 0;
 
 u0 sched_thread_exit() {
     current_task->state = TASK_STATE_DEAD;
-    
+
     while (1) {
         sched_yield();
     }
@@ -96,7 +96,7 @@ u0 process_exit(kern_process_t *proc) {
     kern_mem_region_t *region = proc->mem_regions;
     while (region) {
         kern_mem_region_t *next = region->next;
-        
+
         for (u64 i = 0; i < region->page_count; i++) {
             u64 vaddr = region->virt + (i * PAGE_SIZE);
             u64 phys = vmm_get_phys_in_pml4(proc->cr3, vaddr);
@@ -105,13 +105,14 @@ u0 process_exit(kern_process_t *proc) {
                 vmm_unmap_page_in_pml4(proc->cr3, vaddr);
             }
         }
-        
+
         kfree(region);
         region = next;
     }
 
     // TODO: Free PML4 structure (requires recursive walk)
-    kfree(proc); 
+    pmm_free(proc->cr3);
+    kfree(proc);
     serial_outsf("Process PID %d resources freed\n", old_pid);
 }
 
@@ -121,8 +122,9 @@ static kern_task_t *task_create_internal(kern_process_t *proc, u0 (*function)(u0
     task->state = TASK_STATE_READY;
     task->process = proc ? proc : kernel_process;
 
-    u64 stack_size = 128 * 1024;
+    u64 stack_size = 128 * 1024; // 128KiB
     u0 *stack_ptr_base = kmalloc(stack_size);
+//    u0 *stack_ptr_base = (u0*) pmm_alloc_page();
     task->stack_base = stack_ptr_base;
 
     u64 stack_top = (u64) stack_ptr_base + stack_size;
@@ -145,7 +147,8 @@ static kern_task_t *task_create_internal(kern_process_t *proc, u0 (*function)(u0
 
     u64 irq = save_irq_and_disable();
     task->process->thread_count++;
-    serial_outsf("Thread created: TID %d in PID %d (new count: %d)\n", task->tid, task->process->pid, task->process->thread_count);
+    serial_outsf("Thread created: TID %d in PID %d (new count: %d)\n", task->tid, task->process->pid,
+                 task->process->thread_count);
     task->next = task_list_head->next;
     task_list_head->next = task;
     restore_irq(irq);
@@ -178,11 +181,49 @@ kern_process_t *sched_get_kernel_process() {
     return kernel_process;
 }
 
+
+kern_task_t *sched_get_by_pid(i32 pid) {
+    kern_task_t *proc = sched_get_task_list_head();
+
+    while (proc) {
+        if (proc->process->pid == pid) return proc;
+        proc = proc->next;
+    }
+
+    return null;
+}
+
+
+u8 sched_kill_process(i32 pid) {
+    if (pid < 0) return 0;
+
+    u64 irq = save_irq_and_disable();
+    kern_task_t *head = task_list_head;
+    if (!head) {
+        restore_irq(irq);
+        return 0;
+    }
+
+    kern_task_t *cur = head;
+    u8 found = 0;
+    do {
+        if (cur->process->pid == pid) {
+            cur->state = TASK_STATE_DEAD;
+            found = 1;
+        }
+
+        cur = cur->next;
+    } while (cur != head);
+
+    restore_irq(irq);
+    return found;
+}
+
 u0 sched_run_next() {
     if (!current_task) return;
 
     u64 irq = save_irq_and_disable();
-    
+
     // Prune DEAD tasks that are NOT the current one and NOT the root task
     kern_task_t *prev = current_task;
     kern_task_t *next = current_task->next;
@@ -191,7 +232,7 @@ u0 sched_run_next() {
         if (next->state == TASK_STATE_DEAD && next->tid != 0) {
             kern_task_t *dead_task = next;
             prev->next = next->next;
-            
+
             if (dead_task == task_list_head) {
                 task_list_head = prev;
             }

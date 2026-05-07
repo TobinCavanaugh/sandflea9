@@ -17,5 +17,6 @@ u0 screen_lines_init(u32 row_len);
 u0 screen_push_line(const char *str);
 u0 screen_push_linef(const char *fmt, ...);
 u0 screen_terminal_clear();
+u0 screen_push_buf(const char *str, i32 len);
 
 #endif //KERN_TERMINAL_H

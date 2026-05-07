@@ -255,6 +255,12 @@ u0 keyboard_handle_keypress(registers_t *t) {
                 case 0x50:
                     ascii = KEY_DOWN;
                     break;
+                case 0x49:
+                    ascii = KEY_PGUP;
+                    break;
+                case 0x51:
+                    ascii = KEY_PGDN;
+                    break;
                 case 0x4B:
                     ascii = KEY_LEFT;
                     break;

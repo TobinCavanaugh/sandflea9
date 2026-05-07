@@ -14,7 +14,7 @@ static bool is_numeric(const char *str, u32 len) {
     }
 
     // Check for hex
-    if (len > i + 2 && str[i] == '0' && (str[i+1] == 'x' || str[i+1] == 'X')) {
+    if (len > i + 2 && str[i] == '0' && (str[i + 1] == 'x' || str[i + 1] == 'X')) {
         for (u32 j = i + 2; j < len; j++) {
             char c = str[j];
             if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) return false;
@@ -28,6 +28,21 @@ static bool is_numeric(const char *str, u32 len) {
     return true;
 }
 
+
+u8 cmd_word_eq(cmd_word_t *word, const char *match) {
+    if(!word || !match) return 0;
+
+    i32 mlen = str_len(match);
+    i32 wlen = word->len;
+
+    if (mlen != wlen) return 0;
+    for (i32 i = 0; i < mlen; i++) {
+        if (word->loc[i] != match[i]) return 0;
+    }
+
+    return 1;
+}
+
 // Changed allocator signature to size_t to match malloc, or you can cast malloc when calling
 cmd_word_t *cmd_parse(const char *str, void *(*Alloc_Func)(u64)) {
 
@@ -37,7 +52,7 @@ cmd_word_t *cmd_parse(const char *str, void *(*Alloc_Func)(u64)) {
     u8 esc = false;
 
     cmd_word_t *root = Alloc_Func(sizeof(cmd_word_t));
-    root->loc = (char*)str; // Initialize to start of string (was 0)
+    root->loc = (char *) str; // Initialize to start of string (was 0)
     root->val_type = CMD_WT_STR;
     root->next = null;
 
@@ -77,14 +92,14 @@ cmd_word_t *cmd_parse(const char *str, void *(*Alloc_Func)(u64)) {
             current->val_type = CMD_WT_i64;
             u32 offset = 0;
             u8 base = 10;
-            const char* ptr = current->loc;
+            const char *ptr = current->loc;
             u32 len = current->len;
 
             if (ptr[0] == '-' || ptr[0] == '+') {
                 offset = 1;
             }
 
-            if (len > offset + 2 && ptr[offset] == '0' && (ptr[offset+1] == 'x' || ptr[offset+1] == 'X')) {
+            if (len > offset + 2 && ptr[offset] == '0' && (ptr[offset + 1] == 'x' || ptr[offset + 1] == 'X')) {
                 // Hex path
                 // We pass the whole string to sn_to_i64, it handles sign. 
                 // But we need to skip 0x for the numeric part if sn_to_i64 doesn't support 0x.
@@ -103,7 +118,7 @@ cmd_word_t *cmd_parse(const char *str, void *(*Alloc_Func)(u64)) {
 
         // Otherwise, setup the NEXT word
         cmd_word_t *neww = Alloc_Func(sizeof(cmd_word_t));
-        neww->loc = (char*)(str + i + 1); // Start AFTER the space
+        neww->loc = (char *) (str + i + 1); // Start AFTER the space
         neww->val_type = CMD_WT_STR; // Initialize defaults for new node
         neww->next = null;
 
