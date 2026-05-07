@@ -29,13 +29,19 @@ i32 screen_get_line_count() {
     return c;
 }
 
+#define TERMINAL_MAX_ROWS 1000
+
 u0 screen_push_buf(const char *buf, i32 len) {
     if (!buf || len <= 0) return;
 
+    u64 irq = save_irq_and_disable();
+
     screen_text_row_t *cur = screen_text_root;
-    // Advance to the end of the current list
+    i32 count = 1;
+    // Advance to the end of the current list and count rows
     while (cur->next != null) {
         cur = cur->next;
+        count++;
     }
 
     const char *ptr = buf;
@@ -43,10 +49,13 @@ u0 screen_push_buf(const char *buf, i32 len) {
 
     while (ptr < end) {
         // Allocate and link new row
-        cur->next = kmalloc(sizeof(screen_text_row_t));
-        cur = cur->next;
-        cur->next = null;
-        cur->str = kmallocz(screen_text_row_len);
+        screen_text_row_t *new_row = kmalloc(sizeof(screen_text_row_t));
+        new_row->str = kmallocz(screen_text_row_len);
+        new_row->next = null;
+        
+        cur->next = new_row;
+        cur = new_row;
+        count++;
 
         i32 i = 0;
         while (ptr < end && *ptr != '\n' && i < screen_text_row_len - 1) {
@@ -58,6 +67,19 @@ u0 screen_push_buf(const char *buf, i32 len) {
             ptr++;
         }
     }
+
+    // Prune old rows if exceeding limit
+    if (count > TERMINAL_MAX_ROWS) {
+        i32 to_remove = count - TERMINAL_MAX_ROWS;
+        while (to_remove-- > 0 && screen_text_root != null) {
+            screen_text_row_t *old = screen_text_root;
+            screen_text_root = screen_text_root->next;
+            kfree(old->str);
+            kfree(old);
+        }
+    }
+
+    restore_irq(irq);
 }
 
 u0 screen_push_line(const char *str) {

@@ -38,4 +38,5 @@ add_executable(sandflea9 src/kernel/main.c
         src/kernel/ssfn.c
         src/kernel/kern_ide.c
         src/include/kern_ide.h
+        src/kernel/main.c
 )

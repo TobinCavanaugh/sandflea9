@@ -10,6 +10,7 @@
 
 u64 hhdm_offset = 0;
 u64 free_list_head = 0;
+u64 pmm_free_page_count = 0;
 
 u0 init_vmm_globals(struct limine_hhdm_request hhdm_request) {
     if (hhdm_request.response != NULL) {
@@ -30,6 +31,7 @@ u0 pmm_free(u64 phys_addr) {
     u64 *virt_ptr = (u64 *) (phys_addr + hhdm_offset);
     *virt_ptr = free_list_head;
     free_list_head = phys_addr;
+    pmm_free_page_count++;
     restore_irq(irq);
 }
 
@@ -58,6 +60,7 @@ u64 pmm_alloc_page() {
     u64 ret = free_list_head;
     u64 *virt_ptr = (u64 *) (ret + hhdm_offset);
     free_list_head = *virt_ptr;
+    pmm_free_page_count--;
     restore_irq(irq);
 
     for (int i = 0; i < 512; i++) virt_ptr[i] = 0;
@@ -65,15 +68,7 @@ u64 pmm_alloc_page() {
 }
 
 u64 pmm_get_free_count() {
-    u64 irq = save_irq_and_disable();
-    u64 count = 0;
-    u64 curr = free_list_head;
-    while (curr != 0) {
-        count++;
-        curr = *(u64 *) (curr + hhdm_offset);
-    }
-    restore_irq(irq);
-    return count;
+    return pmm_free_page_count;
 }
 
 u64 read_cr3() {
@@ -293,14 +288,36 @@ u0 heap_expand(u64 needed) {
 
     serial_outsf("VMM: Expanding heap from %llX to %llX (needed %llX)\n", heap_end_addr, target_end, needed);
 
+    kern_process_t *kp = sched_get_kernel_process();
+    u64 master_cr3 = kp ? kp->cr3 : read_cr3();
+
     while (heap_end_addr < target_end) {
         u64 phys_page = pmm_alloc_page();
         if (phys_page == 0) {
             serial_outsl("VMM: FAILED TO ALLOCATE PHYSICAL PAGE FOR HEAP EXPANSION!");
             return;
         }
-        vmm_map_page(phys_page, heap_end_addr, PAGE_PRESENT | PAGE_RW);
+        vmm_map_page_in_pml4(master_cr3, phys_page, heap_end_addr, PAGE_PRESENT | PAGE_RW);
         heap_end_addr += PAGE_SIZE;
+    }
+
+    // Sync PML4 and flush TLB once at the end
+    if (master_cr3 != read_cr3()) {
+        u64 *current_pml4 = (u64 *) (read_cr3() + hhdm_offset);
+        u64 *master_pml4 = (u64 *) (master_cr3 + hhdm_offset);
+        
+        // The heap is in index 511, which should already be synced, 
+        // but we sync it anyway just in case the PDPT was new.
+        current_pml4[511] = master_pml4[511];
+
+        u64 cr3;
+        asm volatile("mov %%cr3, %0" : "=r"(cr3));
+        asm volatile("mov %0, %%cr3" : : "r"(cr3) : "memory");
+    } else {
+        // Just flush TLB if we are already on master CR3
+        u64 cr3;
+        asm volatile("mov %%cr3, %0" : "=r"(cr3));
+        asm volatile("mov %0, %%cr3" : : "r"(cr3) : "memory");
     }
 }
 
@@ -379,24 +396,37 @@ u0 *kern_realloc(void *ptr, u64 size) {
         return null;
     }
 
+    // Safety check: ensure pointer is in the heap range
+    if ((u64) ptr < KHEAP_START_ADDR || (u64) ptr >= heap_end_addr) {
+        serial_outsf("VMM: kern_realloc called with invalid pointer %llX (size %llX)\n", (u64) ptr, size);
+        return null;
+    }
+
     u64 irq = save_irq_and_disable();
     heap_header_t *header = (heap_header_t *) ((u64) ptr - sizeof(heap_header_t));
     if (header->size >= size) {
         restore_irq(irq);
         return ptr;
     }
+    u64 old_size = header->size;
     restore_irq(irq);
 
     void *new_ptr = kmalloc(size);
     if (!new_ptr) return null;
 
-    mem_copy(new_ptr, ptr, header->size);
+    mem_copy(new_ptr, ptr, old_size);
     kfree(ptr);
     return new_ptr;
 }
 
 u0 kfree(void *ptr) {
     if (ptr == null) return;
+
+    // Safety check: ensure pointer is in the heap range
+    if ((u64) ptr < KHEAP_START_ADDR || (u64) ptr >= heap_end_addr) {
+        serial_outsf("VMM: kfree called with invalid pointer %llX\n", (u64) ptr);
+        return;
+    }
 
     u64 irq = save_irq_and_disable();
     heap_header_t *header = (heap_header_t *) ((u64) ptr - sizeof(heap_header_t));
