@@ -32,17 +32,9 @@ i32 screen_get_line_count() {
 #define TERMINAL_MAX_ROWS 1000
 
 u0 screen_push_buf(const char *buf, i32 len) {
-    if (!buf || len <= 0) return;
+    if (!buf || len <= 0 || !screen_text_root) return;
 
     u64 irq = save_irq_and_disable();
-
-    screen_text_row_t *cur = screen_text_root;
-    i32 count = 1;
-    // Advance to the end of the current list and count rows
-    while (cur->next != null) {
-        cur = cur->next;
-        count++;
-    }
 
     const char *ptr = buf;
     const char *end = buf + len;
@@ -50,33 +42,44 @@ u0 screen_push_buf(const char *buf, i32 len) {
     while (ptr < end) {
         // Allocate and link new row
         screen_text_row_t *new_row = kmalloc(sizeof(screen_text_row_t));
+        if (!new_row) break;
         new_row->str = kmallocz(screen_text_row_len);
+        if (!new_row->str) {
+            kfree(new_row);
+            break;
+        }
         new_row->next = null;
         
-        cur->next = new_row;
-        cur = new_row;
-        count++;
+        if (screen_text_tail) {
+            screen_text_tail->next = new_row;
+            screen_text_tail = new_row;
+        } else {
+            screen_text_root = new_row;
+            screen_text_tail = new_row;
+        }
 
         i32 i = 0;
         while (ptr < end && *ptr != '\n' && i < screen_text_row_len - 1) {
-            cur->str[i++] = *ptr++;
+            new_row->str[i++] = *ptr++;
         }
 
-        cur->str[i] = 0;
+        new_row->str[i] = 0;
         if (ptr < end && *ptr == '\n') {
             ptr++;
         }
     }
 
     // Prune old rows if exceeding limit
+    i32 count = screen_get_line_count();
     if (count > TERMINAL_MAX_ROWS) {
         i32 to_remove = count - TERMINAL_MAX_ROWS;
         while (to_remove-- > 0 && screen_text_root != null) {
             screen_text_row_t *old = screen_text_root;
             screen_text_root = screen_text_root->next;
-            kfree(old->str);
+            if (old->str) kfree(old->str);
             kfree(old);
         }
+        if (screen_text_root == null) screen_text_tail = null;
     }
 
     restore_irq(irq);

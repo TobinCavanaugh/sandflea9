@@ -8,18 +8,6 @@
 #include "../include/dialect.h"
 
 
-#define LAPIC_SVR 0xF0
-#define LAPIC_EOI 0xB0
-#define APIC_ENABLE 0x100
-
-#define LAPIC_TIMER_LVT 0x320
-#define LAPIC_TIMER_INIT 0x380
-#define LAPIC_TIMER_CURR 0x390
-#define LAPIC_TIMER_DIV 0x3e0
-
-#define LAPIC_LVT_MASKED 0x10000
-#define LAPIC_TIMER_PERIODIC 0x20000
-
 
 typedef struct {
     u64 rax, rbx, rcx, rdx, rsi, rdi, rbp;

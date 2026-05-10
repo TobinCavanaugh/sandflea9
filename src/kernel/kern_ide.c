@@ -55,6 +55,8 @@ bool ide_detect() {
 }
 
 u0 ide_read_sectors(u32 lba, u8 count, u8 *buffer) {
+    u64 irq = save_irq_and_disable();
+
     // 1. Select Drive and send upper 4 bits of LBA
     // 0xE0 = LBA mode + Master
     outb(IDE_DRIVE_SEL, 0xE0 | ((lba >> 24) & 0x0F));
@@ -84,5 +86,7 @@ u0 ide_read_sectors(u32 lba, u8 count, u8 *buffer) {
             *ptr++ = inw(IDE_DATA);
         }
     }
+
+    restore_irq(irq);
 }
 

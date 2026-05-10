@@ -20,14 +20,6 @@
 #define PD_INDEX(x) (((x) >> 21) & 0x1FF)
 #define PT_INDEX(x) (((x) >> 12) & 0x1FF)
 
-#define IOAPIC_PHYS_BASE 0xFEC00000
-#define IOPACID 0x00
-#define IOAPICVER 0x01
-#define IOAPICARB 0x02
-#define IOREDTBL 0x10
-
-#define IA32_APIC_BASE_MSR 0x1B
-#define APIC_BASE_MASK 0xFFFFF000
 
 #define KHEAP_START_ADDR 0xFFFFFFFF88000000
 #define PAGE_SIZE 4096

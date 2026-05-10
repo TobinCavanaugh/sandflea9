@@ -5,7 +5,7 @@ This document outlines the structural changes required to improve the modularity
 ## 1. Hardware Abstraction Layer (HAL) Cleanup
 Goal: Isolate architecture-specific initialization from high-level interrupt dispatching.
 - [ ] Split `kern_interrupts.c`:
-    - [ ] Create `src/kernel/arch/x64/idt.c` for GDT/IDT table setup and descriptor logic.
+    - [x] Create `src/kernel/arch/x64/idt.c` for GDT/IDT table setup and descriptor logic.
     - [ ] Create `src/kernel/arch/x64/apic.c` for LAPIC and IOAPIC management.
     - [ ] Create `src/kernel/drivers/timer.c` for PIT and APIC timer calibration.
 - [ ] Clean up `kern_interrupts.c` to act solely as a high-level dispatcher for `isr_handler`.

@@ -25,6 +25,7 @@ C_SOURCES=(
     "src/kernel/ssfn.c"
     "src/kernel/stbsupport.c"
     "src/kernel/x64/idt.c"
+    "src/kernel/x64/apic.c"
     "src/util/util_str.c"
     "src/util/util_cmd.c"
     "src/kernel/wasm3-0.5.0/source/m3_api_libc.c"

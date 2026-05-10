@@ -266,6 +266,7 @@ u0 wasm_test(u0 *arg) {
     result = m3_CallArgv(f, 0, NULL);
     if (result) {
         screen_push_linef("WASM: Call error: %s", result);
+        serial_outsf("WASM: Call error: %s", result);
     } else {
         i32 res = 0;
         m3_GetResultsV(f, &res);
@@ -303,7 +304,7 @@ u0 handle_command() {
         screen_push_line("---  ---               ---------     ---       -------");
 
         kern_task_t *curr = head;
-        kern_process_t *visited[64] = {0};
+        kern_process_t *visited[256] = {0};
         int visited_count = 0;
 
         do {
@@ -317,7 +318,7 @@ u0 handle_command() {
                     }
                 }
 
-                if (!already_visited && visited_count < 64) {
+                if (!already_visited && visited_count < 256) {
                     visited[visited_count++] = proc;
 
                     int thread_count = 0;
@@ -381,10 +382,41 @@ u0 handle_command() {
         }
 
         kern_process_t *proc = process_create();
-        sched_create_process_thread(proc, wasm_test, path);
+        if (proc) {
+            if (!sched_create_process_thread(proc, wasm_test, path)) {
+                screen_push_line("WASM: Failed to create thread");
+                if (path) kfree(path);
+                // process_exit(proc); // Should probably clean up the process too
+            }
+        } else {
+            screen_push_line("WASM: Failed to create process (OOM)");
+            if (path) kfree(path);
+        }
         goto Label_Free;
     }
 
+    if (cmd_word_eq(word, "doxw")) {
+        i64 count = 10;
+        if (word->next && word->next->val_type == CMD_WT_i64) {
+            count = word->next->val_i64;
+        }
+
+        while (count--) {
+            kern_process_t *new_proc = process_create();
+            if (!new_proc) {
+                screen_push_line("doxw: Failed to create process (OOM)");
+                break;
+            }
+            char *p = str_dup("file_test.wasm", kmalloc);
+            if (!p || !sched_create_process_thread(new_proc, wasm_test, p)) {
+                screen_push_line("doxw: Failed to create thread (OOM)");
+                if (p) kfree(p);
+                break;
+            }
+        }
+
+        goto Label_Free;
+    }
 
     if (cmd_word_eq(word, "dox")) {
         i64 count = 10;

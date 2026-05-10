@@ -24,6 +24,9 @@ A hobby operating system for x64 with a focus on WebAssembly as the primary exec
 - **Toolchain:** GCC (cross-compiler preferred), NASM, `xorriso`, `mtools`, `debugfs`.
 - **Build System:** `build.sh` script orchestrates compilation, font processing, and ISO creation.
 - **Entry Point:** `kern_entry()` in `src/kernel/main.c`.
+- **Build Script:** Compiled using wsl using the build.sh script
+- **Execution:** Run via wr.bat, build via wb.bat
+- **Rules** Gemini / AI Agents should not run the OS itself via wr, building should likewise be avoided by AI.
 
 ## Coding Conventions
 - **Types:** Custom type aliases in `src/include/dialect.h` (e.g., `u0` for void, `u64` for uint64_t).

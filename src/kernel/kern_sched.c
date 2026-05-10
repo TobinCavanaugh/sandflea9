@@ -52,6 +52,8 @@ u0 sched_thread_exit() {
 
 kern_process_t *process_create() {
     kern_process_t *proc = kmalloc(sizeof(kern_process_t));
+    if (!proc) return null;
+
     proc->pid = ++process_id_c;
     proc->heap_vptr = 0x1000000;
     proc->mem_regions = null;
@@ -60,6 +62,12 @@ kern_process_t *process_create() {
 
     // Create a new PML4
     u64 pml4_phys = pmm_alloc_page();
+    if (pml4_phys == 0) {
+        kfree(proc);
+        return null;
+    }
+    proc->cr3 = pml4_phys;
+
     u64 *new_pml4 = (u64 *) (pml4_phys + vmm_get_hhdm());
     u64 *old_pml4 = (u64 *) (read_cr3() + vmm_get_hhdm());
 
@@ -68,7 +76,6 @@ kern_process_t *process_create() {
         new_pml4[i] = old_pml4[i];
     }
 
-    proc->cr3 = pml4_phys;
     return proc;
 }
 
@@ -117,14 +124,21 @@ u0 process_exit(kern_process_t *proc) {
 }
 
 static kern_task_t *task_create_internal(kern_process_t *proc, u0 (*function)(u0 *), u0 *arg) {
+    if (!proc && !kernel_process) return null; // Should not happen after sched_init
+
     kern_task_t *task = kmalloc(sizeof(kern_task_t));
+    if (!task) return null;
+
     task->tid = ++task_id_c;
     task->state = TASK_STATE_READY;
     task->process = proc ? proc : kernel_process;
 
     u64 stack_size = 128 * 1024; // 128KiB
     u0 *stack_ptr_base = kmalloc(stack_size);
-//    u0 *stack_ptr_base = (u0*) pmm_alloc_page();
+    if (!stack_ptr_base) {
+        kfree(task);
+        return null;
+    }
     task->stack_base = stack_ptr_base;
 
     u64 stack_top = (u64) stack_ptr_base + stack_size;
@@ -149,8 +163,14 @@ static kern_task_t *task_create_internal(kern_process_t *proc, u0 (*function)(u0
     task->process->thread_count++;
     serial_outsf("Thread created: TID %d in PID %d (new count: %d)\n", task->tid, task->process->pid,
                  task->process->thread_count);
-    task->next = task_list_head->next;
-    task_list_head->next = task;
+    
+    if (task_list_head) {
+        task->next = task_list_head->next;
+        task_list_head->next = task;
+    } else {
+        task->next = task;
+        task_list_head = task;
+    }
     restore_irq(irq);
 
     return task;
