@@ -156,6 +156,8 @@ write src/blob/add_test.wasm add_test.wasm
 write src/blob/file_test.wasm file_test.wasm
 write src/blob/file_test.wasm w
 write src/blob/utf8.txt utf8
+write src/blob/DOOM1.WAD DOOM1.WAD
+write src/blob/doom-v0.1.0.wasm doom-v0.1.0.wasm
 mkdir folder
 write src/blob/c.txt folder/a.txt
 EOF

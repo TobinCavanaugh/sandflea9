@@ -11,7 +11,7 @@
 #include "../include/kern_vmm.h"
 #include "../include/kern_fs.h"
 #include "../include/kern_sched.h"
-#include "wasm3-0.5.0/source/wasm3.h"
+#include "wasm3-0.5.0/source/m3_env.h"
 #include "wasm3-0.5.0/source/m3_api_libc.h"
 
 // TODO Running kmalloc2 and then kmalloc causes early page fault? I think
@@ -164,6 +164,7 @@ m3ApiRawFunction(wasm_fd_write) {
     }
 
     u32 total_written = 0;
+    kern_process_t *proc = sched_get_current_process();
 
     serial_outsf("WASM: Write called for fd: %d\n", fd);
     for (i32 i = 0; i < iovs_len; i++) {
@@ -173,14 +174,200 @@ m3ApiRawFunction(wasm_fd_write) {
         if (buf_offset + len <= memory_size) {
             u8 *host_buf = mem + buf_offset;
             if (len > 0) {
-                screen_push_buf(host_buf, len);
-                total_written += len;
+                if (proc && fd >= 0 && fd < MAX_FILE_HANDLES && proc->fd_table[fd] != null) {
+                    i32 res = fs_write(fd, host_buf, len);
+                    if (res < 0) {
+                        break;
+                    }
+                    total_written += res;
+                } else if (fd == 1 || fd == 2) {
+                    screen_push_buf(host_buf, len);
+                    total_written += len;
+                } else {
+                    break;
+                }
             }
         }
     }
 
     if (nwritten) *nwritten = total_written;
     m3ApiReturn(0);
+}
+
+extern volatile u64 sw;
+
+m3ApiRawFunction(doom_onErrorMessage) {
+    m3ApiGetArg(u32, msg_offset)
+    m3ApiGetArg(u32, msg_len)
+
+    u32 memory_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &memory_size, 0);
+    if (mem && msg_offset + msg_len <= memory_size) {
+        char *msg = kmalloc(msg_len + 1);
+        if (msg) {
+            mem_copy((u8 *)msg, mem + msg_offset, msg_len);
+            msg[msg_len] = '\0';
+            serial_outsf("DOOM ERROR: %s\n", msg);
+            screen_push_linef("DOOM ERROR: %s", msg);
+            kfree(msg);
+        }
+    }
+    m3ApiSuccess();
+}
+
+m3ApiRawFunction(doom_onInfoMessage) {
+    m3ApiGetArg(u32, msg_offset)
+    m3ApiGetArg(u32, msg_len)
+
+    u32 memory_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &memory_size, 0);
+    if (mem && msg_offset + msg_len <= memory_size) {
+        char *msg = kmalloc(msg_len + 1);
+        if (msg) {
+            mem_copy((u8 *)msg, mem + msg_offset, msg_len);
+            msg[msg_len] = '\0';
+            serial_outsf("DOOM INFO: %s\n", msg);
+            screen_push_linef("DOOM INFO: %s", msg);
+            kfree(msg);
+        }
+    }
+    m3ApiSuccess();
+}
+
+m3ApiRawFunction(doom_readSaveGame) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(u32, offset)
+    m3ApiGetArg(u32, len)
+    m3ApiReturn(0);
+}
+
+m3ApiRawFunction(doom_sizeOfSaveGame) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(u32, num)
+    m3ApiReturn(0);
+}
+
+m3ApiRawFunction(doom_writeSaveGame) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(u32, offset)
+    m3ApiGetArg(u32, data_offset)
+    m3ApiGetArg(u32, len)
+    m3ApiReturn(-1);
+}
+
+m3ApiRawFunction(doom_onGameInit) {
+    m3ApiGetArg(u32, width)
+    m3ApiGetArg(u32, height)
+    serial_outsf("DOOM Init Game: screen size %d x %d\n", width, height);
+    screen_push_linef("DOOM Init: screen size %d x %d", width, height);
+    m3ApiSuccess();
+}
+
+m3ApiRawFunction(doom_readWads) {
+    m3ApiGetArg(u32, wad_data_destination_offset)
+    m3ApiGetArg(u32, byte_length_of_each_wad_offset)
+
+    u32 memory_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &memory_size, 0);
+
+    screen_push_linef("readWads: Mem size %d, Dest %X", memory_size, wad_data_destination_offset);
+    serial_outsf("DOOM: readWads called. Memory size: %d, Dest offset: %08x, Len offset: %08x\n", 
+                 memory_size, wad_data_destination_offset, byte_length_of_each_wad_offset);
+
+    if (mem) {
+        i32 fd = fs_open("DOOM1.WAD");
+        if (fd < 0) {
+            fd = fs_open("doom1.wad");
+        }
+
+        if (fd >= 0) {
+            u32 size = fs_size(fd);
+            screen_push_linef("readWads: Opened WAD, size: %d", size);
+            serial_outsf("DOOM: readWads opened WAD, size: %d bytes\n", size);
+
+            if (wad_data_destination_offset + size <= memory_size &&
+                byte_length_of_each_wad_offset + sizeof(u32) <= memory_size) {
+                
+                i32 bytes_read = fs_read(fd, mem + wad_data_destination_offset, size);
+                *(u32*)(mem + byte_length_of_each_wad_offset) = size;
+                
+                screen_push_linef("readWads: Read %d of %d bytes", bytes_read, size);
+                serial_outsf("DOOM: readWads loaded %d of %d bytes to offset %08x\n", 
+                             bytes_read, size, wad_data_destination_offset);
+                if (bytes_read != (i32)size) {
+                    screen_push_linef("WARNING: read only %d bytes", bytes_read);
+                    serial_outsf("DOOM WARNING: fs_read returned %d instead of %d!\n", bytes_read, size);
+                }
+            } else {
+                screen_push_linef("ERR: Bounds check failed!");
+                serial_outsf("DOOM ERROR: readWads memory check FAILED! Needs %d bytes, memory has %d bytes (offset %d)\n", 
+                             size, memory_size, wad_data_destination_offset);
+            }
+            fs_close(fd);
+        } else {
+            screen_push_line("readWads: Could not open WAD");
+            serial_outsl("DOOM: readWads could not open DOOM1.WAD");
+        }
+    }
+    m3ApiSuccess();
+}
+
+m3ApiRawFunction(doom_wadSizes) {
+    m3ApiGetArg(u32, number_of_wads_offset)
+    m3ApiGetArg(u32, number_of_total_bytes_in_all_wads_offset)
+
+    u32 memory_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &memory_size, 0);
+
+    screen_push_linef("wadSizes: Mem size %d", memory_size);
+    serial_outsf("DOOM: wadSizes called. Memory size: %d\n", memory_size);
+
+    if (mem) {
+        i32 fd = fs_open("DOOM1.WAD");
+        if (fd < 0) {
+            fd = fs_open("doom1.wad");
+        }
+
+        if (fd >= 0) {
+            u32 size = fs_size(fd);
+            fs_close(fd);
+
+            if (number_of_wads_offset + sizeof(u32) <= memory_size &&
+                number_of_total_bytes_in_all_wads_offset + sizeof(u32) <= memory_size) {
+                *(u32*)(mem + number_of_wads_offset) = 1;
+                *(u32*)(mem + number_of_total_bytes_in_all_wads_offset) = size;
+                screen_push_linef("wadSizes: size %d", size);
+                serial_outsf("DOOM: wadSizes reported 1 WAD, size %d bytes\n", size);
+            } else {
+                screen_push_line("ERR: wadSizes bounds fail");
+                serial_outsl("DOOM ERROR: wadSizes memory check FAILED!");
+            }
+        } else {
+            if (number_of_wads_offset + sizeof(u32) <= memory_size &&
+                number_of_total_bytes_in_all_wads_offset + sizeof(u32) <= memory_size) {
+                *(u32*)(mem + number_of_wads_offset) = 0;
+                *(u32*)(mem + number_of_total_bytes_in_all_wads_offset) = 0;
+            }
+            screen_push_line("wadSizes: WAD not found");
+            serial_outsl("DOOM: DOOM1.WAD not found, reporting 0 custom WADs");
+        }
+    }
+    m3ApiSuccess();
+}
+
+m3ApiRawFunction(doom_timeInMilliseconds) {
+    m3ApiReturnType(i64)
+    m3ApiReturn((i64)sw);
+}
+
+m3ApiRawFunction(doom_drawFrame) {
+    m3ApiGetArg(u32, buffer_offset)
+    static u32 frame_count = 0;
+    frame_count++;
+    if (frame_count % 30 == 0) {
+        serial_outsf("DOOM: Frame drawn at offset %08x (Total frames: %d)\n", buffer_offset, frame_count);
+    }
+    m3ApiSuccess();
 }
 
 u0 wasm_test(u0 *arg) {
@@ -281,6 +468,159 @@ u0 wasm_test(u0 *arg) {
     if (arg) kfree(arg);
 }
 
+u0 wasm_doom_test(u0 *arg) {
+    const char *wasm_path = (const char *) arg;
+    if (!wasm_path) wasm_path = "doom-v0.1.0.wasm";
+
+    IM3Environment env = null;
+    IM3Runtime runtime = null;
+    u8 *wasm_data = null;
+
+    serial_outsf("WASM DOOM: Loading %s\n", wasm_path);
+    i32 fd = fs_open(wasm_path);
+    if (fd < 0) {
+        screen_push_linef("WASM DOOM: Could not open %s", wasm_path);
+        goto Label_Done;
+    }
+
+    u32 size = fs_size(fd);
+    wasm_data = kmalloc(size);
+    if (!wasm_data) {
+        screen_push_line("WASM DOOM: Out of memory for WASM data");
+        fs_close(fd);
+        goto Label_Done;
+    }
+    fs_read(fd, wasm_data, size);
+    fs_close(fd);
+
+    serial_outsl("WASM DOOM: Initializing environment...");
+    env = m3_NewEnvironment();
+    if (!env) {
+        screen_push_line("WASM DOOM: Could not create environment");
+        goto Label_Done;
+    }
+
+    serial_outsl("WASM DOOM: Initializing runtime...");
+    runtime = m3_NewRuntime(env, 512 * 1024, NULL);
+    if (!runtime) {
+        screen_push_line("WASM DOOM: Could not create runtime");
+        goto Label_Done;
+    }
+
+    IM3Module module = NULL;
+    serial_outsl("WASM DOOM: Parsing module...");
+    M3Result result = m3_ParseModule(env, &module, wasm_data, size);
+    if (result) {
+        screen_push_linef("WASM DOOM: Parse error: %s", result);
+        goto Label_Done;
+    }
+
+    if (!module) {
+        screen_push_line("WASM DOOM: Parsing failed, module is NULL");
+        goto Label_Done;
+    }
+
+    serial_outsf("WASM DOOM: Parse completed. Module functions at %p, count: %d\n", module->functions, module->numFunctions);
+    if (module->numFunctions > 0) {
+        for (u32 i = 0; i < 5 && i < module->numFunctions; i++) {
+            const char *mod_name =   module->functions[i].import.moduleUtf8;
+            const char *field_name = module->functions[i].import.fieldUtf8;
+            bool mod_safe = ((u64)mod_name >= 0xFFFF800000000000);
+            bool field_safe = ((u64)field_name >= 0xFFFF800000000000);
+            serial_outsf("  func[%d]: import.moduleUtf8=%p (%s), import.fieldUtf8=%p (%s)\n", 
+                         i, mod_name, mod_safe ? mod_name : (mod_name ? "invalid" : "null"),
+                         field_name, field_safe ? field_name : (field_name ? "invalid" : "null"));
+        }
+    }
+
+    serial_outsl("WASM DOOM: Loading module...");
+    result = m3_LoadModule(runtime, module);
+    if (result) {
+        screen_push_linef("WASM DOOM: Load error: %s", result);
+        goto Label_Done;
+    }
+
+    serial_outsf("WASM DOOM: Load completed. Module functions at %p\n", module->functions);
+    if (module->numFunctions > 0) {
+        for (u32 i = 0; i < 5 && i < module->numFunctions; i++) {
+            const char *mod_name = module->functions[i].import.moduleUtf8;
+            const char *field_name = module->functions[i].import.fieldUtf8;
+            bool mod_safe = ((u64)mod_name >= 0xFFFF800000000000);
+            bool field_safe = ((u64)field_name >= 0xFFFF800000000000);
+            serial_outsf("  func[%d]: import.moduleUtf8=%p (%s), import.fieldUtf8=%p (%s)\n", 
+                         i, mod_name, mod_safe ? mod_name : (mod_name ? "invalid" : "null"),
+                         field_name, field_safe ? field_name : (field_name ? "invalid" : "null"));
+        }
+    }
+
+    // Link the 10 custom Doom imports
+    m3_LinkRawFunction(module, "console", "onErrorMessage", "v(ii)", &doom_onErrorMessage);
+    m3_LinkRawFunction(module, "console", "onInfoMessage", "v(ii)", &doom_onInfoMessage);
+    m3_LinkRawFunction(module, "gameSaving", "readSaveGame", "i(ii)", &doom_readSaveGame);
+    m3_LinkRawFunction(module, "gameSaving", "sizeOfSaveGame", "i(i)", &doom_sizeOfSaveGame);
+    m3_LinkRawFunction(module, "gameSaving", "writeSaveGame", "i(iii)", &doom_writeSaveGame);
+    m3_LinkRawFunction(module, "loading", "onGameInit", "v(ii)", &doom_onGameInit);
+    m3_LinkRawFunction(module, "loading", "readWads", "v(ii)", &doom_readWads);
+    m3_LinkRawFunction(module, "loading", "wadSizes", "v(ii)", &doom_wadSizes);
+    m3_LinkRawFunction(module, "runtimeControl", "timeInMilliseconds", "I()", &doom_timeInMilliseconds);
+    m3_LinkRawFunction(module, "ui", "drawFrame", "v(i)", &doom_drawFrame);
+
+    // Also link standard WASI-like file descriptors
+    m3_LinkRawFunction(module, "env", "fd_open", "i(i)", &wasm_fd_open);
+    m3_LinkRawFunction(module, "env", "fd_read", "i(iii)", &wasm_fd_read);
+    m3_LinkRawFunction(module, "env", "fd_close", "i(i)", &wasm_fd_close);
+    m3_LinkRawFunction(module, "env", "fd_write", "i(iiii)", &wasm_fd_write);
+
+    serial_outsl("WASM DOOM: Linking LibC...");
+    result = m3_LinkLibC(module);
+    if (result) {
+        screen_push_linef("WASM DOOM: Link error: %s", result);
+    }
+
+    IM3Function init_func;
+    result = m3_FindFunction(&init_func, runtime, "initGame");
+    if (result) {
+        screen_push_linef("WASM DOOM: Cannot find initGame: %s", result);
+        goto Label_Done;
+    }
+
+    IM3Function tick_func;
+    result = m3_FindFunction(&tick_func, runtime, "tickGame");
+    if (result) {
+        screen_push_linef("WASM DOOM: Cannot find tickGame: %s", result);
+        goto Label_Done;
+    }
+
+    serial_outsl("WASM DOOM: Calling initGame()...");
+    screen_push_line("WASM DOOM: Calling initGame()...");
+    result = m3_Call(init_func, 0, NULL);
+    if (result) {
+        screen_push_linef("WASM DOOM: initGame error: %s", result);
+        goto Label_Done;
+    }
+
+    serial_outsl("WASM DOOM: Entering tick loop...");
+    screen_push_line("WASM DOOM: Entering tick loop...");
+
+    for (int ticks = 0; ticks < 300; ticks++) {
+        result = m3_Call(tick_func, 0, NULL);
+        if (result) {
+            screen_push_linef("WASM DOOM: tickGame error: %s", result);
+            break;
+        }
+        delay(33); // ~30 FPS
+    }
+
+    screen_push_line("WASM DOOM: Test loop finished successfully.");
+    serial_outsl("WASM DOOM: Test loop finished successfully.");
+
+Label_Done:
+    if (runtime) m3_FreeRuntime(runtime);
+    if (env) m3_FreeEnvironment(env);
+    if (wasm_data) kfree(wasm_data);
+    if (arg) kfree(arg);
+}
+
 u0 handle_command() {
     char workingbuf[256] = {0};
     u64 add = PAGE_SIZE * 1000;
@@ -372,6 +712,27 @@ u0 handle_command() {
             curr = curr->next;
         } while (curr != head);
 
+        goto Label_Free;
+    }
+
+    if (cmd_word_eq(word, "doom")) {
+        char *path = null;
+        if (word->next != null) {
+            path = str_dup_len(word->next->loc, word->next->len, kmalloc);
+        } else {
+            path = str_dup("doom-v0.1.0.wasm", kmalloc);
+        }
+
+        kern_process_t *proc = process_create();
+        if (proc) {
+            if (!sched_create_process_thread(proc, wasm_doom_test, path)) {
+                screen_push_line("DOOM: Failed to create thread");
+                if (path) kfree(path);
+            }
+        } else {
+            screen_push_line("DOOM: Failed to create process (OOM)");
+            if (path) kfree(path);
+        }
         goto Label_Free;
     }
 
@@ -553,6 +914,28 @@ u0 handle_command() {
         }
 
         kfree(path);
+        goto Label_Free;
+    }
+
+    if (cmd_word_eq(word, "write") && word->next != null && word->next->next != null) {
+        char *path = str_dup_len(word->next->loc, word->next->len, kmalloc);
+        char *str = str_dup_len(word->next->next->loc, word->next->next->len, kmalloc);
+
+        i32 fd = fs_open(path);
+        if (fd >= 0) {
+            i32 written = fs_write(fd, (u8 *) str, word->next->next->len);
+            if (written >= 0) {
+                screen_push_linef("Wrote %d bytes to %s", written, path);
+            } else {
+                screen_push_line("Error writing to file");
+            }
+            fs_close(fd);
+        } else {
+            screen_push_linef("Could not open: %s", path);
+        }
+
+        kfree(path);
+        kfree(str);
         goto Label_Free;
     }
 

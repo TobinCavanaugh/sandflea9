@@ -142,6 +142,8 @@ void kern_entry(void) {
     display_t *displays = kmalloc(sizeof(display_t) * 32);
     u8 fb_count = screen_init(framebuffer_request.response, displays, 32);
     display_main = &displays[0];
+    serial_outsf("Video: Primary display surface address: %p, width=%d, height=%d\n", 
+                 display_main->surface.address, (int)display_main->surface.width, (int)display_main->surface.height);
     serial_outsf("Video: %d framebuffer(s) found. Primary: %dx%d %dbpp\n",
                  fb_count, display_main->surface.width, display_main->surface.height, display_main->surface.bpp);
 

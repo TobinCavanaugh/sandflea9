@@ -24,6 +24,13 @@ u0 ext2_read_block(u32 block_id, u8 *buffer) {
     ide_read_sectors(start_sector, sectors_per_block, buffer);
 }
 
+u0 ext2_write_block(u32 block_id, u8 *buffer) {
+    if (!buffer || block_size == 0) return;
+    u32 sectors_per_block = block_size / 512;
+    u32 start_sector = block_id * sectors_per_block;
+    ide_write_sectors(start_sector, sectors_per_block, buffer);
+}
+
 u0 ext2_init() {
     u8 sb_buf[1024];
     ide_read_sectors(2, 2, sb_buf);
@@ -68,6 +75,32 @@ ext2_inode_t *ext2_get_inode(u32 inode_no, ext2_inode_t *out_inode) {
     kfree(buf);
 
     return out_inode;
+}
+
+u0 ext2_write_inode(u32 inode_no, ext2_inode_t *inode) {
+    if (inode_no == 0 || !inode || block_size == 0 || inode_no > sb_ptr->total_inodes) {
+        return;
+    }
+
+    ext2_bgd_t *bgdt = (ext2_bgd_t *) bgdt_cache;
+    u32 group = (inode_no - 1) / sb_ptr->inodes_per_group;
+    u32 index = (inode_no - 1) % sb_ptr->inodes_per_group;
+
+    u32 inode_table_block = bgdt[group].inode_table;
+    u32 inode_size = (sb_ptr->major_version >= 1) ? sb_ptr->inode_size : 128;
+    u32 copy_size = (inode_size < sizeof(ext2_inode_t)) ? inode_size : sizeof(ext2_inode_t);
+
+    u32 block_offset = (index * inode_size) / block_size;
+    u32 final_block = inode_table_block + block_offset;
+    u32 offset_in_block = (index * inode_size) % block_size;
+
+    u8 *buf = kmalloc(block_size);
+    if (!buf) return;
+    
+    ext2_read_block(final_block, buf);
+    mem_copy(buf + offset_in_block, (u8 *) inode, copy_size);
+    ext2_write_block(final_block, buf);
+    kfree(buf);
 }
 
 u32 ext2_get_bmap(ext2_inode_t *inode, u32 logical_block) {

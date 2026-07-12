@@ -90,3 +90,42 @@ u0 ide_read_sectors(u32 lba, u8 count, u8 *buffer) {
     restore_irq(irq);
 }
 
+u0 ide_write_sectors(u32 lba, u8 count, u8 *buffer) {
+    u64 irq = save_irq_and_disable();
+
+    // 1. Select Drive and send upper 4 bits of LBA
+    // 0xE0 = LBA mode + Master
+    outb(IDE_DRIVE_SEL, 0xE0 | ((lba >> 24) & 0x0F));
+
+    // 2. Send sector count
+    outb(IDE_SEC_COUNT, count);
+
+    // 3. Send remaining LBA bits
+    outb(IDE_LBA_LOW, (u8) lba);
+    outb(IDE_LBA_MID, (u8) (lba >> 8));
+    outb(IDE_LBA_HIGH, (u8) (lba >> 16));
+
+    // 4. Send WRITE command (0x30)
+    outb(IDE_COMMAND, 0x30);
+
+    u16 *ptr = (u16 *) buffer;
+
+    for (int i = 0; i < count; i++) {
+        // Wait for BSY to clear and DRQ to be set
+        while (true) {
+            u8 status = inb(IDE_STATUS);
+            if (!(status & IDE_STATUS_BSY) && (status & IDE_STATUS_DRQ)) break;
+        }
+
+        // Write 256 words (512 bytes)
+        for (int j = 0; j < 256; j++) {
+            outw(IDE_DATA, *ptr++);
+        }
+    }
+
+    // Wait for BSY to clear
+    while (inb(IDE_STATUS) & IDE_STATUS_BSY);
+
+    restore_irq(irq);
+}
+

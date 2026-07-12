@@ -24,5 +24,6 @@
 u0 ide_init();
 bool ide_detect();
 u0 ide_read_sectors(u32 lba, u8 count, u8 *buffer);
+u0 ide_write_sectors(u32 lba, u8 count, u8 *buffer);
 
 #endif //KERN_IDE_H
