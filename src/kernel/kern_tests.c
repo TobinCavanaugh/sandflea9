@@ -11,8 +11,33 @@
 #include "../include/kern_vmm.h"
 #include "../include/kern_fs.h"
 #include "../include/kern_sched.h"
+
+#define DoM3Logging 0
+
+
 #include "wasm3-0.5.0/source/m3_env.h"
 #include "wasm3-0.5.0/source/m3_api_libc.h"
+
+#define d_m3EnableOpProfiling 0
+#if DoM3Logging == 1
+# define d_m3LogParse           1   // .wasm binary decoding info
+# define d_m3LogModule          1   // Wasm module info
+# define d_m3LogCompile         1   // wasm -> metacode generation phase
+# define d_m3LogWasmStack       1   // dump the wasm stack when pushed or popped
+# define d_m3LogEmit            1   // metacode-generation info
+# define d_m3LogCodePages       1   // dump metacode pages when released
+# define d_m3LogRuntime         1   // higher-level runtime information
+# define d_m3LogNativeStack     1   // track the memory usage of the C-stack
+#else
+# define d_m3LogParse           0   // .wasm binary decoding info
+# define d_m3LogModule          0   // Wasm module info
+# define d_m3LogCompile         0   // wasm -> metacode generation phase
+# define d_m3LogWasmStack       0   // dump the wasm stack when pushed or popped
+# define d_m3LogEmit            0   // metacode-generation info
+# define d_m3LogCodePages       0   // dump metacode pages when released
+# define d_m3LogRuntime         0   // higher-level runtime information
+# define d_m3LogNativeStack     0   // track the memory usage of the C-stack
+#endif
 
 // TODO Running kmalloc2 and then kmalloc causes early page fault? I think
 

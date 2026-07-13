@@ -81,10 +81,15 @@ u0 ide_read_sectors(u32 lba, u8 count, u8 *buffer) {
             if (!(status & IDE_STATUS_BSY) && (status & IDE_STATUS_DRQ)) break;
         }
 
-        // Read 256 words (512 bytes)
-        for (int j = 0; j < 256; j++) {
-            *ptr++ = inw(IDE_DATA);
-        }
+        // Read 256 words (512 bytes) using rep insw — single instruction
+        // replaces 256 individual inw calls, reducing VM exits under WHPX
+        u32 words = 256;
+        asm volatile (
+            "rep insw"
+            : "+D"(ptr), "+c"(words)
+            : "d"(IDE_DATA)
+            : "memory"
+        );
     }
 
     restore_irq(irq);
@@ -117,10 +122,14 @@ u0 ide_write_sectors(u32 lba, u8 count, u8 *buffer) {
             if (!(status & IDE_STATUS_BSY) && (status & IDE_STATUS_DRQ)) break;
         }
 
-        // Write 256 words (512 bytes)
-        for (int j = 0; j < 256; j++) {
-            outw(IDE_DATA, *ptr++);
-        }
+        // Write 256 words (512 bytes) using rep outsw — single instruction
+        u32 words = 256;
+        asm volatile (
+            "rep outsw"
+            : "+S"(ptr), "+c"(words)
+            : "d"(IDE_DATA)
+            : "memory"
+        );
     }
 
     // Wait for BSY to clear
