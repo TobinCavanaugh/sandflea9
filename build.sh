@@ -56,7 +56,7 @@ ASM_SOURCES=(
 # GCC_INCLUDE=$(gcc -print-file-name=include)
 
 # -I src/include must come FIRST
-CFLAGS="-m64 -c -O3 -ffreestanding -nostdlib -g -nostdinc -fno-pic -fno-pie -mno-red-zone -mcmodel=kernel -I src/include -I src/kernel/wasm3-0.5.0/source -D d_m3FixedHeap=false -DDEBUG -ffast-math"
+CFLAGS="-m64 -c -O3 -ffreestanding -nostdlib -g -nostdinc -fno-pic -fno-pie -mno-red-zone -mcmodel=kernel -I src/include -I src/kernel/wasm3-0.5.0/source -D d_m3FixedHeap=false -Dd_m3SkipMemoryBoundsCheck=1 -Dd_m3SkipStackCheck=1 -ffast-math -DNDEBUG"
 ASMFLAGS="-f elf64 -g"
 LDFLAGS="-m elf_x86_64 -T link.ld -build-id=none -z max-page-size=0x1000"
 

@@ -201,9 +201,15 @@ bool keyboard_scancode_consume_up(u8 sc) {
 
 // Queue definitions
 #define KEY_QUEUE_SIZE 128
+
 u8 queue[KEY_QUEUE_SIZE] = {0};
 u32 queue_read_ptr = 0;
 u32 queue_write_ptr = 0;
+
+u0 keyboard_flush_queue() {
+    queue_read_ptr = queue_write_ptr;
+    shift_down = 0;  // also release stuck shift state
+}
 
 u8 keyboard_peek_key() {
     if (queue_read_ptr == queue_write_ptr) {

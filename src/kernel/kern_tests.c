@@ -18,26 +18,6 @@
 #include "wasm3-0.5.0/source/m3_env.h"
 #include "wasm3-0.5.0/source/m3_api_libc.h"
 
-#define d_m3EnableOpProfiling 0
-#if DoM3Logging == 1
-# define d_m3LogParse           1   // .wasm binary decoding info
-# define d_m3LogModule          1   // Wasm module info
-# define d_m3LogCompile         1   // wasm -> metacode generation phase
-# define d_m3LogWasmStack       1   // dump the wasm stack when pushed or popped
-# define d_m3LogEmit            1   // metacode-generation info
-# define d_m3LogCodePages       1   // dump metacode pages when released
-# define d_m3LogRuntime         1   // higher-level runtime information
-# define d_m3LogNativeStack     1   // track the memory usage of the C-stack
-#else
-# define d_m3LogParse           0   // .wasm binary decoding info
-# define d_m3LogModule          0   // Wasm module info
-# define d_m3LogCompile         0   // wasm -> metacode generation phase
-# define d_m3LogWasmStack       0   // dump the wasm stack when pushed or popped
-# define d_m3LogEmit            0   // metacode-generation info
-# define d_m3LogCodePages       0   // dump metacode pages when released
-# define d_m3LogRuntime         0   // higher-level runtime information
-# define d_m3LogNativeStack     0   // track the memory usage of the C-stack
-#endif
 
 // TODO Running kmalloc2 and then kmalloc causes early page fault? I think
 
@@ -47,14 +27,14 @@ cmd_word_t *word;
 bool doom_active = false;
 static u32 doom_frame_width = 0;
 static u32 doom_frame_height = 0;
+static volatile u64 doom_last_draw_time = 0;  // watchdog: tracks last drawFrame call
 
 // --- Doom profiling ---
 // NOTE: sw timer has 10ms granularity — short ops (<10ms) will report as 0
 #define PROFILE_EVERY_N 30  // dump stats every N frames
 static u64   prof_kbd_time    = 0;  // keyboard polling
 static u64   prof_tick_time   = 0;  // tickGame execution
-static u64   prof_blit_time   = 0;  // drawFrame blit
-static u64   prof_flip_time   = 0;  // screen_draw
+static u64   prof_blit_time   = 0;  // drawFrame (direct-to-fb blit)
 static u64   prof_loop_total  = 0;  // active CPU per iteration
 
 u0 test_lsr(char *path_arg) {
@@ -419,16 +399,19 @@ m3ApiRawFunction(doom_timeInMilliseconds) {
 m3ApiRawFunction(doom_drawFrame) {
     m3ApiGetArg(u32, buffer_offset)
 
-    // Blit the WASM framebuffer to the screen surface
+    doom_last_draw_time = sw;  // update watchdog on every frame
+
+    // Blit Doom framebuffer directly to the real hardware framebuffer
+    // (skips the backbuffer and full-screen copy for max performance)
     if (doom_frame_width > 0 && doom_frame_height > 0) {
         u64 t_blit_start = sw;
         u32 memory_size = 0;
         u8 *mem = m3_GetMemory(runtime, &memory_size, 0);
         if (mem) {
             display_t *disp = screen_current_display();
-            if (disp && disp->surface.address) {
+            if (disp && disp->trueAddress) {
                 u32 *src = (u32 *)(mem + buffer_offset);
-                u32 *dst = (u32 *)disp->surface.address;
+                u32 *dst = (u32 *)disp->trueAddress;
                 u32 dst_pitch_px = disp->surface.pitch / 4;
                 u32 src_pitch_px = doom_frame_width;
                 u32 copy_h = doom_frame_height;
@@ -438,26 +421,21 @@ m3ApiRawFunction(doom_drawFrame) {
                 if (copy_w > disp->surface.width) copy_w = disp->surface.width;
                 if (copy_h > disp->surface.height) copy_h = disp->surface.height;
 
-                // Fast path: if pitches match, do a single mem_copy
-                if (src_pitch_px == dst_pitch_px) {
-                    mem_copy((u8 *)dst, (u8 *)src, copy_h * copy_w * 4);
-                } else {
-                    for (u32 y = 0; y < copy_h; y++) {
-                        mem_copy(
-                            (u8 *)(dst + y * dst_pitch_px),
-                            (u8 *)(src + y * src_pitch_px),
-                            copy_w * 4
-                        );
-                    }
+                // Center the Doom frame on screen
+                u32 dst_x_off = (disp->surface.width - copy_w) / 2;
+                u32 dst_y_off = (disp->surface.height - copy_h) / 2;
+
+                // Blit row by row (pitches can differ)
+                for (u32 y = 0; y < copy_h; y++) {
+                    mem_copy(
+                        (u8 *)(dst + (dst_y_off + y) * dst_pitch_px + dst_x_off),
+                        (u8 *)(src + y * src_pitch_px),
+                        copy_w * 4
+                    );
                 }
 
-                u64 t_blit_end = sw;
-                prof_blit_time += (t_blit_end - t_blit_start);
-
-                u64 t_flip_start = sw;
-                // Push backbuffer to real framebuffer
-                screen_draw();
-                prof_flip_time += (sw - t_flip_start);
+                prof_blit_time += (sw - t_blit_start);
+                // No screen_draw() needed — we wrote directly to trueAddress
             }
         }
     }
@@ -592,8 +570,10 @@ static i32 doom_read_key_global(IM3Module module, const char *name) {
 #define DOOM_SC_A        0x1E
 #define DOOM_SC_S        0x1F
 #define DOOM_SC_D        0x20
-#define DOOM_SC_E        0x12
 #define DOOM_SC_Q        0x10
+#define DOOM_SC_E        0x12
+#define DOOM_SC_Y        0x15
+#define DOOM_SC_N        0x31
 
 // Doom key code to doom key index for the globals
 typedef struct {
@@ -701,6 +681,8 @@ u0 wasm_doom_test(u0 *arg) {
     static i32 k_fire = 0, k_use = 0, k_enter = 0, k_escape = 0;
     static i32 k_tab = 0, k_shift = 0, k_alt = 0, k_strafe_l = 0, k_strafe_r = 0;
 
+    static i32 k_y = 0, k_n = 0, k_backspace = 0;
+
     k_up     = doom_read_key_global(module, "KEY_UPARROW");
     k_down   = doom_read_key_global(module, "KEY_DOWNARROW");
     k_left   = doom_read_key_global(module, "KEY_LEFTARROW");
@@ -714,6 +696,15 @@ u0 wasm_doom_test(u0 *arg) {
     k_alt    = doom_read_key_global(module, "KEY_ALT");
     k_strafe_l = doom_read_key_global(module, "KEY_STRAFE_L");
     k_strafe_r = doom_read_key_global(module, "KEY_STRAFE_R");
+    k_y      = doom_read_key_global(module, "KEY_Y");
+    k_n      = doom_read_key_global(module, "KEY_N");
+    k_backspace = doom_read_key_global(module, "KEY_BACKSPACE");
+
+    // Fallback: if the module doesn't export KEY_Y/KEY_N, use ASCII values
+    // Doom's menu quit confirmation checks for 'y'/'Y' (ASCII), not raw scancodes
+    if (k_y < 0) k_y = 'y';
+    if (k_n < 0) k_n = 'n';
+    if (k_backspace < 0) k_backspace = 0x0E;  // PS/2 backspace scancode
 
     serial_outsf("DOOM Keys: Up=%d Down=%d Left=%d Right=%d Fire=%d Use=%d Esc=%d\n",
                  k_up, k_down, k_left, k_right, k_fire, k_use, k_escape);
@@ -738,6 +729,9 @@ u0 wasm_doom_test(u0 *arg) {
         { DOOM_SC_D,      &k_right,  false },
         { DOOM_SC_E,      &k_strafe_r, false },
         { DOOM_SC_Q,      &k_strafe_l, false },
+        { DOOM_SC_Y,      &k_y,         false },
+        { DOOM_SC_N,      &k_n,         false },
+        { 0x0E,           &k_backspace, false },  // Backspace key (menu navigation)
     };
     const int key_map_count = sizeof(key_map) / sizeof(key_map[0]);
 
@@ -779,6 +773,15 @@ u0 wasm_doom_test(u0 *arg) {
     serial_outsl("WASM DOOM: Entering game loop...");
     screen_push_line("DOOM: Running! Press ESC to exit...");
 
+    // Clear the real framebuffer to black (we draw directly, so backbuffer clear won't help)
+    {
+        display_t *disp = screen_current_display();
+        if (disp && disp->trueAddress) {
+            mem_set32((u32 *)disp->trueAddress, COLOR_BLACK,
+                      disp->surface.pitch * disp->surface.height / 4);
+        }
+    }
+
     while (true) {
         u64 t_loop_start = sw;
 
@@ -818,25 +821,32 @@ u0 wasm_doom_test(u0 *arg) {
 
         prof_loop_total += (sw - t_loop_start);
 
+        // Watchdog: if Doom hasn't drawn a frame in ~1 second, it likely quit internally
+        // (the WASM module's _exit() is a stub since it's not imported)
+        if (doom_last_draw_time > 0 && (sw - doom_last_draw_time) > 50) {
+            serial_outsl("DOOM: drawFrame watchdog triggered — game appears to have quit");
+            break;
+        }
+
         // Dump profiling stats every N frames (times in timer ticks, ~10ms each)
         {
             static u32 prof_frame_count = 0;
             prof_frame_count++;
             if (prof_frame_count % PROFILE_EVERY_N == 0) {
                 serial_outsf(
-                    "PROFILE[%d frames, ~%dms per tick]: kbd=%-4lld tick=%-5lld blit=%-4lld flip=%-4lld active=%-5lld\n",
+                    "PROFILE[%d frames, ~%dms per tick]: kbd=%-4lld tick=%-5lld blit=%-4lld active=%-5lld\n",
                     PROFILE_EVERY_N, 10,
-                    prof_kbd_time, prof_tick_time, prof_blit_time, prof_flip_time, prof_loop_total
+                    prof_kbd_time, prof_tick_time, prof_blit_time, prof_loop_total
                 );
                 prof_kbd_time = 0;
                 prof_tick_time = 0;
                 prof_blit_time = 0;
-                prof_flip_time = 0;
                 prof_loop_total = 0;
             }
         }
 
-        delay(1); // minimal yield; tickGame handles internal timing
+        // No delay — tickGame handles internal frame timing;
+        // tight loop for maximum responsiveness
     }
 
     screen_push_line("WASM DOOM: Game loop exited.");
@@ -844,6 +854,7 @@ u0 wasm_doom_test(u0 *arg) {
 
 Label_Done:
     #undef BOOT_LOG
+    keyboard_flush_queue();  // clear leftover extended key codes from Doom gameplay
     doom_active = false;
     doom_frame_width = 0;
     doom_frame_height = 0;

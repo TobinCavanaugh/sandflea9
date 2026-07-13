@@ -28,5 +28,6 @@ extern bool scancode_pressed[128];
 bool keyboard_scancode_is_pressed(u8 sc);
 bool keyboard_scancode_consume_down(u8 sc);
 bool keyboard_scancode_consume_up(u8 sc);
+u0 keyboard_flush_queue();
 
 #endif //KERN_KEYBOARD_H
