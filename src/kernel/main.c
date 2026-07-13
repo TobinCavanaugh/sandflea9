@@ -219,6 +219,10 @@ void kern_entry(void) {
     serial_outsl("--- Initialization Complete. Entering Main Loop ---");
 
     for (;;) {
+        if (doom_active) {
+            // Doom's thread owns the screen entirely — just yield CPU
+            asm volatile("hlt");
+        } else {
         // Keyboard input
         u8 k = 0;
         while ((k = keyboard_eat_key())) {
@@ -315,5 +319,6 @@ void kern_entry(void) {
 
         screen_draw();
         asm volatile("hlt");
+        } /* end !doom_active */
     }
 }

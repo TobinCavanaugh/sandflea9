@@ -24,6 +24,22 @@ u0 ext2_read_block(u32 block_id, u8 *buffer) {
     ide_read_sectors(start_sector, sectors_per_block, buffer);
 }
 
+u0 ext2_read_blocks(u32 start_block, u32 count, u8 *buffer) {
+    if (!buffer || block_size == 0 || count == 0) return;
+    if (count == 1) { ext2_read_block(start_block, buffer); return; }
+    u32 sectors_per_block = block_size / 512;
+    u32 start_sector = start_block * sectors_per_block;
+    u32 total_sectors = count * sectors_per_block;
+    // ide_read_sectors takes u8 count; split into chunks if needed (max 255 sectors per call)
+    while (total_sectors > 0) {
+        u8 chunk = (total_sectors > 255) ? 255 : (u8)total_sectors;
+        ide_read_sectors(start_sector, chunk, buffer);
+        total_sectors -= chunk;
+        start_sector += chunk;
+        buffer += chunk * 512;
+    }
+}
+
 u0 ext2_write_block(u32 block_id, u8 *buffer) {
     if (!buffer || block_size == 0) return;
     u32 sectors_per_block = block_size / 512;
@@ -103,6 +119,35 @@ u0 ext2_write_inode(u32 inode_no, ext2_inode_t *inode) {
     kfree(buf);
 }
 
+// --- bmap cache: avoids re-reading indirect blocks thousands of times ---
+// For a 14MB WAD with 1KB blocks, single-indirect is read 14K+ times without cache
+static u32   bmap_cached_block   = 0;  // indirect block number cached
+static u32  *bmap_cached_table   = null; // pointer to kmalloc'd table copy
+static u32   bmap_cached_d_block = 0;  // double-indirect block cached
+static u32  *bmap_cached_d_table = null;
+
+static u32 *bmap_get_indirect(u32 block_no) {
+    if (block_no == 0) return null;
+    if (block_no == bmap_cached_block && bmap_cached_table)
+        return bmap_cached_table;
+    if (!bmap_cached_table) bmap_cached_table = kmalloc(block_size);
+    if (!bmap_cached_table) return null;
+    ext2_read_block(block_no, (u8 *)bmap_cached_table);
+    bmap_cached_block = block_no;
+    return bmap_cached_table;
+}
+
+static u32 *bmap_get_double_indirect(u32 d_block_no) {
+    if (d_block_no == 0) return null;
+    if (d_block_no == bmap_cached_d_block && bmap_cached_d_table)
+        return bmap_cached_d_table;
+    if (!bmap_cached_d_table) bmap_cached_d_table = kmalloc(block_size);
+    if (!bmap_cached_d_table) return null;
+    ext2_read_block(d_block_no, (u8 *)bmap_cached_d_table);
+    bmap_cached_d_block = d_block_no;
+    return bmap_cached_d_table;
+}
+
 u32 ext2_get_bmap(ext2_inode_t *inode, u32 logical_block) {
     if (block_size == 0) return 0;
     u32 n = block_size / 4;
@@ -113,53 +158,39 @@ u32 ext2_get_bmap(ext2_inode_t *inode, u32 logical_block) {
     logical_block -= 12;
 
     if (logical_block < n) {
-        u32 indirect_block = inode->block[12];
-        if (indirect_block == 0) return 0;
-        u32 *table = kmalloc(block_size);
-        ext2_read_block(indirect_block, (u8 *) table);
-        u32 phys = table[logical_block];
-        kfree(table);
-        return phys;
+        u32 *table = bmap_get_indirect(inode->block[12]);
+        if (!table) return 0;
+        return table[logical_block];
     }
     logical_block -= n;
 
     if (logical_block < n * n) {
-        u32 d_indirect_block = inode->block[13];
-        if (d_indirect_block == 0) return 0;
-        u32 *d_table = kmalloc(block_size);
-        ext2_read_block(d_indirect_block, (u8 *) d_table);
+        u32 *d_table = bmap_get_double_indirect(inode->block[13]);
+        if (!d_table) return 0;
         u32 indirect_block = d_table[logical_block / n];
-        kfree(d_table);
         if (indirect_block == 0) return 0;
-
-        u32 *table = kmalloc(block_size);
-        ext2_read_block(indirect_block, (u8 *) table);
-        u32 phys = table[logical_block % n];
-        kfree(table);
-        return phys;
+        u32 *table = bmap_get_indirect(indirect_block);
+        if (!table) return 0;
+        return table[logical_block % n];
     }
     logical_block -= n * n;
 
     if (logical_block < n * n * n) {
-        u32 t_indirect_block = inode->block[14];
-        if (t_indirect_block == 0) return 0;
+        u32 t_block = inode->block[14];
+        if (t_block == 0) return 0;
+        // triple-indirect: rare enough to not cache
         u32 *t_table = kmalloc(block_size);
-        ext2_read_block(t_indirect_block, (u8 *) t_table);
+        ext2_read_block(t_block, (u8 *) t_table);
         u32 d_indirect_block = t_table[logical_block / (n * n)];
         kfree(t_table);
         if (d_indirect_block == 0) return 0;
-
-        u32 *d_table = kmalloc(block_size);
-        ext2_read_block(d_indirect_block, (u8 *) d_table);
+        u32 *d_table = bmap_get_double_indirect(d_indirect_block);
+        if (!d_table) return 0;
         u32 indirect_block = d_table[(logical_block / n) % n];
-        kfree(d_table);
         if (indirect_block == 0) return 0;
-
-        u32 *table = kmalloc(block_size);
-        ext2_read_block(indirect_block, (u8 *) table);
-        u32 phys = table[logical_block % n];
-        kfree(table);
-        return phys;
+        u32 *table = bmap_get_indirect(indirect_block);
+        if (!table) return 0;
+        return table[logical_block % n];
     }
 
     return 0;

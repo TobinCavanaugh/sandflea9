@@ -138,29 +138,77 @@ i32 fs_read(i32 fd, u8 *buf, u32 count) {
 
     u32 bytes_read = 0;
     u8 *temp_block = kmalloc(block_size);
+    if (!temp_block) return -1;
 
-    while (bytes_read < count) {
+    // --- Phase 1: handle first partial block if not block-aligned ---
+    u32 offset_in_block = h->pos % block_size;
+    if (offset_in_block != 0) {
         u32 logical_block = h->pos / block_size;
-        u32 offset_in_block = h->pos % block_size;
         u32 phys_block = get_bmap(&h->inode, logical_block);
-
         if (phys_block == 0) {
-            // Sparse file or error
-            mem_set(buf + bytes_read, 0, count - bytes_read); // Handle holes as zeros
-            bytes_read = count;
-            break;
+            mem_set(buf, 0, count);  // sparse file → zero-fill
+            h->pos += count;
+            kfree(temp_block);
+            return count;
         }
-
         ext2_read_block(phys_block, temp_block);
-
         u32 to_copy = block_size - offset_in_block;
-        if (to_copy > (count - bytes_read)) to_copy = count - bytes_read;
-
-        mem_copy(buf + bytes_read, temp_block + offset_in_block, to_copy);
-
+        if (to_copy > count) to_copy = count;
+        mem_copy(buf, temp_block + offset_in_block, to_copy);
         bytes_read += to_copy;
         h->pos += to_copy;
     }
+
+    // --- Phase 2: batch-read remaining full blocks ---
+    #define FS_BATCH_BLOCKS 64
+    u8 *batch_buf = kmalloc(block_size * FS_BATCH_BLOCKS);
+    if (!batch_buf) {
+        // fallback: single-block reads
+        while (bytes_read < count) {
+            u32 logical_block = h->pos / block_size;
+            u32 phys_block = get_bmap(&h->inode, logical_block);
+            if (phys_block == 0) { mem_set(buf + bytes_read, 0, count - bytes_read); break; }
+            ext2_read_block(phys_block, temp_block);
+            u32 to_copy = block_size;
+            if (to_copy > count - bytes_read) to_copy = count - bytes_read;
+            mem_copy(buf + bytes_read, temp_block, to_copy);
+            bytes_read += to_copy;
+            h->pos += to_copy;
+        }
+    } else {
+        while (bytes_read < count) {
+            u32 logical_block = h->pos / block_size;
+            u32 phys_block = get_bmap(&h->inode, logical_block);
+            if (phys_block == 0) { mem_set(buf + bytes_read, 0, count - bytes_read); break; }
+
+            // Determine run length of physically contiguous blocks
+            u32 run_blocks = 1;
+            u32 max_run = (count - bytes_read) / block_size;
+            if (max_run > FS_BATCH_BLOCKS) max_run = FS_BATCH_BLOCKS;
+
+            for (u32 r = 1; r < max_run; r++) {
+                u32 next_phys = get_bmap(&h->inode, logical_block + r);
+                if (next_phys != phys_block + r) break;
+                run_blocks++;
+            }
+
+            u32 run_bytes = run_blocks * block_size;
+            if (run_bytes > count - bytes_read) run_bytes = count - bytes_read;
+
+            if (run_blocks == 1) {
+                ext2_read_block(phys_block, temp_block);
+                u32 to_copy = (run_bytes < block_size) ? run_bytes : block_size;
+                mem_copy(buf + bytes_read, temp_block, to_copy);
+            } else {
+                ext2_read_blocks(phys_block, run_blocks, batch_buf);
+                mem_copy(buf + bytes_read, batch_buf, run_bytes);
+            }
+            bytes_read += run_bytes;
+            h->pos += run_bytes;
+        }
+        kfree(batch_buf);
+    }
+    #undef FS_BATCH_BLOCKS
 
     kfree(temp_block);
     return bytes_read;

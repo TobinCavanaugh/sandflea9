@@ -18,6 +18,20 @@
 
 cmd_word_t *word;
 
+// Doom globals
+bool doom_active = false;
+static u32 doom_frame_width = 0;
+static u32 doom_frame_height = 0;
+
+// --- Doom profiling ---
+// NOTE: sw timer has 10ms granularity — short ops (<10ms) will report as 0
+#define PROFILE_EVERY_N 30  // dump stats every N frames
+static u64   prof_kbd_time    = 0;  // keyboard polling
+static u64   prof_tick_time   = 0;  // tickGame execution
+static u64   prof_blit_time   = 0;  // drawFrame blit
+static u64   prof_flip_time   = 0;  // screen_draw
+static u64   prof_loop_total  = 0;  // active CPU per iteration
+
 u0 test_lsr(char *path_arg) {
     char *path = path_arg ? path_arg : "/";
 
@@ -258,6 +272,8 @@ m3ApiRawFunction(doom_writeSaveGame) {
 m3ApiRawFunction(doom_onGameInit) {
     m3ApiGetArg(u32, width)
     m3ApiGetArg(u32, height)
+    doom_frame_width = width;
+    doom_frame_height = height;
     serial_outsf("DOOM Init Game: screen size %d x %d\n", width, height);
     screen_push_linef("DOOM Init: screen size %d x %d", width, height);
     m3ApiSuccess();
@@ -275,9 +291,15 @@ m3ApiRawFunction(doom_readWads) {
                  memory_size, wad_data_destination_offset, byte_length_of_each_wad_offset);
 
     if (mem) {
-        i32 fd = fs_open("DOOM1.WAD");
-        if (fd < 0) {
-            fd = fs_open("doom1.wad");
+        // Try multiple common WAD filenames
+        static const char *wad_names[] = { "DOOM2.WAD", "DOOM.WAD", "DOOM1.WAD", "doom2.wad", "doom.wad", "doom1.wad" };
+        i32 fd = -1;
+        for (int wi = 0; wi < 6; wi++) {
+            fd = fs_open(wad_names[wi]);
+            if (fd >= 0) {
+                serial_outsf("DOOM: Found WAD: %s\n", wad_names[wi]);
+                break;
+            }
         }
 
         if (fd >= 0) {
@@ -288,7 +310,10 @@ m3ApiRawFunction(doom_readWads) {
             if (wad_data_destination_offset + size <= memory_size &&
                 byte_length_of_each_wad_offset + sizeof(u32) <= memory_size) {
                 
+                u64 t_wad_read_start = sw;
+                serial_outsf("DOOM: Loading WAD (%d bytes)...\n", size);
                 i32 bytes_read = fs_read(fd, mem + wad_data_destination_offset, size);
+                serial_outsf("DOOM: WAD load took %lld ticks (~%lldms)\n", sw - t_wad_read_start, (sw - t_wad_read_start) * 10);
                 *(u32*)(mem + byte_length_of_each_wad_offset) = size;
                 
                 screen_push_linef("readWads: Read %d of %d bytes", bytes_read, size);
@@ -323,9 +348,15 @@ m3ApiRawFunction(doom_wadSizes) {
     serial_outsf("DOOM: wadSizes called. Memory size: %d\n", memory_size);
 
     if (mem) {
-        i32 fd = fs_open("DOOM1.WAD");
-        if (fd < 0) {
-            fd = fs_open("doom1.wad");
+        // Try multiple common WAD filenames
+        static const char *wad_names[] = { "DOOM2.WAD", "DOOM.WAD", "DOOM1.WAD", "doom2.wad", "doom.wad", "doom1.wad" };
+        i32 fd = -1;
+        for (int wi = 0; wi < 6; wi++) {
+            fd = fs_open(wad_names[wi]);
+            if (fd >= 0) {
+                serial_outsf("DOOM: Found WAD: %s\n", wad_names[wi]);
+                break;
+            }
         }
 
         if (fd >= 0) {
@@ -362,11 +393,50 @@ m3ApiRawFunction(doom_timeInMilliseconds) {
 
 m3ApiRawFunction(doom_drawFrame) {
     m3ApiGetArg(u32, buffer_offset)
-    static u32 frame_count = 0;
-    frame_count++;
-    if (frame_count % 30 == 0) {
-        serial_outsf("DOOM: Frame drawn at offset %08x (Total frames: %d)\n", buffer_offset, frame_count);
+
+    // Blit the WASM framebuffer to the screen surface
+    if (doom_frame_width > 0 && doom_frame_height > 0) {
+        u64 t_blit_start = sw;
+        u32 memory_size = 0;
+        u8 *mem = m3_GetMemory(runtime, &memory_size, 0);
+        if (mem) {
+            display_t *disp = screen_current_display();
+            if (disp && disp->surface.address) {
+                u32 *src = (u32 *)(mem + buffer_offset);
+                u32 *dst = (u32 *)disp->surface.address;
+                u32 dst_pitch_px = disp->surface.pitch / 4;
+                u32 src_pitch_px = doom_frame_width;
+                u32 copy_h = doom_frame_height;
+                u32 copy_w = doom_frame_width;
+
+                // Clamp to screen size
+                if (copy_w > disp->surface.width) copy_w = disp->surface.width;
+                if (copy_h > disp->surface.height) copy_h = disp->surface.height;
+
+                // Fast path: if pitches match, do a single mem_copy
+                if (src_pitch_px == dst_pitch_px) {
+                    mem_copy((u8 *)dst, (u8 *)src, copy_h * copy_w * 4);
+                } else {
+                    for (u32 y = 0; y < copy_h; y++) {
+                        mem_copy(
+                            (u8 *)(dst + y * dst_pitch_px),
+                            (u8 *)(src + y * src_pitch_px),
+                            copy_w * 4
+                        );
+                    }
+                }
+
+                u64 t_blit_end = sw;
+                prof_blit_time += (t_blit_end - t_blit_start);
+
+                u64 t_flip_start = sw;
+                // Push backbuffer to real framebuffer
+                screen_draw();
+                prof_flip_time += (sw - t_flip_start);
+            }
+        }
     }
+
     m3ApiSuccess();
 }
 
@@ -468,6 +538,45 @@ u0 wasm_test(u0 *arg) {
     if (arg) kfree(arg);
 }
 
+// Helper: read a doom key global constant from the module
+static i32 doom_read_key_global(IM3Module module, const char *name) {
+    IM3Global g = m3_FindGlobal(module, name);
+    if (!g) return -1;
+    M3TaggedValue val;
+    M3Result r = m3_GetGlobal(g, &val);
+    if (r) return -1;
+    return (i32)val.value.i32;
+}
+
+// Scancode → doom key mapping
+// Doom scancodes come from the original DOS doom keyboard handler
+// These are the standard doom key codes used by the WASM port
+#define DOOM_SC_UP       0x48
+#define DOOM_SC_DOWN     0x50
+#define DOOM_SC_LEFT     0x4B
+#define DOOM_SC_RIGHT    0x4D
+#define DOOM_SC_CTRL     0x1D
+#define DOOM_SC_SPACE    0x39
+#define DOOM_SC_ENTER    0x1C
+#define DOOM_SC_ESCAPE   0x01
+#define DOOM_SC_TAB      0x0F
+#define DOOM_SC_LSHIFT   0x2A
+#define DOOM_SC_RSHIFT   0x36
+#define DOOM_SC_ALT      0x38
+#define DOOM_SC_W        0x11
+#define DOOM_SC_A        0x1E
+#define DOOM_SC_S        0x1F
+#define DOOM_SC_D        0x20
+#define DOOM_SC_E        0x12
+#define DOOM_SC_Q        0x10
+
+// Doom key code to doom key index for the globals
+typedef struct {
+    u8 scancode;
+    i32 *key_val_ptr;   // points to the value of the global
+    bool was_down;
+} doom_key_map_t;
+
 u0 wasm_doom_test(u0 *arg) {
     const char *wasm_path = (const char *) arg;
     if (!wasm_path) wasm_path = "doom-v0.1.0.wasm";
@@ -476,7 +585,13 @@ u0 wasm_doom_test(u0 *arg) {
     IM3Runtime runtime = null;
     u8 *wasm_data = null;
 
-    serial_outsf("WASM DOOM: Loading %s\n", wasm_path);
+    doom_active = true;
+
+    // --- Boot-phase profiling: track elapsed time at each step ---
+    // sw has ~10ms granularity; times in timer ticks (~10ms each)
+    #define BOOT_LOG(step) serial_outsf("DOOM BOOT[%lld]: " step "\n", sw)
+
+    BOOT_LOG("Opening WASM file...");
     i32 fd = fs_open(wasm_path);
     if (fd < 0) {
         screen_push_linef("WASM DOOM: Could not open %s", wasm_path);
@@ -484,23 +599,26 @@ u0 wasm_doom_test(u0 *arg) {
     }
 
     u32 size = fs_size(fd);
+    BOOT_LOG("Allocating WASM buffer...");
     wasm_data = kmalloc(size);
     if (!wasm_data) {
         screen_push_line("WASM DOOM: Out of memory for WASM data");
         fs_close(fd);
         goto Label_Done;
     }
+    serial_outsf("DOOM BOOT: Reading %d bytes WASM...\n", size);
     fs_read(fd, wasm_data, size);
     fs_close(fd);
+    BOOT_LOG("WASM file loaded.");
 
-    serial_outsl("WASM DOOM: Initializing environment...");
+    BOOT_LOG("Initializing environment...");
     env = m3_NewEnvironment();
     if (!env) {
         screen_push_line("WASM DOOM: Could not create environment");
         goto Label_Done;
     }
 
-    serial_outsl("WASM DOOM: Initializing runtime...");
+    BOOT_LOG("Initializing runtime...");
     runtime = m3_NewRuntime(env, 512 * 1024, NULL);
     if (!runtime) {
         screen_push_line("WASM DOOM: Could not create runtime");
@@ -508,7 +626,7 @@ u0 wasm_doom_test(u0 *arg) {
     }
 
     IM3Module module = NULL;
-    serial_outsl("WASM DOOM: Parsing module...");
+    BOOT_LOG("Parsing module...");
     M3Result result = m3_ParseModule(env, &module, wasm_data, size);
     if (result) {
         screen_push_linef("WASM DOOM: Parse error: %s", result);
@@ -520,40 +638,15 @@ u0 wasm_doom_test(u0 *arg) {
         goto Label_Done;
     }
 
-    serial_outsf("WASM DOOM: Parse completed. Module functions at %p, count: %d\n", module->functions, module->numFunctions);
-    if (module->numFunctions > 0) {
-        for (u32 i = 0; i < 5 && i < module->numFunctions; i++) {
-            const char *mod_name =   module->functions[i].import.moduleUtf8;
-            const char *field_name = module->functions[i].import.fieldUtf8;
-            bool mod_safe = ((u64)mod_name >= 0xFFFF800000000000);
-            bool field_safe = ((u64)field_name >= 0xFFFF800000000000);
-            serial_outsf("  func[%d]: import.moduleUtf8=%p (%s), import.fieldUtf8=%p (%s)\n", 
-                         i, mod_name, mod_safe ? mod_name : (mod_name ? "invalid" : "null"),
-                         field_name, field_safe ? field_name : (field_name ? "invalid" : "null"));
-        }
-    }
-
-    serial_outsl("WASM DOOM: Loading module...");
+    BOOT_LOG("Loading module...");
     result = m3_LoadModule(runtime, module);
     if (result) {
         screen_push_linef("WASM DOOM: Load error: %s", result);
         goto Label_Done;
     }
 
-    serial_outsf("WASM DOOM: Load completed. Module functions at %p\n", module->functions);
-    if (module->numFunctions > 0) {
-        for (u32 i = 0; i < 5 && i < module->numFunctions; i++) {
-            const char *mod_name = module->functions[i].import.moduleUtf8;
-            const char *field_name = module->functions[i].import.fieldUtf8;
-            bool mod_safe = ((u64)mod_name >= 0xFFFF800000000000);
-            bool field_safe = ((u64)field_name >= 0xFFFF800000000000);
-            serial_outsf("  func[%d]: import.moduleUtf8=%p (%s), import.fieldUtf8=%p (%s)\n", 
-                         i, mod_name, mod_safe ? mod_name : (mod_name ? "invalid" : "null"),
-                         field_name, field_safe ? field_name : (field_name ? "invalid" : "null"));
-        }
-    }
-
     // Link the 10 custom Doom imports
+    BOOT_LOG("Linking Doom imports...");
     m3_LinkRawFunction(module, "console", "onErrorMessage", "v(ii)", &doom_onErrorMessage);
     m3_LinkRawFunction(module, "console", "onInfoMessage", "v(ii)", &doom_onInfoMessage);
     m3_LinkRawFunction(module, "gameSaving", "readSaveGame", "i(ii)", &doom_readSaveGame);
@@ -571,11 +664,68 @@ u0 wasm_doom_test(u0 *arg) {
     m3_LinkRawFunction(module, "env", "fd_close", "i(i)", &wasm_fd_close);
     m3_LinkRawFunction(module, "env", "fd_write", "i(iiii)", &wasm_fd_write);
 
-    serial_outsl("WASM DOOM: Linking LibC...");
+    BOOT_LOG("Linking LibC...");
     result = m3_LinkLibC(module);
     if (result) {
         screen_push_linef("WASM DOOM: Link error: %s", result);
     }
+
+    // Read global key constants from the WASM module
+    BOOT_LOG("Reading key globals...");
+    static i32 k_up = 0, k_down = 0, k_left = 0, k_right = 0;
+    static i32 k_fire = 0, k_use = 0, k_enter = 0, k_escape = 0;
+    static i32 k_tab = 0, k_shift = 0, k_alt = 0, k_strafe_l = 0, k_strafe_r = 0;
+
+    k_up     = doom_read_key_global(module, "KEY_UPARROW");
+    k_down   = doom_read_key_global(module, "KEY_DOWNARROW");
+    k_left   = doom_read_key_global(module, "KEY_LEFTARROW");
+    k_right  = doom_read_key_global(module, "KEY_RIGHTARROW");
+    k_fire   = doom_read_key_global(module, "KEY_FIRE");
+    k_use    = doom_read_key_global(module, "KEY_USE");
+    k_enter  = doom_read_key_global(module, "KEY_ENTER");
+    k_escape = doom_read_key_global(module, "KEY_ESCAPE");
+    k_tab    = doom_read_key_global(module, "KEY_TAB");
+    k_shift  = doom_read_key_global(module, "KEY_SHIFT");
+    k_alt    = doom_read_key_global(module, "KEY_ALT");
+    k_strafe_l = doom_read_key_global(module, "KEY_STRAFE_L");
+    k_strafe_r = doom_read_key_global(module, "KEY_STRAFE_R");
+
+    serial_outsf("DOOM Keys: Up=%d Down=%d Left=%d Right=%d Fire=%d Use=%d Esc=%d\n",
+                 k_up, k_down, k_left, k_right, k_fire, k_use, k_escape);
+
+    // Set up scancode-to-key mapping table
+    doom_key_map_t key_map[] = {
+        { DOOM_SC_UP,     &k_up,     false },
+        { DOOM_SC_DOWN,   &k_down,   false },
+        { DOOM_SC_LEFT,   &k_left,   false },
+        { DOOM_SC_RIGHT,  &k_right,  false },
+        { DOOM_SC_CTRL,   &k_fire,   false },
+        { DOOM_SC_SPACE,  &k_use,    false },
+        { DOOM_SC_ENTER,  &k_enter,  false },
+        { DOOM_SC_ESCAPE, &k_escape, false },
+        { DOOM_SC_TAB,    &k_tab,    false },
+        { DOOM_SC_LSHIFT, &k_shift,  false },
+        { DOOM_SC_RSHIFT, &k_shift,  false },
+        { DOOM_SC_ALT,    &k_alt,    false },
+        { DOOM_SC_W,      &k_up,     false },
+        { DOOM_SC_A,      &k_left,   false },
+        { DOOM_SC_S,      &k_down,   false },
+        { DOOM_SC_D,      &k_right,  false },
+        { DOOM_SC_E,      &k_strafe_r, false },
+        { DOOM_SC_Q,      &k_strafe_l, false },
+    };
+    const int key_map_count = sizeof(key_map) / sizeof(key_map[0]);
+
+    // Find keyboard input functions
+    IM3Function report_keydown_func = null;
+    IM3Function report_keyup_func = null;
+    if (m3_FindFunction(&report_keydown_func, runtime, "reportKeyDown")) {
+        report_keydown_func = null;
+    }
+    if (m3_FindFunction(&report_keyup_func, runtime, "reportKeyUp")) {
+        report_keyup_func = null;
+    }
+    serial_outsf("DOOM: reportKeyDown=%p reportKeyUp=%p\n", report_keydown_func, report_keyup_func);
 
     IM3Function init_func;
     result = m3_FindFunction(&init_func, runtime, "initGame");
@@ -593,28 +743,85 @@ u0 wasm_doom_test(u0 *arg) {
 
     serial_outsl("WASM DOOM: Calling initGame()...");
     screen_push_line("WASM DOOM: Calling initGame()...");
+    BOOT_LOG("Calling initGame()...");
     result = m3_Call(init_func, 0, NULL);
+    BOOT_LOG("initGame() complete.");
     if (result) {
         screen_push_linef("WASM DOOM: initGame error: %s", result);
         goto Label_Done;
     }
 
-    serial_outsl("WASM DOOM: Entering tick loop...");
-    screen_push_line("WASM DOOM: Entering tick loop...");
+    serial_outsl("WASM DOOM: Entering game loop...");
+    screen_push_line("DOOM: Running! Press ESC to exit...");
 
-    for (int ticks = 0; ticks < 300; ticks++) {
+    while (true) {
+        u64 t_loop_start = sw;
+
+        // --- Keyboard input: check all mapped scancodes ---
+        u64 t_kbd_start = sw;
+        for (int i = 0; i < key_map_count; i++) {
+            doom_key_map_t *km = &key_map[i];
+            bool pressed = keyboard_scancode_is_pressed(km->scancode);
+
+            if (pressed && !km->was_down) {
+                // Key just pressed
+                if (report_keydown_func && *km->key_val_ptr >= 0) {
+                    const void *args[1] = { km->key_val_ptr };
+                    m3_Call(report_keydown_func, 1, args);
+                }
+            } else if (!pressed && km->was_down) {
+                // Key just released
+                if (report_keyup_func && *km->key_val_ptr >= 0) {
+                    const void *args[1] = { km->key_val_ptr };
+                    m3_Call(report_keyup_func, 1, args);
+                }
+            }
+            km->was_down = pressed;
+        }
+        prof_kbd_time += (sw - t_kbd_start);
+
+        // --- Run one game tick ---
+        u64 t_tick_start = sw;
         result = m3_Call(tick_func, 0, NULL);
+        prof_tick_time += (sw - t_tick_start);
+
         if (result) {
             screen_push_linef("WASM DOOM: tickGame error: %s", result);
+            serial_outsf("WASM DOOM: tickGame error: %s\n", result);
             break;
         }
-        delay(33); // ~30 FPS
+
+        prof_loop_total += (sw - t_loop_start);
+
+        // Dump profiling stats every N frames (times in timer ticks, ~10ms each)
+        {
+            static u32 prof_frame_count = 0;
+            prof_frame_count++;
+            if (prof_frame_count % PROFILE_EVERY_N == 0) {
+                serial_outsf(
+                    "PROFILE[%d frames, ~%dms per tick]: kbd=%-4lld tick=%-5lld blit=%-4lld flip=%-4lld active=%-5lld\n",
+                    PROFILE_EVERY_N, 10,
+                    prof_kbd_time, prof_tick_time, prof_blit_time, prof_flip_time, prof_loop_total
+                );
+                prof_kbd_time = 0;
+                prof_tick_time = 0;
+                prof_blit_time = 0;
+                prof_flip_time = 0;
+                prof_loop_total = 0;
+            }
+        }
+
+        delay(1); // minimal yield; tickGame handles internal timing
     }
 
-    screen_push_line("WASM DOOM: Test loop finished successfully.");
-    serial_outsl("WASM DOOM: Test loop finished successfully.");
+    screen_push_line("WASM DOOM: Game loop exited.");
+    serial_outsl("WASM DOOM: Game loop exited.");
 
 Label_Done:
+    #undef BOOT_LOG
+    doom_active = false;
+    doom_frame_width = 0;
+    doom_frame_height = 0;
     if (runtime) m3_FreeRuntime(runtime);
     if (env) m3_FreeEnvironment(env);
     if (wasm_data) kfree(wasm_data);

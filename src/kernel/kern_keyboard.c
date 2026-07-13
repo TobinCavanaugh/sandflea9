@@ -174,6 +174,30 @@ char keyboard_shift(char c) {
 
 u8 shift_down = false;
 
+// Raw scancode tracking for doom/etc
+bool scancode_pressed[128] = {0};
+bool scancode_edge_down[128] = {0};
+bool scancode_edge_up[128] = {0};
+
+bool keyboard_scancode_is_pressed(u8 sc) {
+    if (sc >= 128) return false;
+    return scancode_pressed[sc];
+}
+
+bool keyboard_scancode_consume_down(u8 sc) {
+    if (sc >= 128) return false;
+    bool v = scancode_edge_down[sc];
+    scancode_edge_down[sc] = false;
+    return v;
+}
+
+bool keyboard_scancode_consume_up(u8 sc) {
+    if (sc >= 128) return false;
+    bool v = scancode_edge_up[sc];
+    scancode_edge_up[sc] = false;
+    return v;
+}
+
 
 // Queue definitions
 #define KEY_QUEUE_SIZE 128
@@ -220,6 +244,10 @@ u0 keyboard_handle_keypress(registers_t *t) {
         if (sc & 0x80) {
             u8 released = sc & 0x7F;
 
+            // Update scancode tracking
+            scancode_pressed[released] = false;
+            scancode_edge_up[released] = true;
+
             // Only reset shift if it's a non-extended left/right shift
             if (!is_extended && (released == 0x2A || released == 0x36)) {
                 shift_down = 0;
@@ -231,6 +259,12 @@ u0 keyboard_handle_keypress(registers_t *t) {
         }
 
         // 3. Handle Key Presses (Make Codes)
+
+        // Update scancode tracking (extended or not)
+        if (sc < 128) {
+            scancode_pressed[sc] = true;
+            scancode_edge_down[sc] = true;
+        }
 
         // Check for Shift Press (Left or Right)
         if (!is_extended && (sc == 0x2A || sc == 0x36)) {

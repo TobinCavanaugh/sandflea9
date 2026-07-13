@@ -22,4 +22,11 @@ i32 screen_get_line_count();
 
 u8 keyboard_peek_key();
 u0 toggle_capslock();
+
+// Raw scancode state for game input (doom etc)
+extern bool scancode_pressed[128];
+bool keyboard_scancode_is_pressed(u8 sc);
+bool keyboard_scancode_consume_down(u8 sc);
+bool keyboard_scancode_consume_up(u8 sc);
+
 #endif //KERN_KEYBOARD_H

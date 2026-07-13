@@ -8,18 +8,6 @@ echo --- Running ---
 
 break > serial_output.log
 
-@REM Performance Tweaks:
-@REM 1. -accel whpx: Use Windows Hypervisor Platform (HW Acceleration)
-@REM 2. -display sdl: Faster than the default GTK on Windows
-@REM 3. -vga std: Reliable display driver
-@REM 4. -drive ...: Attaching our disk image as a physical IDE drive
-
-
-
-@REM     -accel whpx ^
-@REM     -s -S ^
-@REM     -serial tcp:127.0.0.1:5555,server,wait ^
-
 qemu-system-x86_64.exe -cdrom sandfleaOS.iso ^
     -m 2G ^
     -bios ovmf/DEBUGX64_OVMF.fd ^
@@ -27,5 +15,6 @@ qemu-system-x86_64.exe -cdrom sandfleaOS.iso ^
     -vga std ^
     -drive file=disk.img,format=raw,index=0,media=disk ^
     -serial stdio ^
+    -accel whpx ^
     -device pci-serial,chardev=myserial ^
     -chardev file,id=myserial,path=pci_serial_output.log

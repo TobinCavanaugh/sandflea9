@@ -22,7 +22,9 @@
 
 
 #define KHEAP_START_ADDR 0xFFFFFFFF88000000
-#define PAGE_SIZE 4096
+
+// todo multi page size (4k or 2MB seems standard). x64 supporst 4k, 2mb, 1g
+#define PAGE_SIZE 0x1000
 #define HEAP_MIN_SIZE 0x40000 // Initial 256KB
 
 typedef struct heap_header {

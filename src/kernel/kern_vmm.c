@@ -286,6 +286,7 @@ u0 heap_expand(u64 needed) {
         target_end = (target_end & ~(PAGE_SIZE - 1)) + PAGE_SIZE;
     }
 
+    // TODO increase page size,
     serial_outsf("VMM: Expanding heap from %llX to %llX (needed %llX)\n", heap_end_addr, target_end, needed);
 
     kern_process_t *kp = sched_get_kernel_process();

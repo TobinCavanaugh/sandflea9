@@ -17,6 +17,7 @@ typedef struct {
 
 extern system_t system;
 extern char typingbuf[255];
+extern bool doom_active;
 
 u0 handle_command();
 

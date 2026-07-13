@@ -106,6 +106,7 @@ ext2_inode_t *find_file_in_root(char *target_name);
 ext2_inode_t *ext2_find_path(const char *path, u32 *out_inode_no);
 ext2_inode_t *ext2_get_inode(u32 inode_no, ext2_inode_t *out_inode);
 u0 ext2_read_block(u32 block_id, u8 *buffer);
+u0 ext2_read_blocks(u32 start_block, u32 count, u8 *buffer);
 u0 ext2_write_block(u32 block_id, u8 *buffer);
 u0 ext2_write_inode(u32 inode_no, ext2_inode_t *inode);
 u8 *get_block_ptr(u32 block_id);
