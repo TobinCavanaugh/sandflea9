@@ -16,6 +16,7 @@ extern u0 task_switch_asm(kern_task_t *current, kern_task_t *next);
 kern_task_t *current_task = null;
 kern_task_t *task_list_head = null;
 kern_process_t *kernel_process = null;
+kern_process_t *foreground_proc = null;
 
 u64 read_cr3();
 
@@ -59,6 +60,10 @@ kern_process_t *process_create() {
     proc->mem_regions = null;
     proc->thread_count = 0;
     for (int i = 0; i < MAX_FILE_HANDLES; i++) proc->fd_table[i] = null;
+    proc->argc = 0;
+    for (int i = 0; i < 16; i++) proc->argv[i] = null;
+    proc->cleanup_fn  = null;
+    proc->cleanup_ctx = null;
 
     // Create a new PML4
     u64 pml4_phys = pmm_alloc_page();
@@ -86,6 +91,30 @@ u0 process_exit(kern_process_t *proc) {
     serial_outsf("Reaping process PID %d (CR3: %llx)\n", proc->pid, proc->cr3);
     i32 old_pid = proc->pid;
     proc->pid = -1; // Mark as reaped immediately
+
+    if (proc == foreground_proc) {
+        foreground_proc = null;
+    }
+
+    // Per-process cleanup hook. Runs while the process is still alive enough
+    // for the hook to dereference `proc`; we invoke it BEFORE we start
+    // freeing fields, and BEFORE the fd_table / mem_regions / proc are
+    // released. The hook is responsible for releasing any module-specific
+    // resources (e.g. a WASM m3 runtime + environment).
+    if (proc->cleanup_fn) {
+        u0 (*fn)(u0 *) = proc->cleanup_fn;
+        u0 *ctx = proc->cleanup_ctx;
+        proc->cleanup_fn  = null;
+        proc->cleanup_ctx = null;
+        fn(ctx);
+    }
+
+    for (int i = 0; i < proc->argc; i++) {
+        if (proc->argv[i]) {
+            kfree(proc->argv[i]);
+            proc->argv[i] = null;
+        }
+    }
 
     // Close all open files
     for (int i = 0; i < MAX_FILE_HANDLES; i++) {
@@ -203,12 +232,14 @@ kern_process_t *sched_get_kernel_process() {
 
 
 kern_task_t *sched_get_by_pid(i32 pid) {
-    kern_task_t *proc = sched_get_task_list_head();
+    kern_task_t *head = sched_get_task_list_head();
+    if (!head) return null;
 
-    while (proc) {
-        if (proc->process->pid == pid) return proc;
-        proc = proc->next;
-    }
+    kern_task_t *cur = head;
+    do {
+        if (cur->process && cur->process->pid == pid) return cur;
+        cur = cur->next;
+    } while (cur != head);
 
     return null;
 }

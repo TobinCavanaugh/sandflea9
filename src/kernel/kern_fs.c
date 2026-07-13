@@ -14,7 +14,13 @@ u0 fs_init() {
 
 static i32 allocate_fd(kern_process_t *proc) {
     if (!proc) return -1;
-    for (i32 i = 0; i < MAX_FILE_HANDLES; i++) {
+    // Reserve fds 0, 1, 2 for stdin/stdout/stderr. Host functions
+    // (wasm_fd_read / wasm_fd_write) special-case these to route to the
+    // keyboard / screen regardless of the fd_table, so any other process
+    // that opens a file MUST land at fd >= 3 to avoid colliding with the
+    // console fds. Without this, the very first file a WASM program opens
+    // would clobber stdin and reads would block on the keyboard.
+    for (i32 i = 3; i < MAX_FILE_HANDLES; i++) {
         if (proc->fd_table[i] == null) {
             return i;
         }

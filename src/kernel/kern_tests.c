@@ -11,6 +11,7 @@
 #include "../include/kern_vmm.h"
 #include "../include/kern_fs.h"
 #include "../include/kern_sched.h"
+#include "../include/wasm_spawn.h"
 
 #define DoM3Logging 0
 
@@ -20,6 +21,8 @@
 
 
 // TODO Running kmalloc2 and then kmalloc causes early page fault? I think
+
+extern volatile u64 sw;
 
 cmd_word_t *word;
 
@@ -108,112 +111,7 @@ u0 dotest(u0 *arg) {
     screen_push_linef("[PID %d | TID %d] Exiting", proc->pid, task->tid);
 }
 
-m3ApiRawFunction(wasm_fd_open) {
-    m3ApiReturnType (i32)
-    m3ApiGetArg     (u32, path_offset)
-
-    u32 memory_size = 0;
-    u8 *mem = m3_GetMemory(runtime, &memory_size, 0);
-
-    if (mem && path_offset < memory_size) {
-        const char *path = (const char *) (mem + path_offset);
-        serial_outsf("WASM: Open called for path: %s\n", path);
-
-        i32 fd = fs_open(path);
-        m3ApiReturn(fd);
-    } else {
-        screen_push_line("WASM: Invalid memory access in sys_open");
-        m3ApiReturn(-1);
-    }
-}
-
-m3ApiRawFunction(wasm_fd_close) {
-    m3ApiReturnType(i32)
-    m3ApiGetArg(i32, fd)
-
-    screen_push_linef("wasm close: %d", fd);
-    serial_outsf("wasm close: %d\n", fd);
-    i32 result = fs_close(fd);
-    m3ApiReturn(result);
-}
-
-m3ApiRawFunction(wasm_fd_read) {
-    m3ApiReturnType (i32)
-    m3ApiGetArg     (i32, fd)
-    m3ApiGetArg     (u32, buf_offset)
-    m3ApiGetArg     (u32, count)
-
-    serial_outsf("WASM: Read called for fd: %d\n", fd);
-    u32 memory_size = 0;
-    u8 *mem = m3_GetMemory(runtime, &memory_size, 0);
-
-    if (mem && buf_offset + count <= memory_size) {
-        u8 *kernel_buf = mem + buf_offset;
-        i32 bytes_read = fs_read(fd, kernel_buf, count);
-        m3ApiReturn(bytes_read);
-    } else {
-        m3ApiReturn(-1);
-    }
-}
-
-typedef struct __wasi_ciovec_t {
-    uint32_t buf;      // Offset in Wasm memory
-    uint32_t buf_len;  // Length of this buffer
-} __wasi_ciovec_t;
-
-m3ApiRawFunction(wasm_fd_write) {
-    m3ApiGetArg     (i32, fd)
-    m3ApiGetArg     (u32, iovs_offset)
-    m3ApiGetArg     (i32, iovs_len)
-    m3ApiGetArg     (u32, nwritten_offset)
-    m3ApiReturnType (i32);
-
-    u32 memory_size = 0;
-    u8 *mem = m3_GetMemory(runtime, &memory_size, 0);
-
-    if (!mem) m3ApiReturn(-1);
-
-    __wasi_ciovec_t *iovs = (__wasi_ciovec_t *) (mem + iovs_offset);
-    u32 *nwritten = (u32 *) (mem + nwritten_offset);
-
-    // Basic bounds check for iovs and nwritten
-    if (iovs_offset + iovs_len * sizeof(__wasi_ciovec_t) > memory_size ||
-        nwritten_offset + sizeof(u32) > memory_size) {
-        m3ApiReturn(-1);
-    }
-
-    u32 total_written = 0;
-    kern_process_t *proc = sched_get_current_process();
-
-    serial_outsf("WASM: Write called for fd: %d\n", fd);
-    for (i32 i = 0; i < iovs_len; i++) {
-        u32 buf_offset = iovs[i].buf;
-        u32 len = iovs[i].buf_len;
-
-        if (buf_offset + len <= memory_size) {
-            u8 *host_buf = mem + buf_offset;
-            if (len > 0) {
-                if (proc && fd >= 0 && fd < MAX_FILE_HANDLES && proc->fd_table[fd] != null) {
-                    i32 res = fs_write(fd, host_buf, len);
-                    if (res < 0) {
-                        break;
-                    }
-                    total_written += res;
-                } else if (fd == 1 || fd == 2) {
-                    screen_push_buf(host_buf, len);
-                    total_written += len;
-                } else {
-                    break;
-                }
-            }
-        }
-    }
-
-    if (nwritten) *nwritten = total_written;
-    m3ApiReturn(0);
-}
-
-extern volatile u64 sw;
+// Host imports (wasm_fd_*, wasm_lsr, wasm_get_arg_*) and wasm_test() moved to src/kernel/wasm_spawn.c.
 
 m3ApiRawFunction(doom_onErrorMessage) {
     m3ApiGetArg(u32, msg_offset)
@@ -292,7 +190,7 @@ m3ApiRawFunction(doom_readWads) {
     u8 *mem = m3_GetMemory(runtime, &memory_size, 0);
 
     screen_push_linef("readWads: Mem size %d, Dest %X", memory_size, wad_data_destination_offset);
-    serial_outsf("DOOM: readWads called. Memory size: %d, Dest offset: %08x, Len offset: %08x\n", 
+    serial_outsf("DOOM: readWads called. Memory size: %d, Dest offset: %08x, Len offset: %08x\n",
                  memory_size, wad_data_destination_offset, byte_length_of_each_wad_offset);
 
     if (mem) {
@@ -314,15 +212,15 @@ m3ApiRawFunction(doom_readWads) {
 
             if (wad_data_destination_offset + size <= memory_size &&
                 byte_length_of_each_wad_offset + sizeof(u32) <= memory_size) {
-                
+
                 u64 t_wad_read_start = sw;
                 serial_outsf("DOOM: Loading WAD (%d bytes)...\n", size);
                 i32 bytes_read = fs_read(fd, mem + wad_data_destination_offset, size);
                 serial_outsf("DOOM: WAD load took %lld ticks (~%lldms)\n", sw - t_wad_read_start, (sw - t_wad_read_start) * 10);
                 *(u32*)(mem + byte_length_of_each_wad_offset) = size;
-                
+
                 screen_push_linef("readWads: Read %d of %d bytes", bytes_read, size);
-                serial_outsf("DOOM: readWads loaded %d of %d bytes to offset %08x\n", 
+                serial_outsf("DOOM: readWads loaded %d of %d bytes to offset %08x\n",
                              bytes_read, size, wad_data_destination_offset);
                 if (bytes_read != (i32)size) {
                     screen_push_linef("WARNING: read only %d bytes", bytes_read);
@@ -330,7 +228,7 @@ m3ApiRawFunction(doom_readWads) {
                 }
             } else {
                 screen_push_linef("ERR: Bounds check failed!");
-                serial_outsf("DOOM ERROR: readWads memory check FAILED! Needs %d bytes, memory has %d bytes (offset %d)\n", 
+                serial_outsf("DOOM ERROR: readWads memory check FAILED! Needs %d bytes, memory has %d bytes (offset %d)\n",
                              size, memory_size, wad_data_destination_offset);
             }
             fs_close(fd);
@@ -441,104 +339,6 @@ m3ApiRawFunction(doom_drawFrame) {
     }
 
     m3ApiSuccess();
-}
-
-u0 wasm_test(u0 *arg) {
-    const char *wasm_path = (const char *) arg;
-    if (!wasm_path) wasm_path = "add_test.wasm";
-
-    IM3Environment env = null;
-    IM3Runtime runtime = null;
-    u8 *wasm_data = null;
-
-    serial_outsf("WASM: Loading %s\n", wasm_path);
-    i32 fd = fs_open(wasm_path);
-    if (fd < 0) {
-        screen_push_linef("WASM: Could not open %s", wasm_path);
-        goto Label_Done;
-    }
-
-    u32 size = fs_size(fd);
-    wasm_data = kmalloc(size);
-    if (!wasm_data) {
-        screen_push_line("WASM: Out of memory for WASM data");
-        fs_close(fd);
-        goto Label_Done;
-    }
-    fs_read(fd, wasm_data, size);
-    fs_close(fd);
-
-    serial_outsl("WASM: Initializing environment...");
-    env = m3_NewEnvironment();
-    if (!env) {
-        screen_push_line("WASM: Could not create environment");
-        goto Label_Done;
-    }
-
-    serial_outsl("WASM: Initializing runtime...");
-    runtime = m3_NewRuntime(env, 64 * 1024, NULL);
-    if (!runtime) {
-        screen_push_line("WASM: Could not create runtime");
-        goto Label_Done;
-    }
-
-
-    IM3Module module = NULL;
-    serial_outsl("WASM: Parsing module...");
-    M3Result result = m3_ParseModule(env, &module, wasm_data, size);
-    if (result) {
-        screen_push_linef("WASM: Parse error: %s", result);
-        goto Label_Done;
-    }
-
-    if (!module) {
-        screen_push_line("WASM: Parsing failed, module is NULL");
-        goto Label_Done;
-    }
-
-    serial_outsf("m3_LoadModule: %p\n", m3_LoadModule);
-    result = m3_LoadModule(runtime, module);
-    if (result) {
-        screen_push_linef("WASM: Load error: %s", result);
-        goto Label_Done;
-    }
-
-    m3_LinkRawFunction(module, "env", "fd_open", "i(i)", &wasm_fd_open);
-    m3_LinkRawFunction(module, "env", "fd_read", "i(iii)", &wasm_fd_read);
-    m3_LinkRawFunction(module, "env", "fd_close", "i(i)", &wasm_fd_close);
-    m3_LinkRawFunction(module, "env", "fd_write", "i(iiii)", &wasm_fd_write);
-
-    serial_outsl("WASM: Linking LibC...");
-    result = m3_LinkLibC(module);
-    if (result) {
-        screen_push_linef("WASM: Link error: %s", result);
-        goto Label_Done;
-    }
-
-    IM3Function f;
-    result = m3_FindFunction(&f, runtime, "_start");
-    if (result) {
-        screen_push_linef("WASM: Function error: %s", result);
-        goto Label_Done;
-    }
-
-    serial_outsl("WASM: Calling _start()...");
-    result = m3_CallArgv(f, 0, NULL);
-    if (result) {
-        screen_push_linef("WASM: Call error: %s", result);
-        serial_outsf("WASM: Call error: %s", result);
-    } else {
-        i32 res = 0;
-        m3_GetResultsV(f, &res);
-        screen_push_linef("WASM: _start() returned %d", res);
-        serial_outsf("WASM: _start() returned %d\n", res);
-    }
-
-    Label_Done:
-    if (runtime) m3_FreeRuntime(runtime);
-    if (env) m3_FreeEnvironment(env);
-    if (wasm_data) kfree(wasm_data);
-    if (arg) kfree(arg);
 }
 
 // Helper: read a doom key global constant from the module
@@ -663,10 +463,11 @@ u0 wasm_doom_test(u0 *arg) {
     m3_LinkRawFunction(module, "runtimeControl", "timeInMilliseconds", "I()", &doom_timeInMilliseconds);
     m3_LinkRawFunction(module, "ui", "drawFrame", "v(i)", &doom_drawFrame);
 
-    // Also link standard WASI-like file descriptors
-    m3_LinkRawFunction(module, "env", "fd_open", "i(i)", &wasm_fd_open);
-    m3_LinkRawFunction(module, "env", "fd_read", "i(iii)", &wasm_fd_read);
-    m3_LinkRawFunction(module, "env", "fd_close", "i(i)", &wasm_fd_close);
+    // Doom also needs the standard file-descriptor host imports.
+    // (These live in src/kernel/wasm_spawn.c now; we call them by name.)
+    m3_LinkRawFunction(module, "env", "fd_open",  "i(i)",    &wasm_fd_open);
+    m3_LinkRawFunction(module, "env", "fd_read",  "i(iii)",  &wasm_fd_read);
+    m3_LinkRawFunction(module, "env", "fd_close", "i(i)",    &wasm_fd_close);
     m3_LinkRawFunction(module, "env", "fd_write", "i(iiii)", &wasm_fd_write);
 
     BOOT_LOG("Linking LibC...");
@@ -959,6 +760,9 @@ u0 handle_command() {
     }
 
     if (cmd_word_eq(word, "doom")) {
+        // Doom keeps its own loader because of the rich set of custom imports
+        // (ui.drawFrame, loading.readWads, etc.). Next pass: convert to a
+        // wasm_spawn() call with a link_extra hook.
         char *path = null;
         if (word->next != null) {
             path = str_dup_len(word->next->loc, word->next->len, kmalloc);
@@ -980,41 +784,45 @@ u0 handle_command() {
     }
 
     if (cmd_word_eq(word, "wasm")) {
+        // `wasm <file>` runs an arbitrary .wasm with the common host import set.
+        // argv = ["wasm", file], no foreground, no wait (fire-and-forget).
         char *path = null;
         if (word->next != null) {
             path = str_dup_len(word->next->loc, word->next->len, kmalloc);
         }
-
-        kern_process_t *proc = process_create();
-        if (proc) {
-            if (!sched_create_process_thread(proc, wasm_test, path)) {
-                screen_push_line("WASM: Failed to create thread");
-                if (path) kfree(path);
-                // process_exit(proc); // Should probably clean up the process too
-            }
-        } else {
-            screen_push_line("WASM: Failed to create process (OOM)");
-            if (path) kfree(path);
-        }
+        char *argv[2] = { "wasm", path };
+        int argc = path ? 2 : 1;
+        wasm_spawn_opts_t opts = {
+            .path = path,
+            .argc = argc,
+            .argv = (char *const *) argv,
+            .foreground = false,
+            .wait = false,
+        };
+        wasm_spawn(&opts);
+        if (path) kfree(path);
         goto Label_Free;
     }
 
     if (cmd_word_eq(word, "doxw")) {
+        // Stress test: spawn file_test.wasm N times. No foreground, no wait
+        // (fire-and-forget); we don't track individual PIDs here.
         i64 count = 10;
         if (word->next && word->next->val_type == CMD_WT_i64) {
             count = word->next->val_i64;
         }
 
+        wasm_spawn_opts_t opts = {
+            .path = "file_test.wasm",
+            .argc = 0,
+            .argv = null,
+            .foreground = false,
+            .wait = false,
+        };
+
         while (count--) {
-            kern_process_t *new_proc = process_create();
-            if (!new_proc) {
-                screen_push_line("doxw: Failed to create process (OOM)");
-                break;
-            }
-            char *p = str_dup("file_test.wasm", kmalloc);
-            if (!p || !sched_create_process_thread(new_proc, wasm_test, p)) {
-                screen_push_line("doxw: Failed to create thread (OOM)");
-                if (p) kfree(p);
+            if (wasm_spawn(&opts) < 0) {
+                screen_push_line("doxw: Failed to spawn (OOM)");
                 break;
             }
         }
@@ -1088,12 +896,22 @@ u0 handle_command() {
     }
 
     if (cmd_word_eq(word, "lsr")) {
+        // `lsr [path]` — recursive dir listing via the foreground lsr.wasm.
         char *path = null;
         if (word->next != null) {
             path = str_dup_len(word->next->loc, word->next->len, kmalloc);
         }
-        sched_create_thread((u0 (*)(u0 *)) test_lsr, path);
-//        test_lsr(); // works fine
+        char *argv[2] = { "lsr", path };
+        int argc = path ? 2 : 1;
+        wasm_spawn_opts_t opts = {
+            .path = "lsr.wasm",
+            .argc = argc,
+            .argv = (char *const *) argv,
+            .foreground = true,
+            .wait = true,
+        };
+        wasm_spawn(&opts);
+        if (path) kfree(path);
         goto Label_Free;
     }
 
@@ -1133,30 +951,23 @@ u0 handle_command() {
         goto Label_Free;
     }
 
-    if (cmd_word_eq(word, "cat") && word->next != null) {
-        char *path = str_dup(word->next->loc, kmalloc);
-        path[word->next->len] = 0;
-
-        i32 fd = fs_open(path);
-        if (fd >= 0) {
-            u32 size = fs_size(fd);
-            screen_push_linef("Reading %s (%d bytes) via FD %d", path, size, fd);
-
-            u8 *buf = kmallocz(size + 1);
-            i32 read = fs_read(fd, buf, size);
-            if (read >= 0) {
-                screen_push_line((char *) buf);
-                serial_outsf("CAT: %s\n", (char *) buf);
-            } else {
-                screen_push_line("Error reading file");
-            }
-            kfree(buf);
-            fs_close(fd);
-        } else {
-            screen_push_linef("Could not open: %s", path);
+    if (cmd_word_eq(word, "cat")) {
+        // `cat [path]` — foreground cat.wasm.
+        char *path = null;
+        if (word->next != null) {
+            path = str_dup_len(word->next->loc, word->next->len, kmalloc);
         }
-
-        kfree(path);
+        char *argv[2] = { "cat", path };
+        int argc = path ? 2 : 1;
+        wasm_spawn_opts_t opts = {
+            .path = "cat.wasm",
+            .argc = argc,
+            .argv = (char *const *) argv,
+            .foreground = true,
+            .wait = true,
+        };
+        wasm_spawn(&opts);
+        if (path) kfree(path);
         goto Label_Free;
     }
 

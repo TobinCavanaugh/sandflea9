@@ -42,6 +42,7 @@
 #include "../include/kern_fs.h"
 
 display_t *display_main = 0;
+u64 usable_ram = 0;
 
 extern char _binary_src_blob_regularfont_sfn_start;
 
@@ -188,7 +189,7 @@ void kern_entry(void) {
     ssfn_dst.fg = 0xFFFFFFFF; // White text
 
     u64 total_ram = 0;
-    u64 usable_ram = 0;
+    usable_ram = 0;
     struct limine_memmap_response *mm = memmap_request.response;
     for (u64 i = 0; i < mm->entry_count; i++) {
         struct limine_memmap_entry *me = mm->entries[i];
@@ -249,97 +250,113 @@ void kern_entry(void) {
         while ((k = keyboard_eat_key())) {
             i32 len = str_len(typingbuf);
 
-            if (k == '\n') {
-                screen_push_linef("#>%s", typingbuf);
-                handle_command();
-                typingbuf[0] = 0;
-            } else if (k == '\b') {
-                if (len > 0) typingbuf[len - 1] = '\0';
-            } else if (k == KEY_DOWN) {
-                ++screen_text_scroll;
-            } else if (k == KEY_UP) {
-                --screen_text_scroll;
-                screen_text_scroll = max(screen_text_scroll, 0);
-            } else if (k == KEY_PGUP) {
-                screen_text_scroll = 0;
-            } else if (k == KEY_PGDN) {
-                screen_text_scroll = max(0, screen_get_line_count() - 2);
+            if (foreground_proc != null) {
+                keyboard_fg_push(k);
             } else {
-                if (len < 254) {
-                    typingbuf[len] = k;
-                    typingbuf[len + 1] = 0;
+                if (k == '\n') {
+                    screen_push_linef("#>%s", typingbuf);
+                    handle_command();
+                    typingbuf[0] = 0;
+                } else if (k == '\b') {
+                    if (len > 0) typingbuf[len - 1] = '\0';
+                } else if (k == KEY_CTRL_C) {
+                    // No foreground to interrupt — Unix-style "bell": drop the line.
+                    typingbuf[0] = 0;
+                    screen_push_line("^C");
+                    serial_outsf("Ctrl+C (no foreground process)\n");
+                } else if (k == KEY_DOWN) {
+                    ++screen_text_scroll;
+                } else if (k == KEY_UP) {
+                    --screen_text_scroll;
+                    screen_text_scroll = max(screen_text_scroll, 0);
+                } else if (k == KEY_PGUP) {
+                    screen_text_scroll = 0;
+                } else if (k == KEY_PGDN) {
+                    screen_text_scroll = max(0, screen_get_line_count() - 2);
+                } else {
+                    if (len < 254) {
+                        typingbuf[len] = k;
+                        typingbuf[len + 1] = 0;
+                    }
                 }
             }
         }
 
-        screen_clear(COLOR_BLACK);
+        screen_render_shell();
+        asm volatile("hlt");
+        } /* end !doom_active */
+    }
+}
 
-        u32 start_y = font_height;
-        u64 irq_term = save_irq_and_disable();
-        screen_text_row_t *current = screen_text_root;
-        i32 row_idx = 0;
-        while (current != null) {
-            if (row_idx >= screen_text_scroll) {
-                i32 relative_row = row_idx - screen_text_scroll;
-                ssfn_dst.x = 0;
-                ssfn_dst.y = start_y + (relative_row * font_height);
+// Top-level on purpose: must be globally visible to other TUs (e.g. kern_tests.c).
+// Don't move this inside kern_entry — nested functions need -fnested-functions
+// and don't emit as a normal global symbol, causing undefined-reference link errors.
+u0 screen_render_shell() {
+    screen_clear(COLOR_BLACK);
 
-                if (ssfn_dst.y < display_main->surface.height - font_height) {
-                    ssfn_puts(current->str);
-                }
-            }
-            current = current->next;
-            ++row_idx;
-        }
-        restore_irq(irq_term);
-
-        Draw_Header:
-        {
+    u32 start_y = font_height;
+    u64 irq_term = save_irq_and_disable();
+    screen_text_row_t *current = screen_text_root;
+    i32 row_idx = 0;
+    while (current != null) {
+        if (row_idx >= screen_text_scroll) {
+            i32 relative_row = row_idx - screen_text_scroll;
             ssfn_dst.x = 0;
-            ssfn_dst.y = 0;
+            ssfn_dst.y = start_y + (relative_row * font_height);
 
-            v2i_t p = V2I(0, 0);
-            p.x = 1 + screen_puts_r(" sandfleaOS ", p, COLOR_WHITE, COLOR_BLACK).x;
+            if (ssfn_dst.y < display_main->surface.height - font_height) {
+                ssfn_puts(current->str);
+            }
+        }
+        current = current->next;
+        ++row_idx;
+    }
+    restore_irq(irq_term);
 
-            u64 free_ram = pmm_get_free_count() * PAGE_SIZE;
-            u64 used_ram = usable_ram - free_ram;
+    // Draw Header
+    {
+        v2i_t p = V2I(0, 0);
+        p.x = 1 + screen_puts_r(" sandfleaOS ", p, COLOR_WHITE, COLOR_BLACK).x;
 
-            stbsp_snprintf(buf, 255, " %4lld MiB ", used_ram / 1024 / 1024);
-            p.x = 1 + screen_puts_r(buf, p, COLOR_GREEN, COLOR_BLACK).x;
+        u64 free_ram = pmm_get_free_count() * PAGE_SIZE;
+        u64 used_ram = usable_ram - free_ram;
 
-            stbsp_snprintf(buf, 255, " %4lld MiB ", usable_ram / 1024 / 1024);
-            p.x = 1 + screen_puts_r(buf, p, COLOR_BLUE, COLOR_BLACK).x;
+        char buf[255];
+        stbsp_snprintf(buf, 255, " %4lld MiB ", used_ram / 1024 / 1024);
+        p.x = 1 + screen_puts_r(buf, p, COLOR_GREEN, COLOR_BLACK).x;
 
-            stbsp_snprintf(buf, 255, " Display %-2d ", display_main->index);
+        stbsp_snprintf(buf, 255, " %4lld MiB ", usable_ram / 1024 / 1024);
+        p.x = 1 + screen_puts_r(buf, p, COLOR_BLUE, COLOR_BLACK).x;
+
+        stbsp_snprintf(buf, 255, " Display %-2d ", display_main->index);
+        p.x = 1 + screen_puts_r(buf, p, COLOR_GRAY, COLOR_BLACK).x;
+
+        {
+            stbsp_snprintf(buf, 255, " %s ", (heartbeat1 % 2) ? "*" : " ");
             p.x = 1 + screen_puts_r(buf, p, COLOR_GRAY, COLOR_BLACK).x;
 
-            {
-                stbsp_snprintf(buf, 255, " %s ", (heartbeat1 % 2) ? "*" : " ");
-                p.x = 1 + screen_puts_r(buf, p, COLOR_GRAY, COLOR_BLACK).x;
+            stbsp_snprintf(buf, 255, " %s ", (heartbeat2 % 2) ? "*" : " ");
+            p.x = 1 + screen_puts_r(buf, p, COLOR_GRAY, COLOR_BLACK).x;
 
-                stbsp_snprintf(buf, 255, " %s ", (heartbeat2 % 2) ? "*" : " ");
-                p.x = 1 + screen_puts_r(buf, p, COLOR_GRAY, COLOR_BLACK).x;
+            stbsp_snprintf(buf, 255, " %s ", (heartbeat3 % 2) ? "*" : " ");
+            p.x = 1 + screen_puts_r(buf, p, COLOR_GRAY, COLOR_BLACK).x;
+        }
 
-                stbsp_snprintf(buf, 255, " %s ", (heartbeat3 % 2) ? "*" : " ");
-                p.x = 1 + screen_puts_r(buf, p, COLOR_GRAY, COLOR_BLACK).x;
-            }
+        for (int i = 0; i <= font_height; i += 4) {
+            screen_draw_line(V2I(p.x, i), V2I(display_main->surface.width, i), COLOR_DIM_GRAY);
+        }
+    }
 
-            for (int i = 0; i <= font_height; i += 4) {
-                screen_draw_line(V2I(p.x, i), V2I(display_main->surface.width, i), COLOR_DIM_GRAY);
-            }
-        };
+    // Clear part of screen for input line
+    screen_draw_rectl((v2i_t) {0, display_main->surface.height - font_height},
+                      (v2i_t) {display_main->surface.width, display_main->surface.height}, COLOR_BLACK);
 
-        // Clear part of screen for input line
-        screen_draw_rectl((v2i_t) {0, display_main->surface.height - font_height},
-                          (v2i_t) {display_main->surface.width, display_main->surface.height}, COLOR_BLACK);
-
+    if (foreground_proc == null) {
         ssfn_dst.x = 0;
         ssfn_dst.y = display_main->surface.height - font_height;
         ssfn_puts("#>");
         ssfn_puts(typingbuf);
-
-        screen_draw();
-        asm volatile("hlt");
-        } /* end !doom_active */
     }
+
+    screen_draw();
 }

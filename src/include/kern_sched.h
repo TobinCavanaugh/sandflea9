@@ -23,7 +23,17 @@ typedef struct kern_process {
     i32 thread_count;
     file_handle_t *fd_table[128]; // MAX_FILE_HANDLES
     // Future: WASM context, etc.
+    i32 argc;
+    char *argv[16];
+    // Per-process cleanup hook: invoked from process_exit() *before* the
+    // process struct is freed, so the owning thread (or the shim that
+    // spawned it) can release resources that aren't visible to the
+    // generic reaper (e.g. a WASM m3 runtime + environment).
+    u0 (*cleanup_fn)(u0 *);
+    u0  *cleanup_ctx;
 } kern_process_t;
+
+extern kern_process_t *foreground_proc;
 
 typedef struct kern_task {
     u64 rsp; // MUST BE FIRST

@@ -173,6 +173,10 @@ char keyboard_shift(char c) {
 }
 
 u8 shift_down = false;
+// Ctrl is derived from scancode_pressed[0x1D] at the encoding site so that
+// holding left AND right Ctrl simultaneously (and releasing them in any
+// order) doesn't desync the modifier state.
+#define IS_CTRL_DOWN() (scancode_pressed[0x1D])
 
 // Raw scancode tracking for doom/etc
 bool scancode_pressed[128] = {0};
@@ -209,6 +213,9 @@ u32 queue_write_ptr = 0;
 u0 keyboard_flush_queue() {
     queue_read_ptr = queue_write_ptr;
     shift_down = 0;  // also release stuck shift state
+    // ctrl tracking is in scancode_pressed[]; flush it too so a stuck
+    // Ctrl doesn't survive across a key reset.
+    for (int i = 0; i < 128; i++) scancode_pressed[i] = false;
 }
 
 u8 keyboard_peek_key() {
@@ -259,6 +266,9 @@ u0 keyboard_handle_keypress(registers_t *t) {
                 shift_down = 0;
             }
 
+            // (No ctrl_down tracking here — derived from scancode_pressed[0x1D]
+            //  at encode time so simultaneous left+right Ctrl works.)
+
             // Always reset extended state after processing the byte
             is_extended = 0;
             return;
@@ -277,6 +287,9 @@ u0 keyboard_handle_keypress(registers_t *t) {
             shift_down = 1;
         }
 
+        // (No ctrl_down tracking here — scancode_pressed[0x1D] is already
+        //  set to true for any 0x1D press, both regular and E0-extended.)
+
         u8 ascii = 0;
 
         // If it's a standard key, get the ASCII mapping
@@ -286,6 +299,15 @@ u0 keyboard_handle_keypress(registers_t *t) {
             // Apply shift modification if applicable
             if (shift_down) {
                 ascii = keyboard_shift(ascii);
+            }
+
+            // Apply Ctrl+letter encoding (Ctrl+A..Z → 0x01..0x1A).
+            // scancode_pressed[sc] above is already set to true, so doom/etc
+            // still see the raw scancode; only the ASCII byte gets re-encoded.
+            // Uses scancode_pressed[0x1D] so simultaneous left+right Ctrl
+            // (and out-of-order releases) stay in sync.
+            if (IS_CTRL_DOWN() && ascii >= 'a' && ascii <= 'z') {
+                ascii = ascii & 0x1F;
             }
         } else {
             switch (sc) {
@@ -322,4 +344,29 @@ u0 keyboard_handle_keypress(registers_t *t) {
         // 5. CRITICAL: Reset extended state so the next key isn't treated as extended
         is_extended = 0;
     }
+}
+
+u8 fg_key_queue[FG_QUEUE_SIZE] = {0};
+volatile u32 fg_queue_read_ptr = 0;
+volatile u32 fg_queue_write_ptr = 0;
+
+u0 keyboard_fg_push(u8 key) {
+    u32 next_write = (fg_queue_write_ptr + 1) % FG_QUEUE_SIZE;
+    if (next_write != fg_queue_read_ptr) {
+        fg_key_queue[fg_queue_write_ptr] = key;
+        fg_queue_write_ptr = next_write;
+    }
+}
+
+u8 keyboard_fg_eat() {
+    if (fg_queue_read_ptr == fg_queue_write_ptr) {
+        return 0;
+    }
+    u8 c = fg_key_queue[fg_queue_read_ptr];
+    fg_queue_read_ptr = (fg_queue_read_ptr + 1) % FG_QUEUE_SIZE;
+    return c;
+}
+
+u0 keyboard_fg_flush() {
+    fg_queue_read_ptr = fg_queue_write_ptr;
 }

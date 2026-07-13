@@ -22,6 +22,7 @@ C_SOURCES=(
     "src/kernel/kern_vmm.c"
     "src/kernel/libgcc_stubs.c"
     "src/kernel/main.c"
+    "src/kernel/wasm_spawn.c"
     "src/kernel/ssfn.c"
     "src/kernel/stbsupport.c"
     "src/kernel/x64/idt.c"
@@ -76,6 +77,7 @@ fi
 # =============================================================================
 
 if [ ! -d "obj" ]; then mkdir obj; fi
+if [ ! -d "obj/wasm" ]; then mkdir -p obj/wasm; fi
 if [ ! -d "iso_root" ]; then mkdir iso_root; fi
 
 rm -f iso_root/kernel.elf
@@ -152,15 +154,24 @@ write src/blob/testfile.txt testfile.txt
 write src/blob/a.txt a.txt
 write src/blob/b.txt b.txt
 write src/blob/c.txt c.txt
-write src/blob/add_test.wasm add_test.wasm
-write src/blob/file_test.wasm file_test.wasm
-write src/blob/file_test.wasm w
 write src/blob/utf8.txt utf8
 write src/blob/DOOM1.WAD DOOM1.WAD
-write src/blob/doom-v0.1.0.wasm doom-v0.1.0.wasm
 mkdir folder
 write src/blob/c.txt folder/a.txt
 EOF
+
+# Auto-include all .wasm files from obj/wasm/ (compiled by wb.bat on Windows)
+{
+    for wasm_path in obj/wasm/*.wasm; do
+        [ -f "$wasm_path" ] || continue
+        wasm_name=$(basename "$wasm_path")
+        echo "write $wasm_path $wasm_name"
+    done
+    # Special case: file_test.wasm also written as 'w'
+    if [ -f "obj/wasm/file_test.wasm" ]; then
+        echo "write obj/wasm/file_test.wasm w"
+    fi
+} | /usr/sbin/debugfs -w disk.img
 
 echo "--- Packaging UEFI ISO ---"
 
