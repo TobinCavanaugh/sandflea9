@@ -112,6 +112,9 @@ u0 ext2_write_inode(u32 inode_no, ext2_inode_t *inode);
 u8 *get_block_ptr(u32 block_id);
 u32 ext2_get_bmap(ext2_inode_t *inode, u32 logical_block);
 
+// File creation
+u32 ext2_create_file(const char *path);
+
 // Explorer API
 u0 ext2_explorer_init(ext2_explorer_t *explorer, u32 start_inode);
 u0 ext2_explorer_deinit(ext2_explorer_t *explorer);

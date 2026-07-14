@@ -2,6 +2,10 @@
 
 @REM Build the project
 call wb.bat
+if %ERRORLEVEL% neq 0 (
+    echo [ERROR] Build failed with exit code %ERRORLEVEL%. Aborting run.
+    exit /b %ERRORLEVEL%
+)
 
 echo Running with qemu (Optimized with IDE Drive)
 echo --- Running ---
@@ -14,6 +18,7 @@ qemu-system-x86_64.exe -cdrom sandfleaOS.iso ^
     -bios ovmf/DEBUGX64_OVMF.fd ^
     -display sdl ^
     -vga std ^
+    -cpu Skylake-Server ^
     -drive file=disk.img,format=raw,index=0,media=disk ^
     -serial stdio ^
     -accel whpx,kernel-irqchip=off

@@ -88,6 +88,32 @@ i32 fs_write(i32 fd, u8 *data, u64 size) {
     return bytes_written;
 }
 
+// Create a new file. Returns fd >= 0 on success, -1 on failure.
+// Only supports files in the root directory (no nested paths yet).
+i32 fs_create(const char *path) {
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc) return -1;
+
+    u32 inode_no = ext2_create_file(path);
+    if (inode_no == 0) return -1;
+
+    // Now open the newly created file
+    i32 fd = allocate_fd(proc);
+    if (fd == -1) return -1;
+
+    ext2_inode_t inode;
+    if (!ext2_get_inode(inode_no, &inode)) return -1;
+
+    file_handle_t *h = kmalloc(sizeof(file_handle_t));
+    if (!h) return -1;
+    h->inode_no = inode_no;
+    mem_copy((u8 *)&h->inode, (u8 *)&inode, sizeof(ext2_inode_t));
+    h->pos = 0;
+    h->used = true;
+    proc->fd_table[fd] = h;
+    return fd;
+}
+
 // Returns -1 if file could not be opened
 i32 fs_open(const char *path) {
     kern_process_t *proc = sched_get_current_process();

@@ -21,6 +21,7 @@ typedef struct {
 
 u0 fs_init();
 i32 fs_open(const char *path);
+i32 fs_create(const char *path);
 i32 fs_close(i32 fd);
 i32 fs_write(i32 fd, u8 *data, u64 size);
 i32 fs_read(i32 fd, u8 *buf, u32 count);

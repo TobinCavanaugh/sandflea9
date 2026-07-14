@@ -878,15 +878,27 @@ void term_render() {
     display_t *disp = screen_current_display();
     if (!disp) return;
 
+    // Track whether we've cleared the real framebuffer for the current
+    // doom session. Resets when term_render processes a non-doom session.
+    static bool fb_cleared_for_doom = false;
+
     term_session_t *s = active_session;
 
     // If this session has a fullscreen app (doom_active), the app owns
     // the real framebuffer directly — don't touch it at all.
-    // Just return to avoid overwriting the app's frame with a black screen
-    // or stale header bar.
+    // Clear the real framebuffer to black on first entry so the app
+    // starts on a clean canvas (no leftover terminal text or header bar).
     if (s->doom_active) {
+        if (!fb_cleared_for_doom) {
+            fb_cleared_for_doom = true;
+            if (disp && disp->trueAddress) {
+                mem_set32((u32 *)disp->trueAddress, COLOR_BLACK,
+                          disp->surface.pitch * disp->surface.height / 4);
+            }
+        }
         return;
     }
+    fb_cleared_for_doom = false;
 
     screen_clear(COLOR_BLACK);
 

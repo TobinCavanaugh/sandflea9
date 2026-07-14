@@ -21,3 +21,4 @@ if exist %WAT2WASM% (
 
 dos2unix build.sh
 wsl ./build.sh
+exit /b %ERRORLEVEL%

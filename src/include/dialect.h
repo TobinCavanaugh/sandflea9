@@ -44,9 +44,6 @@ typedef long double     f128;
 #define u32_MAX __UINT32_MAX__
 #define u64_MAX __UINT64_MAX__
 
-#define UINT32_MAX u32_MAX
-#define UINT64_MAX u64_MAX
-
 /* Maximum and minimum values for signed types */
 #define i8_MAX 127
 #define i8_MIN (-128)

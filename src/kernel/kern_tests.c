@@ -388,6 +388,9 @@ static i32 doom_read_key_global(IM3Module module, const char *name) {
 #define DOOM_SC_N        0x31
 
 // Doom key code to doom key index for the globals
+// Hybrid edge+state tracking:
+//   consume_down/up   → captures keys across scheduling gaps
+//   was_down           → suppresses typematic repeat events
 typedef struct {
     u8 scancode;
     i32 *key_val_ptr;   // points to the value of the global
@@ -602,26 +605,32 @@ u0 wasm_doom_test(u0 *arg) {
     while (true) {
         u64 t_loop_start = sw;
 
-        // --- Keyboard input: check all mapped scancodes ---
+        // --- Keyboard input: edge-detect with typematic suppression ---
+        // Uses consume_down / consume_up instead of state-based is_pressed,
+        // so a key pressed-and-released between Doom's timeslices is
+        // still captured (the ISR sets edge flags that persist until
+        // consumed).  The was_down guard suppresses typematic repeats
+        // (the PS/2 controller sends make codes repeatedly while held).
         u64 t_kbd_start = sw;
         for (int i = 0; i < key_map_count; i++) {
             doom_key_map_t *km = &key_map[i];
-            bool pressed = keyboard_scancode_is_pressed(km->scancode);
+            bool edge_down = keyboard_scancode_consume_down(km->scancode);
+            bool edge_up   = keyboard_scancode_consume_up(km->scancode);
 
-            if (pressed && !km->was_down) {
-                // Key just pressed
+            if (edge_down && !km->was_down) {
+                km->was_down = true;
                 if (report_keydown_func && *km->key_val_ptr >= 0) {
                     const void *args[1] = { km->key_val_ptr };
                     m3_Call(report_keydown_func, 1, args);
                 }
-            } else if (!pressed && km->was_down) {
-                // Key just released
+            }
+            if (edge_up && km->was_down) {
+                km->was_down = false;
                 if (report_keyup_func && *km->key_val_ptr >= 0) {
                     const void *args[1] = { km->key_val_ptr };
                     m3_Call(report_keyup_func, 1, args);
                 }
             }
-            km->was_down = pressed;
         }
         prof_kbd_time += (sw - t_kbd_start);
 
@@ -646,6 +655,9 @@ u0 wasm_doom_test(u0 *arg) {
         }
 
         // Dump profiling stats every N frames (times in timer ticks, ~10ms each)
+        // and yield every ~10 frames so the main loop can service keyboard
+        // (TTY switching). Most multitasking is handled by the preemptive
+        // scheduler; this infrequent yield is a safety valve.
         {
             static u32 prof_frame_count = 0;
             prof_frame_count++;
@@ -660,10 +672,10 @@ u0 wasm_doom_test(u0 *arg) {
                 prof_blit_time = 0;
                 prof_loop_total = 0;
             }
+            if (prof_frame_count % 10 == 0) {
+                sched_yield();
+            }
         }
-
-        // No delay — tickGame handles internal frame timing;
-        // tight loop for maximum responsiveness
     }
 
     screen_push_line("WASM DOOM: Game loop exited.");
@@ -776,9 +788,10 @@ u0 handle_command() {
     }
 
     if (cmd_word_eq(word, "doom")) {
-        // Doom keeps its own loader because of the rich set of custom imports
-        // (ui.drawFrame, loading.readWads, etc.). Next pass: convert to a
-        // wasm_spawn() call with a link_extra hook.
+        // Doom has a custom game loop (initGame + tickGame) that doesn't fit
+        // the normal wasm_thread_entry -> _start convention. Use thread_entry
+        // to have wasm_spawn handle process/foreground setup while doom
+        // provides its own loader (wasm_doom_test) with custom imports.
         char *path = null;
         if (word->next != null) {
             path = str_dup_len(word->next->loc, word->next->len, kmalloc);
@@ -786,25 +799,17 @@ u0 handle_command() {
             path = str_dup("doom-v0.1.0.wasm", kmalloc);
         }
 
-        kern_process_t *proc = process_create();
-        if (proc) {
-            // Mark doom as the foreground process so keyboard input goes to
-            // the fg_queue instead of accumulating in the shell's typingbuf.
-            // (wasm_spawn does this internally; doom bypasses wasm_spawn.)
-            foreground_proc = proc;
-            if (active_session) active_session->foreground_proc = (void*)proc;
-            keyboard_fg_flush();
-
-            if (!sched_create_process_thread(proc, wasm_doom_test, path)) {
-                screen_push_line("DOOM: Failed to create thread");
-                foreground_proc = null;
-                if (active_session) active_session->foreground_proc = NULL;
-                if (path) kfree(path);
-            }
-        } else {
-            screen_push_line("DOOM: Failed to create process (OOM)");
+        wasm_spawn_opts_t opts = {
+            .path = path,
+            .foreground = true,
+            .thread_entry = wasm_doom_test,
+            .custom_arg = path,
+        };
+        if (wasm_spawn(&opts) < 0) {
+            // wasm_spawn printed diagnostics; path wasn't consumed
             if (path) kfree(path);
         }
+        // On success, wasm_doom_test owns `path` and frees it in Label_Done.
         goto Label_Free;
     }
 
@@ -973,6 +978,67 @@ u0 handle_command() {
         char *path = str_dup_len(word->next->loc, word->next->len, kmalloc);
         kern_process_t *proc = process_create();
         sched_create_process_thread(proc, test_ext2, path);
+        goto Label_Free;
+    }
+
+    if (cmd_word_eq(word, "wat2wasm")) {
+        // `wat2wasm <input.wat> <output.wasm>` — compile WAT to WASM.
+        // Also supports: `wat2wasm <input.wat> -o <output.wasm>`
+        // Runs natively via wasm2c (embedded wabt), no wasm3 required.
+        char *input = null, *output = null;
+        if (word->next != null) {
+            input = str_dup_len(word->next->loc, word->next->len, kmalloc);
+        }
+        // Check for optional "-o" flag before the output filename
+        cmd_word_t *out_word = word->next ? word->next->next : null;
+        if (out_word != null && cmd_word_eq(out_word, "-o")) {
+            out_word = out_word->next;  // skip "-o", point to actual filename
+        }
+        if (out_word != null) {
+            output = str_dup_len(out_word->loc, out_word->len, kmalloc);
+        }
+        if (!input || !output) {
+            screen_push_line("Usage: wat2wasm <input.wat> <output.wasm>");
+            if (input) kfree(input);
+            if (output) kfree(output);
+            goto Label_Free;
+        }
+
+        // Run the native wasm2c compiler inline (synchronous, no wasm3/process)
+        screen_push_linef("wat2wasm: compiling %s -> %s", input, output);
+        char *argv_native[4] = { "wat2wasm", input, "-o", output };
+        wat2wasm_native(4, argv_native);
+
+        kfree(input);
+        kfree(output);
+        goto Label_Free;
+    }
+
+    if (cmd_word_eq(word, "fileinfo") && word->next != null) {
+        char *path = str_dup_len(word->next->loc, word->next->len, kmalloc);
+        i32 fd = fs_open(path);
+        if (fd < 0) {
+            screen_push_linef("fileinfo: could not open %s", path);
+        } else {
+            u32 size = fs_size(fd);
+            screen_push_linef("fileinfo: %s, size = %u bytes", path, size);
+            u8 buf[16];
+            i32 r = fs_read(fd, buf, 16);
+            if (r > 0) {
+                screen_push_linef("  first bytes: %02X %02X %02X %02X %02X %02X %02X %02X",
+                                  buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
+            }
+            if (size > 16) {
+                fs_seek(fd, size - 16, SEEK_SET);
+                r = fs_read(fd, buf, 16);
+                if (r > 0) {
+                    screen_push_linef("  last bytes: %02X %02X %02X %02X %02X %02X %02X %02X",
+                                      buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
+                }
+            }
+            fs_close(fd);
+        }
+        kfree(path);
         goto Label_Free;
     }
 

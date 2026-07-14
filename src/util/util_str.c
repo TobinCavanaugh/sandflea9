@@ -36,7 +36,7 @@ u32 i64_to_sn(i64 val, char *out_buf, u8 base, u32 max_size) {
 
     // 1. Handle Sign & Type Casting
     // We treat Base 10 as signed, and others (Hex, Binary) as unsigned/raw bits.
-    // We cast to u64 to safely handle INT64_MIN negation.
+    // We cast to u64 to safely handle i64_MIN negation.
     if (base == 10 && val < 0) {
         is_negative = 1;
         u_val = (u64) (-(val + 1)) + 1; // 2's complement safe negation

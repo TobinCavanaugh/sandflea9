@@ -26,6 +26,8 @@
 // Helpers
 // ============================================================================
 
+extern volatile u64 sw;
+
 // Local strdup that hands the allocation off to whichever kernel allocator
 // the caller prefers (kmalloc today; tests can swap in a counting alloc).
 static char * str_dup_safe(const char *s, void *(*alloc)(u64)) {
@@ -261,6 +263,695 @@ m3ApiRawFunction(wasm_get_arg) {
 }
 
 // ============================================================================
+// Kernel-native WASI implementation
+// Maps wasi_snapshot_preview1 host functions to sandfleaOS kernel APIs.
+// Avoids depending on m3_api_wasi.c (which requires POSIX headers unavailable
+// in our freestanding kernel).  All file I/O goes through fs_open/read/write/close.
+// ============================================================================
+
+// WASI errno constants
+#define WESI_ESUCCESS   0
+#define WESI_EBADF      8
+#define WESI_EINVAL     28
+#define WESI_ENOENT     44
+#define WESI_ENOSYS     52
+#define WESI_ENOTDIR    54
+#define WESI_ENOTSUP    58
+#define WESI_EEXIST     20
+#define WESI_EACCES     2
+
+// WASI file types for fd_fdstat_get
+#define WESI_FILETYPE_DIRECTORY        3
+#define WESI_FILETYPE_REGULAR_FILE     4
+#define WESI_FILETYPE_CHARACTER_DEVICE 5
+
+// WASI lookup flags
+#define WESI_LOOKUPFLAGS_SYMLINK_FOLLOW 1
+
+// WASI oflags
+#define WESI_OFLAGS_CREAT     (1 << 0)
+#define WESI_OFLAGS_DIRECTORY (1 << 1)
+#define WESI_OFLAGS_EXCL      (1 << 2)
+#define WESI_OFLAGS_TRUNC     (1 << 3)
+
+// WASI rights (returned by fdstat but not enforced in MVP)
+#define WESI_RIGHT_FD_READ     (1ULL << 1)
+#define WESI_RIGHT_FD_WRITE    (1ULL << 5)
+#define WESI_RIGHT_FD_SEEK     (1ULL << 7)
+#define WESI_RIGHT_PATH_OPEN   (1ULL << 8)
+#define WESI_RIGHT_FD_READDIR  (1ULL << 13)
+
+// WASI clock IDs
+#define WESI_CLOCK_MONOTONIC 1
+#define WESI_CLOCK_REALTIME  0
+
+// WASI whence for fd_seek
+#define WESI_WHENCE_SET 0
+#define WESI_WHENCE_CUR 1
+#define WESI_WHENCE_END 2
+
+// Preopened directory: fd 3 is "/" (standard WASI convention)
+#define WESI_PREOPEN_FD   3
+#define WESI_PREOPEN_PATH "/"
+
+// Context for the WASI implementation — populated before calling _start.
+// Uses a static because wasm_spawn is serialized (each spawn waits for
+// the previous one to finish before starting the next).
+static struct {
+    u32   argc;
+    char **argv;
+    i32   exit_code;
+} s_wasi_ctx;
+
+// Forward decl so m3ApiRawFunction functions can call each other
+// (currently unused, kept for cleanliness)
+
+// ----------------------------------------------------------------
+// WASI: args_sizes_get
+// Returns the number of arguments and the total size of the argument buffer.
+//
+// args_sizes_get(argc_ptr: ptr<i32>, argv_buf_size_ptr: ptr<i32>) -> errno<i32>
+// ----------------------------------------------------------------
+m3ApiRawFunction(kern_wasi_args_sizes_get) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(u32, argc_ptr)
+    m3ApiGetArg(u32, argv_buf_size_ptr)
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem) m3ApiReturn(WESI_EINVAL);
+
+    if (argc_ptr + 4 > mem_size || argv_buf_size_ptr + 4 > mem_size)
+        m3ApiReturn(WESI_EINVAL);
+
+    *(i32*)(mem + argc_ptr) = (i32)s_wasi_ctx.argc;
+
+    // Calculate total buffer size: sum of strlen(arg[i]) + 1 for each arg
+    u32 buf_size = 0;
+    for (u32 i = 0; i < s_wasi_ctx.argc && i < 16; i++) {
+        if (s_wasi_ctx.argv[i])
+            buf_size += str_len(s_wasi_ctx.argv[i]) + 1;
+    }
+    *(i32*)(mem + argv_buf_size_ptr) = (i32)buf_size;
+
+    m3ApiReturn(WESI_ESUCCESS);
+}
+
+// ----------------------------------------------------------------
+// WASI: args_get
+// Writes argument strings and pointer table into WASM linear memory.
+//
+// args_get(argv_ptr: ptr, argv_buf_ptr: ptr) -> errno
+// ----------------------------------------------------------------
+m3ApiRawFunction(kern_wasi_args_get) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(u32, argv_ptr)     // pointer to the argv pointer table in WASM memory
+    m3ApiGetArg(u32, argv_buf_ptr) // pointer to the string buffer in WASM memory
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem) m3ApiReturn(WESI_EINVAL);
+
+    u32 str_off = argv_buf_ptr;
+    for (u32 i = 0; i < s_wasi_ctx.argc && i < 16; i++) {
+        if (!s_wasi_ctx.argv[i]) break;
+
+        // Write pointer to argv table
+        if (argv_ptr + i * 4 + 4 > mem_size) m3ApiReturn(WESI_EINVAL);
+        *(u32*)(mem + argv_ptr + i * 4) = str_off;
+
+        // Write string
+        const char *s = s_wasi_ctx.argv[i];
+        u32 len = str_len(s) + 1;
+        if (str_off + len > mem_size) m3ApiReturn(WESI_EINVAL);
+        mem_copy(mem + str_off, (const u8*)s, len);
+        str_off += len;
+    }
+
+    m3ApiReturn(WESI_ESUCCESS);
+}
+
+// ----------------------------------------------------------------
+// WASI: environ_sizes_get / environ_get
+// Stub — no environment variables in sandfleaOS yet.
+// ----------------------------------------------------------------
+m3ApiRawFunction(kern_wasi_environ_sizes_get) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(u32, environc_ptr)
+    m3ApiGetArg(u32, environ_buf_size_ptr)
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem || environc_ptr + 4 > mem_size || environ_buf_size_ptr + 4 > mem_size)
+        m3ApiReturn(WESI_EINVAL);
+
+    *(i32*)(mem + environc_ptr) = 0;
+    *(i32*)(mem + environ_buf_size_ptr) = 0;
+    m3ApiReturn(WESI_ESUCCESS);
+}
+
+m3ApiRawFunction(kern_wasi_environ_get) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(u32, environ_ptr)
+    m3ApiGetArg(u32, environ_buf_ptr)
+    // No environment — nothing to do
+    m3ApiReturn(WESI_ESUCCESS);
+}
+
+// ----------------------------------------------------------------
+// WASI: fd_close
+// ----------------------------------------------------------------
+m3ApiRawFunction(kern_wasi_fd_close) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, fd)
+
+    if (fd < 3) m3ApiReturn(WESI_ESUCCESS);  // stdin/stdout/stderr: no-op
+    i32 res = fs_close(fd);
+    m3ApiReturn(res == 0 ? WESI_ESUCCESS : WESI_EBADF);
+}
+
+// ----------------------------------------------------------------
+// WASI: fd_seek
+// WASI whence: 0=SET, 1=CUR, 2=END (same as our SEEK_SET/CUR/END)
+// ----------------------------------------------------------------
+m3ApiRawFunction(kern_wasi_fd_seek) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, fd)
+    m3ApiGetArg(i64, offset)
+    m3ApiGetArg(i32, whence)
+    m3ApiGetArg(u32, newoffset_ptr)
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem || newoffset_ptr + 8 > mem_size) m3ApiReturn(WESI_EINVAL);
+
+    if (fd < 3) m3ApiReturn(WESI_ENOSYS);  // can't seek stdin/stdout/stderr
+
+    i32 res = fs_seek(fd, (i32)offset, whence);
+    if (res < 0) m3ApiReturn(WESI_EBADF);
+
+    i32 new_pos = fs_tell(fd);
+    if (new_pos < 0) m3ApiReturn(WESI_EBADF);
+
+    *(i64*)(mem + newoffset_ptr) = (i64)new_pos;
+    m3ApiReturn(WESI_ESUCCESS);
+}
+
+// ----------------------------------------------------------------
+// WASI: fd_read
+// WASI iovec structure: [buf_ptr: u32, buf_len: u32]
+// ----------------------------------------------------------------
+m3ApiRawFunction(kern_wasi_fd_read) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, fd)
+    m3ApiGetArg(u32, iovs_ptr)
+    m3ApiGetArg(i32, iovs_len)
+    m3ApiGetArg(u32, nread_ptr)
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem) m3ApiReturn(WESI_EINVAL);
+
+    if (nread_ptr + 4 > mem_size) m3ApiReturn(WESI_EINVAL);
+    if (iovs_ptr + iovs_len * 8 > mem_size) m3ApiReturn(WESI_EINVAL);
+
+    u32 total_read = 0;
+
+    for (i32 i = 0; i < iovs_len; i++) {
+        u32 buf_off = *(u32*)(mem + iovs_ptr + i * 8);
+        u32 buf_len = *(u32*)(mem + iovs_ptr + i * 8 + 4);
+
+        if (buf_off + buf_len > mem_size) continue;
+        if (buf_len == 0) continue;
+
+        u8 *kernel_buf = mem + buf_off;
+
+        if (fd == 0) {
+            // stdin: read from keyboard foreground queue
+            // (same logic as wasm_fd_read for fd==0)
+            u32 rd = 0;
+            while (rd < buf_len) {
+                u8 k = keyboard_fg_eat();
+                if (k != 0) {
+                    if (k == '\r') k = '\n';
+                    if (k == '\b') {
+                        if (rd > 0) rd--;
+                        continue;
+                    }
+                    kernel_buf[rd++] = k;
+                    screen_push_buf((const char *)&k, 1);
+                    if (k == '\n') break;
+                } else {
+                    sched_yield();
+                }
+            }
+            total_read += rd;
+        } else {
+            i32 br = fs_read(fd, kernel_buf, buf_len);
+            if (br <= 0) break;
+            total_read += br;
+        }
+    }
+
+    *(u32*)(mem + nread_ptr) = total_read;
+    m3ApiReturn(WESI_ESUCCESS);
+}
+
+// ----------------------------------------------------------------
+// WASI: fd_write
+// WASI iovec structure: [buf_ptr: u32, buf_len: u32]
+// ----------------------------------------------------------------
+m3ApiRawFunction(kern_wasi_fd_write) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, fd)
+    m3ApiGetArg(u32, iovs_ptr)
+    m3ApiGetArg(i32, iovs_len)
+    m3ApiGetArg(u32, nwritten_ptr)
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem) m3ApiReturn(WESI_EINVAL);
+
+    if (nwritten_ptr + 4 > mem_size) m3ApiReturn(WESI_EINVAL);
+    if (iovs_ptr + iovs_len * 8 > mem_size) m3ApiReturn(WESI_EINVAL);
+
+    u32 total_written = 0;
+    kern_process_t *proc = sched_get_current_process();
+
+    for (i32 i = 0; i < iovs_len; i++) {
+        u32 buf_off = *(u32*)(mem + iovs_ptr + i * 8);
+        u32 buf_len = *(u32*)(mem + iovs_ptr + i * 8 + 4);
+
+        if (buf_off + buf_len > mem_size) continue;
+        if (buf_len == 0) continue;
+
+        u8 *host_buf = mem + buf_off;
+
+        if (fd == 1 || fd == 2) {
+            // stdout/stderr: write to terminal
+            term_write((const char *)host_buf, buf_len);
+            total_written += buf_len;
+        } else if (proc && fd >= 0 && fd < MAX_FILE_HANDLES && proc->fd_table[fd] != null) {
+            i32 res = fs_write(fd, host_buf, buf_len);
+            if (res < 0) break;
+            total_written += res;
+        } else {
+            break;
+        }
+    }
+
+    *(u32*)(mem + nwritten_ptr) = total_written;
+    m3ApiReturn(WESI_ESUCCESS);
+}
+
+// ----------------------------------------------------------------
+// WASI: fd_fdstat_get
+// Returns file descriptor metadata (type, flags, rights).
+// fd: file descriptor
+// stat_ptr: pointer to __wasi_fdstat_t (24 bytes)
+// ----------------------------------------------------------------
+m3ApiRawFunction(kern_wasi_fd_fdstat_get) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, fd)
+    m3ApiGetArg(u32, stat_ptr)
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem || stat_ptr + 24 > mem_size) m3ApiReturn(WESI_EINVAL);
+
+    // Determine file type and rights based on fd
+    u32 filetype;
+    u64 rights_base;
+    u64 rights_inheriting = 0;
+
+    switch (fd) {
+        case 0:  // stdin
+            filetype = WESI_FILETYPE_CHARACTER_DEVICE;
+            rights_base = WESI_RIGHT_FD_READ;
+            break;
+        case 1:  // stdout
+        case 2:  // stderr
+            filetype = WESI_FILETYPE_CHARACTER_DEVICE;
+            rights_base = WESI_RIGHT_FD_WRITE;
+            break;
+        case WESI_PREOPEN_FD:  // preopened root directory
+            filetype = WESI_FILETYPE_DIRECTORY;
+            rights_base = WESI_RIGHT_PATH_OPEN | WESI_RIGHT_FD_READDIR;
+            break;
+        default:  // regular file
+            if (fd >= MAX_FILE_HANDLES) m3ApiReturn(WESI_EBADF);
+            filetype = WESI_FILETYPE_REGULAR_FILE;
+            rights_base = WESI_RIGHT_FD_READ | WESI_RIGHT_FD_WRITE | WESI_RIGHT_FD_SEEK;
+            break;
+    }
+
+    // Layout of __wasi_fdstat_t (24 bytes):
+    //   fs_filetype: u8  (offset 0)
+    //   fs_flags:    u16 (offset 2)
+    //   fs_rights_base: u64 (offset 8)
+    //   fs_rights_inheriting: u64 (offset 16)
+    mem_set(mem + stat_ptr, 0, 24);
+    mem[stat_ptr] = filetype;           // fs_filetype
+    *(u64*)(mem + stat_ptr + 8) = rights_base;
+    *(u64*)(mem + stat_ptr + 16) = rights_inheriting;
+
+    m3ApiReturn(WESI_ESUCCESS);
+}
+
+// ----------------------------------------------------------------
+// WASI: fd_fdstat_set_flags (stub — no-op)
+// ----------------------------------------------------------------
+m3ApiRawFunction(kern_wasi_fd_fdstat_set_flags) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, fd)
+    m3ApiGetArg(i32, flags)
+    // Not supported — return success (programs continue anyway)
+    m3ApiReturn(WESI_ESUCCESS);
+}
+
+// ----------------------------------------------------------------
+// WASI: fd_prestat_get
+// Returns preopened directory info. fd 3 = "/"
+// ----------------------------------------------------------------
+m3ApiRawFunction(kern_wasi_fd_prestat_get) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, fd)
+    m3ApiGetArg(u32, prestat_ptr)
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem || prestat_ptr + 8 > mem_size) m3ApiReturn(WESI_EINVAL);
+
+    if (fd == WESI_PREOPEN_FD) {
+        // __wasi_prestat_t: { tag: u8 (0=dir), u32: pr_name_len }
+        mem[prestat_ptr] = 0;  // tag = __WASI_PREOPEN_TYPE_DIR
+        *(u32*)(mem + prestat_ptr + 4) = 1;  // strlen("/") = 1
+        m3ApiReturn(WESI_ESUCCESS);
+    }
+
+    m3ApiReturn(WESI_EBADF);
+}
+
+// ----------------------------------------------------------------
+// WASI: fd_prestat_dir_name
+// Returns the preopened directory name for a given fd.
+// ----------------------------------------------------------------
+m3ApiRawFunction(kern_wasi_fd_prestat_dir_name) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, fd)
+    m3ApiGetArg(u32, path_ptr)
+    m3ApiGetArg(u32, path_max_len)
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem || path_ptr + path_max_len > mem_size) m3ApiReturn(WESI_EINVAL);
+
+    if (fd == WESI_PREOPEN_FD) {
+        if (path_max_len < 1) m3ApiReturn(WESI_EINVAL);
+        mem[path_ptr] = '/';
+        m3ApiReturn(WESI_ESUCCESS);
+    }
+
+    m3ApiReturn(WESI_EBADF);
+}
+
+// ----------------------------------------------------------------
+// WASI: path_open
+// Opens a file relative to a preopened directory.
+// dir_fd: preopened directory fd (3 for "/")
+// path_ptr / path_len: the file path relative to dir_fd
+// oflags: open flags (creat, directory, excl, trunc)
+// Returns the new fd via ret_fd ptr.
+// ----------------------------------------------------------------
+m3ApiRawFunction(kern_wasi_path_open) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, dir_fd)
+    m3ApiGetArg(i32, dirflags)
+    m3ApiGetArg(u32, path_ptr)
+    m3ApiGetArg(i32, path_len)
+    m3ApiGetArg(i32, oflags)
+    m3ApiGetArg(i64, fs_rights_base)
+    m3ApiGetArg(i64, fs_rights_inheriting)
+    m3ApiGetArg(i32, fdflags)
+    m3ApiGetArg(u32, ret_fd_ptr)
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem || ret_fd_ptr + 4 > mem_size) m3ApiReturn(WESI_EINVAL);
+    if (path_ptr + path_len > mem_size) m3ApiReturn(WESI_EINVAL);
+
+    // Build null-terminated path from WASM memory
+    // (copy to a local buffer since path_len may not include the null terminator)
+    char path_buf[256];
+    u32 copy_len = (u32)path_len;
+    if (copy_len > 250) copy_len = 250;
+    mem_copy((u8*)path_buf, mem + path_ptr, copy_len);
+    path_buf[copy_len] = 0;
+
+    serial_outsf("WASI: path_open(%s) oflags=0x%x\n", path_buf, oflags);
+
+    // Open the file
+    i32 new_fd = fs_open(path_buf);
+
+    // If file doesn't exist and CREAT flag is set, create it
+    if (new_fd < 0 && (oflags & WESI_OFLAGS_CREAT)) {
+        new_fd = fs_create(path_buf);
+        if (new_fd < 0) {
+            serial_outsf("WASI: path_open create failed: %s\n", path_buf);
+            m3ApiReturn(WESI_ENOENT);
+        }
+        serial_outsf("WASI: path_open created file: %s (fd=%d)\n", path_buf, new_fd);
+    } else if (new_fd < 0) {
+        m3ApiReturn(WESI_ENOENT);
+    }
+
+    *(i32*)(mem + ret_fd_ptr) = new_fd;
+    m3ApiReturn(WESI_ESUCCESS);
+}
+
+// ----------------------------------------------------------------
+// WASI: path_filestat_get
+// ----------------------------------------------------------------
+m3ApiRawFunction(kern_wasi_path_filestat_get) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, dir_fd)
+    m3ApiGetArg(u32, flags)
+    m3ApiGetArg(u32, path_ptr)
+    m3ApiGetArg(u32, path_len)
+    m3ApiGetArg(u32, stat_ptr)
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem || stat_ptr + 64 > mem_size) m3ApiReturn(WESI_EINVAL);
+    if (path_ptr + path_len > mem_size) m3ApiReturn(WESI_EINVAL);
+
+    char path_buf[256];
+    u32 copy_len = path_len < 250 ? path_len : 250;
+    mem_copy((u8*)path_buf, mem + path_ptr, copy_len);
+    path_buf[copy_len] = 0;
+
+    i32 fd = fs_open(path_buf);
+    if (fd < 0) m3ApiReturn(WESI_ENOENT);
+
+    u32 fsize = fs_size(fd);
+    fs_close(fd);
+
+    mem_set(mem + stat_ptr, 0, 64);
+    mem[stat_ptr + 16] = WESI_FILETYPE_REGULAR_FILE;  // 4
+    *(u64*)(mem + stat_ptr + 32) = (u64)fsize;
+
+    m3ApiReturn(WESI_ESUCCESS);
+}
+
+// ----------------------------------------------------------------
+// WASI: fd_filestat_get
+// ----------------------------------------------------------------
+m3ApiRawFunction(kern_wasi_fd_filestat_get) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, fd)
+    m3ApiGetArg(u32, stat_ptr)
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem || stat_ptr + 64 > mem_size) m3ApiReturn(WESI_EINVAL);
+
+    u32 filetype;
+    u64 fsize = 0;
+
+    if (fd < 3) {
+        filetype = WESI_FILETYPE_CHARACTER_DEVICE;  // 5
+    } else if (fd == WESI_PREOPEN_FD) {
+        filetype = WESI_FILETYPE_DIRECTORY;         // 3
+    } else {
+        if (fd >= MAX_FILE_HANDLES) m3ApiReturn(WESI_EBADF);
+        i32 sz = fs_size(fd);
+        if (sz < 0) m3ApiReturn(WESI_EBADF);
+        filetype = WESI_FILETYPE_REGULAR_FILE;      // 4
+        fsize = (u64)sz;
+    }
+
+    mem_set(mem + stat_ptr, 0, 64);
+    mem[stat_ptr + 16] = filetype;
+    *(u64*)(mem + stat_ptr + 32) = fsize;
+
+    m3ApiReturn(WESI_ESUCCESS);
+}
+
+
+// ----------------------------------------------------------------
+// WASI: proc_exit
+// Terminates the process with the given exit code.
+// Uses m3ApiTrap() to stop execution (the caller checks the ctx).
+// ----------------------------------------------------------------
+m3ApiRawFunction(kern_wasi_proc_exit) {
+    m3ApiGetArg(i32, code)
+
+    s_wasi_ctx.exit_code = code;
+    serial_outsf("WASI: proc_exit(%d)\n", code);
+
+    // Use m3ApiTrap to unwind the wasm3 execution stack.
+    // The caller (wasm_thread_entry) will see the trap, log it (or not),
+    // and then fall through to cleanup.  The exit_code is in the context.
+    m3ApiTrap("proc_exit");
+}
+
+// ----------------------------------------------------------------
+// WASI: random_get
+// Fills a buffer with pseudo-random bytes.
+// Uses a simple LCG seeded from the kernel timer.
+// ----------------------------------------------------------------
+m3ApiRawFunction(kern_wasi_random_get) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(u32, buf_ptr)
+    m3ApiGetArg(i32, buf_len)
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem || buf_ptr + (u32)buf_len > mem_size) m3ApiReturn(WESI_EINVAL);
+
+    // Simple LCG seeded from kernel timer
+    static u64 rand_state = 0;
+    if (rand_state == 0) rand_state = sw;
+
+    for (i32 i = 0; i < buf_len; i++) {
+        rand_state = rand_state * 6364136223846793005ULL + 1442695040888963407ULL;
+        mem[buf_ptr + i] = (u8)(rand_state >> 32);
+    }
+
+    m3ApiReturn(WESI_ESUCCESS);
+}
+
+// ----------------------------------------------------------------
+// WASI: clock_time_get
+// Returns the current time for the given clock id.
+// clock_id 0 = REALTIME, 1 = MONOTONIC
+// ----------------------------------------------------------------
+m3ApiRawFunction(kern_wasi_clock_time_get) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, clock_id)
+    m3ApiGetArg(i64, precision)
+    m3ApiGetArg(u32, time_ptr)
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem || time_ptr + 8 > mem_size) m3ApiReturn(WESI_EINVAL);
+
+    // Return kernel timer value in nanoseconds (sw ticks at ~10ms = 10,000,000 ns)
+    // This gives us the monotonic clock with ~10ms resolution.
+    i64 time_ns = (i64)sw * 10000000LL;
+    *(i64*)(mem + time_ptr) = time_ns;
+
+    m3ApiReturn(WESI_ESUCCESS);
+}
+
+// ----------------------------------------------------------------
+// WASI: clock_res_get
+// Returns the resolution of the given clock.
+// ----------------------------------------------------------------
+m3ApiRawFunction(kern_wasi_clock_res_get) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, clock_id)
+    m3ApiGetArg(u32, resolution_ptr)
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem || resolution_ptr + 8 > mem_size) m3ApiReturn(WESI_EINVAL);
+
+    // ~10ms resolution = 10,000,000 ns
+    *(i64*)(mem + resolution_ptr) = 10000000LL;
+
+    m3ApiReturn(WESI_ESUCCESS);
+}
+
+// ----------------------------------------------------------------
+// WASI: fd_datasync (stub — no-op)
+// ----------------------------------------------------------------
+m3ApiRawFunction(kern_wasi_fd_datasync) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, fd)
+    m3ApiReturn(WESI_ESUCCESS);  // no-op: our ext2 driver doesn't cache writes
+}
+
+// ----------------------------------------------------------------
+// Link all WASI functions into the module under wasi_snapshot_preview1.
+// Called from wasm_thread_entry before _start.
+// ----------------------------------------------------------------
+static u0 kern_link_wasi(IM3Module module, kern_process_t *proc) {
+    if (!module) return;
+
+    // Populate the static context
+    if (proc) {
+        s_wasi_ctx.argc = proc->argc;
+        s_wasi_ctx.argv = proc->argv;
+    } else {
+        s_wasi_ctx.argc = 0;
+        s_wasi_ctx.argv = null;
+    }
+    s_wasi_ctx.exit_code = 0;
+
+    const char *ns = "wasi_snapshot_preview1";
+
+    // Suppress lookup failure macro: if a module doesn't import a particular
+    // function, m3_LinkRawFunction returns an error — we ignore it.
+    // However, if there is a signature/type mismatch, we log it.
+#define LINK(name, sig, fn) do {                            \
+    M3Result _r = m3_LinkRawFunction(module, ns, name, sig, fn); \
+    if (_r && _r != m3Err_functionLookupFailed) { \
+        serial_outsf("WASI: Link failed for %s (%s): %s\n", name, sig, _r); \
+    } \
+} while(0)
+
+    LINK("args_sizes_get",       "i(ii)", &kern_wasi_args_sizes_get);
+    LINK("args_get",             "i(ii)", &kern_wasi_args_get);
+    LINK("environ_sizes_get",    "i(ii)", &kern_wasi_environ_sizes_get);
+    LINK("environ_get",          "i(ii)", &kern_wasi_environ_get);
+    LINK("fd_close",             "i(i)",  &kern_wasi_fd_close);
+    LINK("fd_fdstat_get",        "i(ii)", &kern_wasi_fd_fdstat_get);
+    LINK("fd_fdstat_set_flags",  "i(ii)", &kern_wasi_fd_fdstat_set_flags);
+    LINK("fd_prestat_dir_name",  "i(iii)",&kern_wasi_fd_prestat_dir_name);
+    LINK("fd_prestat_get",       "i(ii)", &kern_wasi_fd_prestat_get);
+    LINK("fd_read",              "i(iiii)",&kern_wasi_fd_read);
+    LINK("fd_seek",              "i(iIii)",&kern_wasi_fd_seek);
+    LINK("fd_write",             "i(iiii)",&kern_wasi_fd_write);
+    LINK("path_open",            "i(iiiiiIIii)", &kern_wasi_path_open);
+    LINK("proc_exit",            "v(i)",  &kern_wasi_proc_exit);
+    LINK("random_get",           "i(ii)", &kern_wasi_random_get);
+    LINK("clock_time_get",       "i(iIi)", &kern_wasi_clock_time_get);
+    LINK("clock_res_get",        "i(ii)", &kern_wasi_clock_res_get);
+    LINK("fd_datasync",          "i(i)",  &kern_wasi_fd_datasync);
+    LINK("path_filestat_get",    "i(iiiii)", &kern_wasi_path_filestat_get);
+    LINK("fd_filestat_get",      "i(ii)", &kern_wasi_fd_filestat_get);
+
+    // Also link under wasi_unstable (legacy name)
+    const char *ns_unstable = "wasi_unstable";
+    LINK("fd_seek",              "i(iIii)", &kern_wasi_fd_seek);
+
+#undef LINK
+
+    serial_outsl("WASI: Linked kernel-native WASI implementation");
+}
+
+// ============================================================================
 // argv injection: write (argc, argv) into wasm linear memory in wasi-style layout
 // (strings packed at offset 16, then u32 ptr[] table at next aligned offset).
 // Returns the offset of the ptr[] table on success, or 0 on overflow.
@@ -378,13 +1069,18 @@ u0 wasm_thread_entry(u0 *arg) {
     //    will surface as m3 errors during _start anyway.
     if (ra->link_extra) ra->link_extra(module, runtime, ra->link_user);
 
-    // 6. LibC link (non-fatal — modules that don't import _exit etc are fine).
+    // 6. WASI link (required for wasi-sdk compiled modules).
+    // Links wasi_snapshot_preview1 imports using our kernel-native
+    // implementation that maps directly to sandfleaOS kernel APIs.
+    kern_link_wasi(module, proc);
+
+    // 7. LibC link (non-fatal — modules that don't import _exit etc are fine).
     result = m3_LinkLibC(module);
     if (result) {
         screen_push_linef("WASM: LinkLibC: %s", result);
     }
 
-    // 7. Find _start and call _start(argc, argv_ptr) wasi-style.
+    // 8. Find _start and call _start(argc, argv_ptr) wasi-style.
     IM3Function func = null;
     result = m3_FindFunction(&func, runtime, "_start");
     if (result) {
@@ -482,14 +1178,28 @@ i32 wasm_spawn(const wasm_spawn_opts_t *opts) {
     // Foreground: this process owns keyboard + the prompt area on the tty.
     if (opts->foreground) {
         foreground_proc = proc;
+        if (active_session) active_session->foreground_proc = (void*)proc;
         keyboard_fg_flush();
     }
 
-    kern_task_t *task = sched_create_process_thread(proc, wasm_thread_entry, ra);
+    // Create the thread: either the custom entry point (doom-style) or the
+    // normal WASM loading loop (wasm_thread_entry).
+    kern_task_t *task;
+    if (opts->thread_entry) {
+        task = sched_create_process_thread(proc, opts->thread_entry, opts->custom_arg);
+    } else {
+        task = sched_create_process_thread(proc, wasm_thread_entry, ra);
+    }
     if (!task) {
         screen_push_line("WASM: Failed to create thread");
+        if (opts->foreground) {
+            foreground_proc = null;
+            if (active_session) active_session->foreground_proc = NULL;
+        }
         // process_exit will run wasm_proc_cleanup on `ra`, which frees
         // wasm_path_alloc (the only populated field) and the args struct.
+        // For thread_entry path, ra was never allocated, so cleanup_fn
+        // is NULL and process_exit just frees proc resources.
         process_exit(proc);
         return -1;
     }

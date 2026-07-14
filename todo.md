@@ -27,3 +27,6 @@ Switch everything to UTF-8
 
 ### WM 
 - Should probably be a wasm process, idk. If perf sucks, switch it to C native
+
+### Permissions / hashig
+https://github.com/BLAKE3-team/BLAKE3

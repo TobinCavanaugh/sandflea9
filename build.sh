@@ -23,6 +23,9 @@ C_SOURCES=(
     "src/kernel/libgcc_stubs.c"
     "src/kernel/main.c"
     "src/kernel/wasm_spawn.c"
+    "src/kernel/wat2wasm_wrapper.c"
+    "src/external/wasm-rt-impl.c"
+    "src/external/wasm2c_wat2wasm.c"
     "src/kernel/ssfn.c"
     "src/kernel/stbsupport.c"
     "src/kernel/x64/idt.c"
@@ -33,7 +36,6 @@ C_SOURCES=(
     "src/kernel/wasm3-0.5.0/source/m3_api_meta_wasi.c"
     "src/kernel/wasm3-0.5.0/source/m3_api_tracer.c"
     "src/kernel/wasm3-0.5.0/source/m3_api_uvwasi.c"
-    "src/kernel/wasm3-0.5.0/source/m3_api_wasi.c"
     "src/kernel/wasm3-0.5.0/source/m3_bind.c"
     "src/kernel/wasm3-0.5.0/source/m3_code.c"
     "src/kernel/wasm3-0.5.0/source/m3_compile.c"
@@ -57,7 +59,7 @@ ASM_SOURCES=(
 # GCC_INCLUDE=$(gcc -print-file-name=include)
 
 # -I src/include must come FIRST
-CFLAGS="-m64 -c -O3 -ffreestanding -nostdlib -g -nostdinc -fno-pic -fno-pie -mno-red-zone -mcmodel=kernel -I src/include -I src/kernel/wasm3-0.5.0/source -D d_m3FixedHeap=false -Dd_m3SkipMemoryBoundsCheck=1 -Dd_m3SkipStackCheck=1 -ffast-math -DNDEBUG"
+CFLAGS="-m64 -c -O3 -ffreestanding -nostdlib -g -nostdinc -fno-pic -fno-pie -mno-red-zone -mcmodel=kernel -I src/include -I src/external -I src/kernel/wasm3-0.5.0/source -D d_m3FixedHeap=false -Dd_m3SkipMemoryBoundsCheck=1 -Dd_m3SkipStackCheck=1 -D d_m3HasWASI=1 -ffast-math -DNDEBUG"
 ASMFLAGS="-f elf64 -g"
 LDFLAGS="-m elf_x86_64 -T link.ld -build-id=none -z max-page-size=0x1000"
 
@@ -80,8 +82,66 @@ if [ ! -d "obj" ]; then mkdir obj; fi
 if [ ! -d "obj/wasm" ]; then mkdir -p obj/wasm; fi
 if [ ! -d "iso_root" ]; then mkdir iso_root; fi
 
+# Compile WABT to WASM (incremental)
+if [ -f "./build_wabt.sh" ]; then
+    echo "--- Building WABT (wat2wasm) to WASM ---"
+    bash ./build_wabt.sh
+fi
+
+# =============================================================================
+# WASM2C: Convert wat2wasm.wasm to native C (embeds wabt in the kernel)
+# Runs in WSL at build time. Output: src/external/wasm2c_wat2wasm.{c,h}
+# =============================================================================
+
+WASM2C_BIN="/c/bin/wabt/bin/wasm2c"
+WASM2C_WASM="obj/wasm/wat2wasm.wasm"
+WASM2C_OUT_C="src/external/wasm2c_wat2wasm.c"
+WASM2C_OUT_H="src/external/wasm2c_wat2wasm.h"
+
+if [ -x "$WASM2C_BIN" ] && [ -f "$WASM2C_WASM" ]; then
+    if [ "$WASM2C_WASM" -nt "$WASM2C_OUT_C" ] || [ ! -f "$WASM2C_OUT_C" ]; then
+        echo "--- Running wasm2c: wat2wasm.wasm -> native C ---"
+        mkdir -p build/wasm2c_out
+        "$WASM2C_BIN" "$WASM2C_WASM" -o build/wasm2c_out/wat2wasm.c 2>&1
+        cp build/wasm2c_out/wat2wasm.c  "$WASM2C_OUT_C"
+        cp build/wasm2c_out/wat2wasm.h  "$WASM2C_OUT_H"
+        # Fix includes: rename wat2wasm.h → wasm2c_wat2wasm.h, and ensure the
+        # header uses our adapted wasm-rt.h (not the wabt source's pthread-dependent one)
+        sed -i 's|#include "wat2wasm.h"|#include "wasm2c_wat2wasm.h"|' "$WASM2C_OUT_C"
+        sed -i 's|#include ".*wabt.*/wasm-rt.h"|#include "wasm-rt.h"|' "$WASM2C_OUT_H"
+        sed -i 's|//#include "wasm-rt.h"|#include "wasm-rt.h"|' "$WASM2C_OUT_H"
+        echo "--- wasm2c done: $(wc -c < $WASM2C_OUT_C) bytes C, $(wc -c < $WASM2C_OUT_H) bytes H ---"
+    fi
+else
+    if [ ! -f "$WASM2C_OUT_C" ]; then
+        echo "ERROR: wasm2c not found at $WASM2C_BIN and no cached $WASM2C_OUT_C"
+        echo "  Generate it manually: wasm2c obj/wasm/wat2wasm.wasm -o build/wasm2c_out/wat2wasm.c"
+        exit 1
+    fi
+    echo "--- Using cached wasm2c output (wasm2c not available or WASM unchanged) ---"
+fi
+
 rm -f iso_root/kernel.elf
 rm -f sandfleaOS.iso
+
+# =============================================================================
+# FLAGS CHANGE DETECTION
+# If CFLAGS, ASMFLAGS, or LDFLAGS changed since the last build, delete all
+# object files to force a full recompile. This catches flag-only changes
+# that wouldn't trigger per-file timestamp checks (e.g. -mavx512f toggling).
+# =============================================================================
+
+FLAGS_FILE="obj/.build_flags"
+CURRENT_FLAGS="$CFLAGS|$ASMFLAGS|$LDFLAGS"
+
+if [ -f "$FLAGS_FILE" ]; then
+    OLD_FLAGS=$(cat "$FLAGS_FILE")
+    if [ "$OLD_FLAGS" != "$CURRENT_FLAGS" ]; then
+        echo "--- Build flags changed, forcing full rebuild ---"
+        find obj -maxdepth 1 -name '*.o' -delete
+    fi
+fi
+echo "$CURRENT_FLAGS" > "$FLAGS_FILE"
 
 LINK_LIST=""
 
@@ -158,6 +218,13 @@ write src/blob/utf8.txt utf8
 write src/blob/DOOM1.WAD DOOM1.WAD
 mkdir folder
 write src/blob/c.txt folder/a.txt
+
+# Copy .wat files for testing wat2wasm
+write src/wasm/wat/hello.wat hello.wat
+write src/wasm/wat/add_test.wat add_test.wat
+write src/wasm/wat/cat.wat cat.wat
+write src/wasm/wat/lsr.wat lsr.wat
+write src/wasm/wat/file_test.wat file_test.wat
 EOF
 
 # Auto-include all .wasm files from obj/wasm/ (compiled by wb.bat on Windows)

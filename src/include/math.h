@@ -6,6 +6,9 @@
 #define NAN  f32_NaN
 #define NANF f32_NaN
 
+#define INFINITY __builtin_inff()
+#define HUGE_VALF __builtin_inff()
+
 #define isnan(x) __builtin_isnan(x)
 #define isinf(x) __builtin_isinf(x)
 #define signbit(x) __builtin_signbit(x)
@@ -22,6 +25,8 @@ double trunc(double x);
 float truncf(float x);
 double rint(double x);
 float rintf(float x);
+double nearbyint(double x);
+float nearbyintf(float x);
 double copysign(double x, double y);
 float copysignf(float x, float y);
 

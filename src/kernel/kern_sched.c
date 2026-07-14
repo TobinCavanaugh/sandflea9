@@ -12,8 +12,6 @@
 
 extern u0 task_switch_asm(kern_task_t *current, kern_task_t *next);
 
-extern u0 task_switch_asm(kern_task_t *current, kern_task_t *next);
-
 kern_task_t *current_task = null;
 kern_task_t *task_list_head = null;
 kern_process_t *kernel_process = null;
@@ -287,7 +285,11 @@ u0 sched_run_next() {
 
     u64 irq = save_irq_and_disable();
 
-    // Prune DEAD tasks that are NOT the current one and NOT the root task
+    // Save the original task — we need it to detect wrap-around.
+    // If we skip BLOCKED tasks and come back to ourselves, we must not
+    // context-switch because that would overwrite a BLOCKED task's saved
+    // RSP with the current ISR frame, corrupting its context on resume.
+    kern_task_t *start = current_task;
     kern_task_t *prev = current_task;
     kern_task_t *next = current_task->next;
 
@@ -321,12 +323,16 @@ u0 sched_run_next() {
         }
     }
 
-    current_task = next;
-
-    if (prev == current_task) {
+    // If we wrapped all the way around back to ourselves, no other
+    // READY task exists — don't context-switch, as that would corrupt
+    // a BLOCKED task's saved RSP (prev may be an unrelated BLOCKED task
+    // that we skipped, so checking prev == current_task is wrong).
+    if (next == start) {
         restore_irq(irq);
         return;
     }
+
+    current_task = next;
 
     task_switch_asm(prev, current_task);
     restore_irq(irq);

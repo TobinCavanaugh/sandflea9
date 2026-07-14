@@ -2,5 +2,6 @@
 #define SANDFLEA_STDINT_H
 
 #include "dialect.h"
+#include "limits.h"
 
 #endif
