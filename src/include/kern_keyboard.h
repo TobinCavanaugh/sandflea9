@@ -16,6 +16,20 @@
 #define KEY_PGUP 0x84
 #define KEY_PGDN 0x85
 
+// Function keys
+#define KEY_F1  0x86
+#define KEY_F2  0x87
+#define KEY_F3  0x88
+#define KEY_F4  0x89
+#define KEY_F5  0x8A
+#define KEY_F6  0x8B
+#define KEY_F7  0x8C
+#define KEY_F8  0x8D
+#define KEY_F9  0x8E
+#define KEY_F10 0x8F
+#define KEY_F11 0x90
+#define KEY_F12 0x91
+
 // Ctrl+C (ASCII ETX) — the canonical "interrupt foreground process" keystroke.
 // The keyboard handler emits this when Ctrl is held and 'c' is pressed.
 #define KEY_CTRL_C 0x03

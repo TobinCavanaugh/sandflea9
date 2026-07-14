@@ -8,6 +8,7 @@
 #include "../include/kern_asmstubs.h"
 #include "../include/kern_serial.h"
 #include "../include/kern_fs.h"
+#include "../include/kern_terminal.h"
 
 extern u0 task_switch_asm(kern_task_t *current, kern_task_t *next);
 
@@ -64,6 +65,10 @@ kern_process_t *process_create() {
     for (int i = 0; i < 16; i++) proc->argv[i] = null;
     proc->cleanup_fn  = null;
     proc->cleanup_ctx = null;
+    // Associate with the terminal session that was active when the
+    // process was created, so screen_push_line routes output to the
+    // correct TTY even after the user switches sessions.
+    proc->terminal_session = active_session;
 
     // Create a new PML4
     u64 pml4_phys = pmm_alloc_page();
@@ -94,6 +99,13 @@ u0 process_exit(kern_process_t *proc) {
 
     if (proc == foreground_proc) {
         foreground_proc = null;
+    }
+    // Also clear the per-session foreground_proc so the main loop
+    // stops forwarding keys to a freed process.
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+        if (sessions[i].foreground_proc == (void*)proc) {
+            sessions[i].foreground_proc = NULL;
+        }
     }
 
     // Per-process cleanup hook. Runs while the process is still alive enough

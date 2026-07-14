@@ -27,10 +27,14 @@ extern volatile u64 sw;
 cmd_word_t *word;
 
 // Doom globals
-bool doom_active = false;
 static u32 doom_frame_width = 0;
 static u32 doom_frame_height = 0;
 static volatile u64 doom_last_draw_time = 0;  // watchdog: tracks last drawFrame call
+
+// Captured session reference: set by wasm_doom_test at thread start,
+// checked by doom_drawFrame to skip drawing when Doom's session isn't
+// the active one (user switched to another TTY via F-key).
+static term_session_t *doom_session_ref = NULL;
 
 // --- Doom profiling ---
 // NOTE: sw timer has 10ms granularity — short ops (<10ms) will report as 0
@@ -297,7 +301,15 @@ m3ApiRawFunction(doom_timeInMilliseconds) {
 m3ApiRawFunction(doom_drawFrame) {
     m3ApiGetArg(u32, buffer_offset)
 
-    doom_last_draw_time = sw;  // update watchdog on every frame
+    // Always update the watchdog, even when skipping the blit, so Doom
+    // doesn't self-terminate when the user switches to another TTY.
+    doom_last_draw_time = sw;
+
+    // If Doom's session isn't the active one (user switched TTYs), skip
+    // the blit entirely — don't scribble over someone else's terminal.
+    if (doom_session_ref && doom_session_ref != active_session) {
+        m3ApiSuccess();
+    }
 
     // Blit Doom framebuffer directly to the real hardware framebuffer
     // (skips the backbuffer and full-screen copy for max performance)
@@ -390,7 +402,11 @@ u0 wasm_doom_test(u0 *arg) {
     IM3Runtime runtime = null;
     u8 *wasm_data = null;
 
-    doom_active = true;
+    // Capture the current session at thread start to avoid a TOCTOU race
+    // (the user could press F2 and session_switch before we set the flag).
+    term_session_t *doom_session = active_session;
+    doom_session_ref = doom_session;
+    if (doom_session) doom_session->doom_active = true;
 
     // --- Boot-phase profiling: track elapsed time at each step ---
     // sw has ~10ms granularity; times in timer ticks (~10ms each)
@@ -656,7 +672,7 @@ u0 wasm_doom_test(u0 *arg) {
 Label_Done:
     #undef BOOT_LOG
     keyboard_flush_queue();  // clear leftover extended key codes from Doom gameplay
-    doom_active = false;
+    if (doom_session) doom_session->doom_active = false;
     doom_frame_width = 0;
     doom_frame_height = 0;
     if (runtime) m3_FreeRuntime(runtime);
@@ -772,8 +788,17 @@ u0 handle_command() {
 
         kern_process_t *proc = process_create();
         if (proc) {
+            // Mark doom as the foreground process so keyboard input goes to
+            // the fg_queue instead of accumulating in the shell's typingbuf.
+            // (wasm_spawn does this internally; doom bypasses wasm_spawn.)
+            foreground_proc = proc;
+            if (active_session) active_session->foreground_proc = (void*)proc;
+            keyboard_fg_flush();
+
             if (!sched_create_process_thread(proc, wasm_doom_test, path)) {
                 screen_push_line("DOOM: Failed to create thread");
+                foreground_proc = null;
+                if (active_session) active_session->foreground_proc = NULL;
                 if (path) kfree(path);
             }
         } else {

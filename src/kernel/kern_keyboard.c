@@ -146,6 +146,20 @@ char get_ascii_from_scancode(u8 scancode) {
         case 0x35:
             return '/'; // Forward slash
 
+            // Function keys (scancodes 0x3B-0x44)
+        case 0x3B: return KEY_F1;
+        case 0x3C: return KEY_F2;
+        case 0x3D: return KEY_F3;
+        case 0x3E: return KEY_F4;
+        case 0x3F: return KEY_F5;
+        case 0x40: return KEY_F6;
+        case 0x41: return KEY_F7;
+        case 0x42: return KEY_F8;
+        case 0x43: return KEY_F9;
+        case 0x44: return KEY_F10;
+        case 0x57: return KEY_F11;
+        case 0x58: return KEY_F12;
+
         default:
             return 0; // Unmapped key
     }

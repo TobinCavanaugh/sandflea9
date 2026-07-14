@@ -25,6 +25,12 @@ typedef struct kern_process {
     // Future: WASM context, etc.
     i32 argc;
     char *argv[16];
+    // Terminal session this process was created in — output from
+    // screen_push_line / screen_push_linef is routed to this session's
+    // scrollback (and cell buffer) instead of whatever session happens
+    // to be active at the time the output is written.
+    void *terminal_session;
+
     // Per-process cleanup hook: invoked from process_exit() *before* the
     // process struct is freed, so the owning thread (or the shim that
     // spawned it) can release resources that aren't visible to the

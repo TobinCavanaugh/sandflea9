@@ -182,7 +182,7 @@ m3ApiRawFunction(wasm_fd_write) {
                     if (res < 0) break;
                     total_written += res;
                 } else if (fd == 1 || fd == 2) {
-                    screen_push_buf(host_buf, len);
+                    term_write((const char *)host_buf, len);
                     total_written += len;
                 } else {
                     break;

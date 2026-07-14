@@ -238,125 +238,75 @@ void kern_entry(void) {
     interrupt_register(32, timer_handler);
     interrupt_register(33, (void (*)(const registers_t *)) keyboard_handle_keypress);
 
+    // Initialize terminal sessions (cell buffers, ANSI parser state, etc.)
+    term_init(width / font_width, (height - font_height * 2) / font_height);
+    serial_outsl("Terminal: Sessions initialized");
+
     serial_outsl("--- Initialization Complete. Entering Main Loop ---");
 
     for (;;) {
-        if (doom_active) {
-            // Doom's thread owns the screen entirely — just yield CPU
-            asm volatile("hlt");
-        } else {
-        // Keyboard input
+        // Keyboard input — always processed (even when a session's foreground
+        // app is in fullscreen mode like Doom), so session switching via
+        // F1-F4 works regardless of what the foreground app is doing.
         u8 k = 0;
         while ((k = keyboard_eat_key())) {
+            // F1-F4: switch virtual terminal sessions
+            if (k >= KEY_F1 && k <= KEY_F4) {
+                u32 target = k - KEY_F1;  // F1=0, F2=1, F3=2, F4=3
+                if (target < MAX_SESSIONS && target != active_session->id) {
+                    serial_outsf("VT switch: %s -> %s\n",
+                                 active_session ? active_session->name : "?",
+                                 sessions[target].name);
+                    session_switch(target);
+                }
+                continue;
+            }
+
             i32 len = str_len(typingbuf);
 
-            if (foreground_proc != null) {
+            // If the active session has a foreground process, forward
+            // keyboard to the per-session foreground queue.
+            if (active_session && active_session->foreground_proc != NULL) {
                 keyboard_fg_push(k);
+                continue;
+            }
+
+            if (k == '\n') {
+                screen_push_linef("#>%s", typingbuf);
+                handle_command();
+                typingbuf[0] = 0;
+            } else if (k == '\b') {
+                if (len > 0) typingbuf[len - 1] = '\0';
+            } else if (k == KEY_CTRL_C) {
+                typingbuf[0] = 0;
+                screen_push_line("^C");
+                serial_outsf("Ctrl+C (no foreground process)\n");
+            } else if (k == KEY_DOWN) {
+                ++screen_text_scroll;
+            } else if (k == KEY_UP) {
+                --screen_text_scroll;
+                screen_text_scroll = max(screen_text_scroll, 0);
+            } else if (k == KEY_PGUP) {
+                screen_text_scroll = 0;
+            } else if (k == KEY_PGDN) {
+                screen_text_scroll = max(0, screen_get_line_count() - 2);
             } else {
-                if (k == '\n') {
-                    screen_push_linef("#>%s", typingbuf);
-                    handle_command();
-                    typingbuf[0] = 0;
-                } else if (k == '\b') {
-                    if (len > 0) typingbuf[len - 1] = '\0';
-                } else if (k == KEY_CTRL_C) {
-                    // No foreground to interrupt — Unix-style "bell": drop the line.
-                    typingbuf[0] = 0;
-                    screen_push_line("^C");
-                    serial_outsf("Ctrl+C (no foreground process)\n");
-                } else if (k == KEY_DOWN) {
-                    ++screen_text_scroll;
-                } else if (k == KEY_UP) {
-                    --screen_text_scroll;
-                    screen_text_scroll = max(screen_text_scroll, 0);
-                } else if (k == KEY_PGUP) {
-                    screen_text_scroll = 0;
-                } else if (k == KEY_PGDN) {
-                    screen_text_scroll = max(0, screen_get_line_count() - 2);
-                } else {
-                    if (len < 254) {
-                        typingbuf[len] = k;
-                        typingbuf[len + 1] = 0;
-                    }
+                if (len < 254) {
+                    typingbuf[len] = k;
+                    typingbuf[len + 1] = 0;
                 }
             }
         }
 
-        screen_render_shell();
+        // Render the active session (cell buffer, cursor, header bar, input prompt)
+        // If the session's foreground app takes over the framebuffer (doom),
+        // term_render() just draws the header bar and skips the cell buffer.
+        term_render();
         asm volatile("hlt");
-        } /* end !doom_active */
     }
 }
 
-// Top-level on purpose: must be globally visible to other TUs (e.g. kern_tests.c).
-// Don't move this inside kern_entry — nested functions need -fnested-functions
-// and don't emit as a normal global symbol, causing undefined-reference link errors.
-u0 screen_render_shell() {
-    screen_clear(COLOR_BLACK);
-
-    u32 start_y = font_height;
-    u64 irq_term = save_irq_and_disable();
-    screen_text_row_t *current = screen_text_root;
-    i32 row_idx = 0;
-    while (current != null) {
-        if (row_idx >= screen_text_scroll) {
-            i32 relative_row = row_idx - screen_text_scroll;
-            ssfn_dst.x = 0;
-            ssfn_dst.y = start_y + (relative_row * font_height);
-
-            if (ssfn_dst.y < display_main->surface.height - font_height) {
-                ssfn_puts(current->str);
-            }
-        }
-        current = current->next;
-        ++row_idx;
-    }
-    restore_irq(irq_term);
-
-    // Draw Header
-    {
-        v2i_t p = V2I(0, 0);
-        p.x = 1 + screen_puts_r(" sandfleaOS ", p, COLOR_WHITE, COLOR_BLACK).x;
-
-        u64 free_ram = pmm_get_free_count() * PAGE_SIZE;
-        u64 used_ram = usable_ram - free_ram;
-
-        char buf[255];
-        stbsp_snprintf(buf, 255, " %4lld MiB ", used_ram / 1024 / 1024);
-        p.x = 1 + screen_puts_r(buf, p, COLOR_GREEN, COLOR_BLACK).x;
-
-        stbsp_snprintf(buf, 255, " %4lld MiB ", usable_ram / 1024 / 1024);
-        p.x = 1 + screen_puts_r(buf, p, COLOR_BLUE, COLOR_BLACK).x;
-
-        stbsp_snprintf(buf, 255, " Display %-2d ", display_main->index);
-        p.x = 1 + screen_puts_r(buf, p, COLOR_GRAY, COLOR_BLACK).x;
-
-        {
-            stbsp_snprintf(buf, 255, " %s ", (heartbeat1 % 2) ? "*" : " ");
-            p.x = 1 + screen_puts_r(buf, p, COLOR_GRAY, COLOR_BLACK).x;
-
-            stbsp_snprintf(buf, 255, " %s ", (heartbeat2 % 2) ? "*" : " ");
-            p.x = 1 + screen_puts_r(buf, p, COLOR_GRAY, COLOR_BLACK).x;
-
-            stbsp_snprintf(buf, 255, " %s ", (heartbeat3 % 2) ? "*" : " ");
-            p.x = 1 + screen_puts_r(buf, p, COLOR_GRAY, COLOR_BLACK).x;
-        }
-
-        for (int i = 0; i <= font_height; i += 4) {
-            screen_draw_line(V2I(p.x, i), V2I(display_main->surface.width, i), COLOR_DIM_GRAY);
-        }
-    }
-
-    // Clear part of screen for input line
-    screen_draw_rectl((v2i_t) {0, display_main->surface.height - font_height},
-                      (v2i_t) {display_main->surface.width, display_main->surface.height}, COLOR_BLACK);
-
-    if (foreground_proc == null) {
-        ssfn_dst.x = 0;
-        ssfn_dst.y = display_main->surface.height - font_height;
-        ssfn_puts("#>");
-        ssfn_puts(typingbuf);
-    }
-
-    screen_draw();
-}
+// Legacy wrapper — screen_render_shell is declared in kern_terminal.h.
+// The actual implementation moved into kern_terminal.c::term_render().
+// This wrapper is kept so existing callers (wasm_spawn.c) continue to link.
+// (The real body is in kern_terminal.c.)

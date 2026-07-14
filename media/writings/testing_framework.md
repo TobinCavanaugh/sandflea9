@@ -304,163 +304,186 @@ At 115200 baud (~11.5 KB/s), the extra verbosity costs ~2-5ms per 100 events —
 
 ---
 
-## 3. Kernel Stack Tracing
+## 3. Kernel Stack Tracing — Concrete Implementation
 
-### 3.1 Is It Feasible?
+### 3.1 Overview
 
-**Yes.** Kernel stack unwinding via frame pointers is a well-known technique. Here's exactly what's needed.
+Kernel stack unwinding requires:
+1. **Frame pointers** enabled in the test build (`-fno-omit-frame-pointer`)
+2. **A stack walker** that follows the RBP chain
+3. **Offline symbol resolution** via `addr2line` on the host
 
-### 3.2 Prerequisites
+No ELF parsing, no DWARF tables, no kernel-side string symbols needed. The kernel prints raw hex RIPs; the host resolves them.
 
-**Frame pointers must be enabled.** Current production CFLAGS use `-O3` which omits frame pointers by default. Test mode needs:
+### 3.2 Prerequisite: Frame Pointer Flag
+
+Current production CFLAGS: `-O3 -m64 -c -ffreestanding ...` (`-O3` omits frame pointers by default)
+
+Test mode CFLAGS need one addition:
 
 ```bash
-# In test mode CFLAGS, add:
+# In test mode only:
 -fno-omit-frame-pointer
 ```
 
-`-O3 -fno-omit-frame-pointer` works fine — GCC keeps RBP as a frame pointer. The 1-2% performance cost is irrelevant in tests.
+Without this, RBP is used as a general-purpose register and the stack chain is garbage. The 1-2% performance cost from keeping RBP as a frame pointer doesn't matter for tests.
 
-### 3.3 How Frame Pointer Unwinding Works
+### 3.3 How the Stack Unwinding Works
 
-The x86_64 calling convention (with frame pointers) guarantees that at any function entry:
-- `rbp` points to a saved frame on the stack
-- `[rbp+0]` = saved RBP (previous frame)
-- `[rbp+8]` = return address (RIP in caller)
-
-The unwinder walks this chain:
+The x86_64 calling convention (with frame pointers) guarantees every function entry saves RBP:
 
 ```
-Current frame:    rbp → [saved_rbp] [return_rip] [locals...]
-                                ↓
-Previous frame:   saved_rbp → [saved_rbp2] [return_rip2] [locals...]
-                                                ↓
-                                            addr2line resolves RIP→symbol
+Stack layout (growing downward):
+                    ┌──────────────────────┐
+     Higher addr    │    local vars        │
+                    ├──────────────────────┤
+                    │    saved RBP ────────────────→ points to caller's saved RBP
+                    ├──────────────────────┤
+                    │    return RIP        │ ← faulting code called from here
+                    ├──────────────────────┤
+                    │    arg 1, 2, ...     │
+    Current RBP →   ├──────────────────────┤
+                    │    ...               │
+                    └──────────────────────┘
+     Lower addr
 ```
 
-### 3.4 Kernel Code
+The walker follows the chain: `rbp → [saved_rbp] [return_rip] → [saved_rbp2] [return_rip2] → ...`
+
+### 3.4 Files Changed
+
+| File | Change | Lines |
+|------|--------|-------|
+| `build.sh` | Add `-fno-omit-frame-pointer` to test CFLAGS | 1 |
+| `kern_interrupts.c` | Add `#ifdef TEST_MODE` panic handler with stack walk | ~30 |
+| `link.ld` | Add `.test_registry` section | 4 |
+| `main.c` | Add `#ifdef TEST_MODE` boot path (skip GUI, run tests, halt) | ~15 |
+| `include/kern_test.h` | **New:** macros, assertions, runner API, NDJSON helpers | ~100 |
+| `tests/test_runner.c` | **New:** linker iteration, NDJSON output, stack walker | ~150 |
+| `test_runner.py` | **New:** QEMU orchestrator, addr2line resolution | ~200 |
+
+### 3.5 The Stack Walker (~15 lines)
 
 ```c
-// Walk the RBP chain, collect return addresses
-static u32 test_walk_stack(u64 *frames, u32 max_frames) {
-    u64 *rbp;
-    asm volatile("mov %%rbp, %0" : "=r"(rbp));
-    
+// Walk the frame pointer chain starting from a given RBP.
+static u32 trace_walk(u64 rbp_value, u64 *frames, u32 max_frames) {
     u32 count = 0;
-    // The first frame is skipped — it's test_walk_stack itself
-    for (u32 i = 0; i < max_frames && rbp && rbp[0]; i++) {
-        frames[i] = rbp[1];  // return address (saved RIP)
-        rbp = (u64 *)rbp[0]; // walk to next frame
-        count++;
+    u64 *rbp = (u64 *)rbp_value;
+
+    for (u32 i = 0; i < max_frames && rbp; i++) {
+        // Sanity check: RBP must point to kernel-space memory
+        if ((u64)rbp < 0xFFFF800000000000) break;
+        if ((u64)rbp >= 0xFFFFFFFFFFFFFFF0) break;
+
+        u64 saved_rip = rbp[1];   // return address at [rbp+8]
+        u64 saved_rbp = rbp[0];   // next frame at     [rbp+0]
+
+        // Stop if return address looks invalid
+        if (saved_rip < 0xFFFFFFFF80000000) break;
+
+        frames[count++] = saved_rip;
+        rbp = (u64 *)saved_rbp;
     }
     return count;
 }
-
-// Called from the exception handler in test mode
-void test_panic(const char *reason, u64 rip, u64 cr2) {
-    u64 frames[32];
-    u32 n = test_walk_stack(frames, 32);
-    
-    test_raw("{\"t\":%llu,\"event\":\"panic\"", sw);
-    test_raw(",\"reason\":\"%s\"", reason);
-    test_raw(",\"rip\":\"%llX\",\"cr2\":\"%llX\"", rip, cr2);
-    test_raw(",\"frames\":[");
-    for (u32 i = 0; i < n; i++) {
-        if (i > 0) test_raw(",");
-        test_raw("\"%llX\"", frames[i]);
-    }
-    test_raw("]}\n");
-    
-    asm volatile("cli; hlt");  // Don't spin — halt cleanly
-}
 ```
 
-### 3.5 Offline Symbol Resolution (Host Side)
+### 3.6 The Modified Exception Handler (kern_interrupts.c)
 
-The kernel prints raw hex RIPs. The Python runner uses `addr2line` to resolve them:
+This is the only existing kernel file that gets modified. The change is surgical:
+
+```c
+// In kern_interrupt_handler(), replace the current panic spin-loop:
+
+#ifdef TEST_MODE
+    if (t->int_no <= 31) {
+        u64 cr2_val;
+        asm volatile("mov %%cr2, %0" : "=r"(cr2_val));
+
+        // Output NDJSON panic event with stack trace
+        serial_outs("{\"t\":");
+        serial_outi64(sw, BASE_10);
+        serial_outs(",\"event\":\"panic\"");
+        serial_outs(",\"reason\":\"");
+        serial_outs(isr_errors[t->int_no]);
+        serial_outsf("\",\"rip\":\"%llX\",\"cr2\":\"%llX\"", t->rip, cr2_val);
+        serial_outs(",\"frames\":[");
+
+        // Walk the stack from the faulting context's RBP
+        u64 *rbp = (u64 *)t->rbp;
+        for (u32 i = 0; i < 32 && rbp && (u64)rbp >= 0xFFFF800000000000; i++) {
+            if (i > 0) serial_outs(",");
+            serial_outsf("\"%llX\"", rbp[1]);
+            rbp = (u64 *)rbp[0];
+        }
+        serial_outsl("]}");
+
+        // Halt cleanly — host sees the structured panic and kills QEMU
+        asm volatile("cli; hlt");
+    }
+#endif
+```
+
+**What changes from current behavior:**
+- ❌ `while(1) { toggle_capslock(); }` → ✅ `asm("cli; hlt")` (halts instead of spinning)
+- ❌ `panic_draw_status()` needs framebuffer → ✅ serial-only output (works headless)
+- ❌ `int3` breakpoint → ✅ clean halt, no debugger needed
+- ❌ Plain text dump → ✅ NDJSON with embedded `"frames"` array
+
+### 3.7 Host-Side Symbol Resolution (Python)
 
 ```python
 import subprocess
 
-def resolve_frames(kernel_elf: str, hex_frames: list[str]) -> list[str]:
+def resolve_kernel_stack(kernel_elf: str, hex_frames: list[str]) -> list[str]:
     """
-    Resolve kernel RIPs to function:file:line using addr2line.
-    
-    Input:  ["0xFFFF8000123456", "0xFFFF8000123789"]
-    Output: ["test_kmalloc_stress at test_kmalloc.c:42",
-             "kmalloc at kern_vmm.c:310"]
+    Convert hex RIPs like '0xFFFF8000123456' to 'function at file:line'.
+    Uses addr2line with the kernel's ELF debug info (-g flag in build.sh).
     """
     if not hex_frames:
         return []
-    
+
     result = subprocess.run(
         ["addr2line", "-e", kernel_elf, "-f", "-p", "-C"] + hex_frames,
         capture_output=True, text=True
     )
     if result.returncode != 0:
-        return hex_frames  # fallback: show raw addresses
-    
+        return hex_frames  # fallback to raw addresses
+
     return [line.strip() for line in result.stdout.strip().split("\n")]
 
 # Example output:
-# test_kmalloc_stress at test_kmalloc.c:42
-# kmalloc at kern_vmm.c:310
-# kfree at kern_vmm.c:428
-# test_panic at test_runner.c:85
+# ['kmalloc at kern_vmm.c:310',
+#  'test_kmalloc_stress at test_kmalloc.c:42',
+#  'test_run_all at test_runner.c:120',
+#  'kern_entry at main.c:85']
 ```
 
-This works because `build.sh` currently passes `-g` (debug info) to GCC. The `kernel.elf` in `build/test/` contains full DWARF debug info. `addr2line` reads it and maps addresses to source locations.
+This works because `build.sh` already passes `-g` (DWARF debug info) for all builds. The `kernel.elf` in `build/test/` contains full line-number tables. `addr2line` reads them — no kernel-side ELF parsing needed.
 
-### 3.6 What the Developer Sees
+### 3.8 Developer Experience
 
-When a test panics, the runner resolves the stack and displays:
+When a test panics, the runner prints:
 
 ```
 ═══ PANIC: kmalloc:stress ═══
-  Reason: Page Fault at RIP=0xFFFFFFFF80001234 (CR2=0x0, Write access)
+  Page Fault at RIP=0xFFFFFFFF80001234 (CR2=0x0, Write access)
   
   Stack Trace:
-  → test_kmalloc_stress at test_kmalloc.c:42
   → kmalloc at kern_vmm.c:310
+  → test_kmalloc_stress at test_kmalloc.c:42
   → test_run_all at test_runner.c:120
-  → kern_entry at main.c:85 (test mode boot path)
-  
-  [Use addr2line -e build/test/kernel.elf -f -p 0xFFFF8000123456 ... for details]
+  → kern_entry at main.c:85
 ```
 
-### 3.7 Limitations
+### 3.9 Limitations
 
 | Issue | Impact | Mitigation |
 |-------|--------|------------|
-| No frame pointer in interrupt handler | The first frame (the faulting function) is lost because the CPU pushes RIP/CS/RSP directly, not via CALL | The `rip` field in the panic event IS the faulting instruction — that's the most important one |
-| Tail-call optimization | Functions that end with a tail call won't appear on the stack (callee reuses caller's frame) | `-fno-optimize-sibling-calls` in test mode (optional, heavier) |
-| Inline functions | Inlined functions don't have their own frame | Acceptable — the calling function's frame is valid |
-| Stack corruption | If RBP chain is corrupted (buffer overflow), the walker reads garbage | Add a sanity check: each frame's saved RBP must point to a valid stack address (within the kernel's stack region) |
-
-### 3.8 Frame Pointer Sanity Check
-
-To prevent walking into garbage after stack corruption:
-
-```c
-static bool is_valid_stack_addr(u64 addr) {
-    // Kernel stack is typically in a known range near the top of memory
-    return addr >= 0xFFFF800000000000 && addr < 0xFFFFFFFFFFFFFFFF;
-}
-
-static u32 test_walk_stack(u64 *frames, u32 max_frames) {
-    u64 *rbp;
-    asm volatile("mov %%rbp, %0" : "=r"(rbp));
-    
-    u32 count = 0;
-    for (u32 i = 0; i < max_frames && rbp; i++) {
-        if (!is_valid_stack_addr((u64)rbp)) break;  // ← corrupted, stop
-        frames[i] = rbp[1];
-        rbp = (u64 *)rbp[0];
-        count++;
-    }
-    return count;
-}
-```
+| Interrupt pushes RIP directly | The faulting function's frame is not on the RBP chain | The `rip` field in the panic event IS the faulting instruction — that's the critical one |
+| Tail-call optimization | Callee reuses caller's frame, so caller is missing from the trace | `-fno-optimize-sibling-calls` (optional, adds size) |
+| Inline functions | No frame of their own | Acceptable — the non-inlined caller is visible |
+| Stack corruption (buffer overflow) | RBP chain leads to garbage | Address range sanity check (`>= 0xFFFF8000...`) stops the walk early |
 
 ---
 
