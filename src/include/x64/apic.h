@@ -25,3 +25,10 @@ u0 pit_prepare_sleep(u16 ms);
 u0 pit_perform_sleep() ;
 u0 apic_init();
 u0 apic_eoi(u64 lapic_virtual_base);
+
+// ── APIC timer calibration globals (exported for the profiler) ──────────────
+// Set by apic_timer_init(), read by profile_now_us() to compute µs-precision
+// timestamps by reading LAPIC_TIMER_CURR for sub-tick interpolation.
+extern u64 apic_lapic_base;        // virtual address of local APIC registers
+extern u32 apic_ticks_per_ms;     // APIC timer ticks per millisecond
+extern u32 apic_period_ticks;     // total ticks in one full 10ms period

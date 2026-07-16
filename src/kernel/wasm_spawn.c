@@ -16,8 +16,10 @@
 #include "../include/kern_mem.h"
 #include "../include/util_cmd.h"
 #include "../util/util_str.h"
+#include "../util/str_slice.h"
 #include "../include/stbsupport.h"
 #include "../include/kern_ext2.h"
+#include "../include/kern_profile.h"
 
 #include "wasm3-0.5.0/source/m3_env.h"
 #include "wasm3-0.5.0/source/m3_api_libc.h"
@@ -28,16 +30,10 @@
 
 extern volatile u64 sw;
 
-// Local strdup that hands the allocation off to whichever kernel allocator
-// the caller prefers (kmalloc today; tests can swap in a counting alloc).
+// Local strdup using the new str_view_t system (allocates via kmalloc).
 static char * str_dup_safe(const char *s, void *(*alloc)(u64)) {
-    if (!s) return null;
-    u32 len = str_len(s);
-    char *dup = (char *) alloc(len + 1);
-    if (!dup) return null;
-    mem_copy((u8 *) dup, (const u8 *) s, len);
-    dup[len] = 0;
-    return dup;
+    (void)alloc;
+    return str_view_to_c(str_view_from_c(s));
 }
 
 // Per-thread args allocated by wasm_spawn() and freed by wasm_proc_cleanup().
@@ -1009,109 +1005,128 @@ u0 wasm_thread_entry(u0 *arg) {
     u8            *wasm_data = null;
     kern_process_t *proc = sched_get_current_process();
 
+    // Top-level scope: auto-closes on any exit (return, goto, fall-through).
+    PROFILE_SCOPE("wasm:thread_entry");
     serial_outsf("WASM: Loading %s\n", wasm_path);
 
-    // 1. Read file from disk
-    i32 fd = fs_open(wasm_path);
-    if (fd < 0) {
-        screen_push_linef("WASM: Could not open %s", wasm_path);
-        goto Label_Done;
-    }
-    u32 wasm_size = fs_size(fd);
-    wasm_data = kmalloc(wasm_size);
-    if (!wasm_data) {
-        screen_push_line("WASM: Out of memory for WASM data");
+    // 1. Read file from disk — block-scoped so goto is safe.
+    u32 wasm_size;
+    {
+        PROFILE_SCOPE("wasm:fs_load");
+        i32 fd = fs_open(wasm_path);
+        if (fd < 0) {
+            screen_push_linef("WASM: Could not open %s", wasm_path);
+            goto Label_Done;
+        }
+        wasm_size = fs_size(fd);
+        wasm_data = kmalloc(wasm_size);
+        if (!wasm_data) {
+            screen_push_line("WASM: Out of memory for WASM data");
+            fs_close(fd);
+            goto Label_Done;
+        }
+        ra->wasm_data = wasm_data;
+        fs_read(fd, wasm_data, wasm_size);
         fs_close(fd);
-        goto Label_Done;
     }
-    ra->wasm_data = wasm_data;
-    fs_read(fd, wasm_data, wasm_size);
-    fs_close(fd);
 
-    // 2. Allocate environment + runtime
-    env = m3_NewEnvironment();
-    if (!env) {
-        screen_push_line("WASM: Could not create environment");
-        goto Label_Done;
+    // 2. Allocate environment + runtime.
+    {
+        PROFILE_SCOPE("wasm:env_runtime");
+        env = m3_NewEnvironment();
+        if (!env) {
+            screen_push_line("WASM: Could not create environment");
+            goto Label_Done;
+        }
+        ra->env = env;
+        u32 stack_bytes = ra->stack_kb * 1024u;
+        runtime = m3_NewRuntime(env, stack_bytes, null);
+        if (!runtime) {
+            screen_push_line("WASM: Could not create runtime");
+            goto Label_Done;
+        }
+        ra->runtime = runtime;
     }
-    ra->env = env;
-    u32 stack_bytes = ra->stack_kb * 1024u;
-    runtime = m3_NewRuntime(env, stack_bytes, null);
-    if (!runtime) {
-        screen_push_line("WASM: Could not create runtime");
-        goto Label_Done;
-    }
-    ra->runtime = runtime;
 
-    // 3. Parse + load
+    // 3. Parse + load.
     IM3Module module = null;
-    M3Result result = m3_ParseModule(env, &module, wasm_data, wasm_size);
-    if (result || !module) {
-        screen_push_linef("WASM: Parse error: %s", result ? result : "null module");
-        goto Label_Done;
-    }
-    result = m3_LoadModule(runtime, module);
-    if (result) {
-        screen_push_linef("WASM: Load error: %s", result);
-        goto Label_Done;
+    M3Result result;
+    {
+        PROFILE_SCOPE("wasm:parse_load");
+        result = m3_ParseModule(env, &module, wasm_data, wasm_size);
+        if (result || !module) {
+            screen_push_linef("WASM: Parse error: %s", result ? result : "null module");
+            goto Label_Done;
+        }
+        result = m3_LoadModule(runtime, module);
+        if (result) {
+            screen_push_linef("WASM: Load error: %s", result);
+            goto Label_Done;
+        }
     }
 
     // 4. Link common imports (every program gets fd_*, get_arg_*, and env.lsr).
-    m3_LinkRawFunction(module, "env", "fd_open",         "i(i)",    &wasm_fd_open);
+    {
+        PROFILE_SCOPE("wasm:link");
+        m3_LinkRawFunction(module, "env", "fd_open",         "i(i)",    &wasm_fd_open);
     m3_LinkRawFunction(module, "env", "fd_read",         "i(iii)",  &wasm_fd_read);
     m3_LinkRawFunction(module, "env", "fd_close",        "i(i)",    &wasm_fd_close);
     m3_LinkRawFunction(module, "env", "fd_write",        "i(iiii)", &wasm_fd_write);
-    m3_LinkRawFunction(module, "env", "lsr",             "i(i)",    &wasm_lsr);
-    m3_LinkRawFunction(module, "env", "get_arg_count",   "i()",     &wasm_get_arg_count);
-    m3_LinkRawFunction(module, "env", "get_arg",         "i(iii)",  &wasm_get_arg);
+        m3_LinkRawFunction(module, "env", "lsr",             "i(i)",    &wasm_lsr);
+        m3_LinkRawFunction(module, "env", "get_arg_count",   "i()",     &wasm_get_arg_count);
+        m3_LinkRawFunction(module, "env", "get_arg",         "i(iii)",  &wasm_get_arg);
 
-    // 5. Program-specific imports (doom-style). Best-effort: missing imports
-    //    will surface as m3 errors during _start anyway.
-    if (ra->link_extra) ra->link_extra(module, runtime, ra->link_user);
+        // 5. Program-specific imports (doom-style). Best-effort: missing imports
+        //    will surface as m3 errors during _start anyway.
+        if (ra->link_extra) ra->link_extra(module, runtime, ra->link_user);
 
-    // 6. WASI link (required for wasi-sdk compiled modules).
-    // Links wasi_snapshot_preview1 imports using our kernel-native
-    // implementation that maps directly to sandfleaOS kernel APIs.
-    kern_link_wasi(module, proc);
+        // 6. WASI link (required for wasi-sdk compiled modules).
+        // Links wasi_snapshot_preview1 imports using our kernel-native
+        // implementation that maps directly to sandfleaOS kernel APIs.
+        kern_link_wasi(module, proc);
 
-    // 7. LibC link (non-fatal — modules that don't import _exit etc are fine).
-    result = m3_LinkLibC(module);
-    if (result) {
-        screen_push_linef("WASM: LinkLibC: %s", result);
+        // 7. LibC link (non-fatal — modules that don't import _exit etc are fine).
+        result = m3_LinkLibC(module);
+        if (result) {
+            screen_push_linef("WASM: LinkLibC: %s", result);
+        }
     }
 
     // 8. Find _start and call _start(argc, argv_ptr) wasi-style.
-    IM3Function func = null;
-    result = m3_FindFunction(&func, runtime, "_start");
-    if (result) {
-        screen_push_linef("WASM: _start not found: %s", result);
-        goto Label_Done;
-    }
+    {
+        PROFILE_SCOPE("wasm:_start");
+        IM3Function func = null;
+        result = m3_FindFunction(&func, runtime, "_start");
+        if (result) {
+            screen_push_linef("WASM: _start not found: %s", result);
+            goto Label_Done;
+        }
 
-    if (proc && ra->wasi_argv && proc->argc > 0 && proc->argv[0]) {
-        u32 argv_ptr = inject_argv(runtime, proc->argc, proc->argv, proc);
-        if (argv_ptr != 0) {
-            char argc_str[12], argv_str[12];
-            stbsp_snprintf(argc_str,  sizeof(argc_str),  "%d", proc->argc);
-            stbsp_snprintf(argv_str,  sizeof(argv_str),  "%u", argv_ptr);
-            const char *args[2] = { argc_str, argv_str };
-            screen_push_linef("WASM: Calling _start(argc=%d, argv=%u)", proc->argc, argv_ptr);
-            result = m3_CallArgv(func, 2, args);
+        if (proc && ra->wasi_argv && proc->argc > 0 && proc->argv[0]) {
+            u32 argv_ptr = inject_argv(runtime, proc->argc, proc->argv, proc);
+            if (argv_ptr != 0) {
+                char argc_str[12], argv_str[12];
+                stbsp_snprintf(argc_str,  sizeof(argc_str),  "%d", proc->argc);
+                stbsp_snprintf(argv_str,  sizeof(argv_str),  "%u", argv_ptr);
+                const char *args[2] = { argc_str, argv_str };
+                screen_push_linef("WASM: Calling _start(argc=%d, argv=%u)", proc->argc, argv_ptr);
+                result = m3_CallArgv(func, 2, args);
+            } else {
+                // InjectArgv reported a problem; fall back to no-args.
+                screen_push_line("WASM: Calling _start() without argv");
+                result = m3_CallArgv(func, 0, null);
+            }
         } else {
-            // InjectArgv reported a problem; fall back to no-args.
-            screen_push_line("WASM: Calling _start() without argv");
+            screen_push_line("WASM: Calling _start()...");
             result = m3_CallArgv(func, 0, null);
         }
-    } else {
-        screen_push_line("WASM: Calling _start()...");
-        result = m3_CallArgv(func, 0, null);
-    }
 
-    if (result) {
-        screen_push_linef("WASM: Call error: %s", result);
-        serial_outsf("WASM: Call error: %s\n", result);
-    } else {
-        screen_push_line("WASM: _start returned");
+        if (result) {
+            screen_push_linef("WASM: Call error: %s", result);
+            serial_outsf("WASM: Call error: %s\n", result);
+        } else {
+            screen_push_line("WASM: _start returned");
+        }
     }
 
 Label_Done:
@@ -1130,6 +1145,7 @@ Label_Done:
 // Caller must own opts and any string data pointed to by opts->argv (it's copied).
 // ============================================================================
 i32 wasm_spawn(const wasm_spawn_opts_t *opts) {
+    PROFILE_SCOPE("wasm:spawn");
     if (!opts || !opts->path) {
         screen_push_line("WASM: path required");
         return -1;

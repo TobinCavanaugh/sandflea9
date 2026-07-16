@@ -2,6 +2,7 @@
 #include "../include/kern_mem.h"
 #include "../include/kern_ext2.h"
 #include "../include/kern_serial.h"
+#include "../include/kern_profile.h"
 #include "../util/util_str.h"
 #include "../include/kern_vmm.h"
 #include "../include/kern_sched.h"
@@ -35,6 +36,7 @@ static u32 get_bmap(ext2_inode_t *inode, u32 logical_block) {
 
 
 i32 fs_write(i32 fd, u8 *data, u64 size) {
+    PROFILE_SCOPE("fs:write");
     kern_process_t *proc = sched_get_current_process();
     if (!proc) return -1;
 
@@ -55,12 +57,16 @@ i32 fs_write(i32 fd, u8 *data, u64 size) {
         u32 phys_block = get_bmap(&h->inode, logical_block);
 
         if (phys_block == 0) {
-            // Cannot allocate new blocks, so we stop here.
-            break;
+            // Auto-allocate a new block (on-demand growth)
+            phys_block = ext2_alloc_block();
+            if (phys_block == 0) break;  /* disk full */
+            ext2_set_bmap(&h->inode, logical_block, phys_block);
+            /* New block: start with zeros, don't read garbage from disk */
+            mem_set(temp_block, 0, block_size);
+        } else {
+            /* Existing block: read-modify-write */
+            ext2_read_block(phys_block, temp_block);
         }
-
-        // Read the existing block content
-        ext2_read_block(phys_block, temp_block);
 
         u32 to_write = block_size - offset_in_block;
         if (to_write > (size - bytes_written)) to_write = size - bytes_written;
@@ -114,6 +120,15 @@ i32 fs_create(const char *path) {
     return fd;
 }
 
+// str_view_t wrapper for fs_create.
+i32 fs_create_view(str_view_t path_sv) {
+    char *path = str_view_to_c(path_sv);
+    if (!path) return -1;
+    i32 result = fs_create(path);
+    kfree(path);
+    return result;
+}
+
 // Returns -1 if file could not be opened
 i32 fs_open(const char *path) {
     kern_process_t *proc = sched_get_current_process();
@@ -133,12 +148,20 @@ i32 fs_open(const char *path) {
     h->inode_no = inode_no;
     mem_copy((u8 *) &h->inode, (u8 *) inode_ptr, sizeof(ext2_inode_t));
     h->pos = 0;
-    h->used = true; // Still keep 'used' for internal checks if needed
+    h->used = true;
 
     proc->fd_table[fd] = h;
-
     kfree(inode_ptr);
     return fd;
+}
+
+// str_view_t wrapper for fs_open.
+i32 fs_open_view(str_view_t path_sv) {
+    char *path = str_view_to_c(path_sv);
+    if (!path) return -1;
+    i32 result = fs_open(path);
+    kfree(path);
+    return result;
 }
 
 i32 fs_close(i32 fd) {
@@ -153,6 +176,7 @@ i32 fs_close(i32 fd) {
 }
 
 i32 fs_read(i32 fd, u8 *buf, u32 count) {
+    PROFILE_SCOPE("fs:read");
     kern_process_t *proc = sched_get_current_process();
     if (!proc) return -1;
 

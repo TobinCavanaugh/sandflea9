@@ -40,6 +40,7 @@
 #include "../include/kern_tests.h"
 #include "../include/kern_ide.h"
 #include "../include/kern_fs.h"
+#include "../include/kern_profile.h"
 
 display_t *display_main = 0;
 u64 usable_ram = 0;
@@ -93,31 +94,54 @@ u0 shimmy(u0 *arg) {
 
 
 void kern_entry(void) {
-    init_serial();
+    // Init all 3 serial channels — COM1 (PRIMARY), COM2 (TEST), COM3 (PROFILE)
+    serial_init_all();
     serial_outsl("--- sandfleaOS Kernel Entry ---");
-    serial_outsl("Serial initialized: COM1 ready");
+    serial_outsl("Serial: COM1 (PRIMARY) ready");
+    if (serial_channel_present(SERIAL_CH_TEST))
+        serial_outsl("Serial: COM2 (TEST) ready");
+    if (serial_channel_present(SERIAL_CH_PROFILE))
+        serial_outsl("Serial: COM3 (PROFILE) ready");
 
+    // SSE must be enabled before calling any variadic function (e.g.,
+    // serial_outsf_ch inside profile_init / PROFILE_INSTANT) because the
+    // x86-64 ABI variadic prologue emits SSE movaps/movups instructions.
+    serial_outsl("CPU: enabling SSE...");
     enable_sse(); // cpu extension
     serial_outsl("CPU: SSE extensions enabled");
 
+    // Init profiling framework — writes to COM3 (PROFILE channel).
+    // Do this early so we can instrument the rest of boot.
+    serial_outsl("PROFILE: initializing...");
+    profile_init();
+    serial_outsl("PROFILE: init done");
+    PROFILE_INSTANT("boot:kernel_entry");
+    serial_outsl("PROFILE: boot marker emitted");
+
     init_vmm_globals(hhdm_request); // virtual memory management
     serial_outsl("VMM: Virtual Memory Management initialized");
+    PROFILE_INSTANT("boot:vmm_done");
 
     init_pmm(memmap_request); // physical memory management
     serial_outsl("PMM: Physical Memory Management initialized");
+    PROFILE_INSTANT("boot:pmm_done");
 
     interrupts_init(); // interrupts
     serial_outsl("IDT: Interrupts and GDT stubs initialized");
+    PROFILE_INSTANT("boot:idt_done");
 
     kmalloc_init(); // malloc
     serial_outsl("Heap: kmalloc initialized and ready for allocations");
+    PROFILE_INSTANT("boot:heap_done");
 
     sched_init();
     serial_outsl("Scheduler: Multi-threading support initialized");
+    PROFILE_INSTANT("boot:sched_done");
 
 
     system.pci_list_head = pci_init_system();
     serial_outsl("PCI: System bus scanned");
+    PROFILE_INSTANT("boot:pci_done");
 
     // In kern_entry...
     pci_device_t *pci_uart = system.pci_list_head;
@@ -221,12 +245,15 @@ void kern_entry(void) {
 
     ide_init();
     serial_outsl("FS: IDE Initialized");
+    PROFILE_INSTANT("boot:ide_done");
 
     ext2_init();
     serial_outsl("FS: Ext2 driver initialized");
+    PROFILE_INSTANT("boot:ext2_done");
 
     fs_init();
     serial_outsl("FS: FS initialized");
+    PROFILE_INSTANT("boot:fs_done");
 
     char buf[255];
 
@@ -242,6 +269,7 @@ void kern_entry(void) {
     term_init(width / font_width, (height - font_height * 2) / font_height);
     serial_outsl("Terminal: Sessions initialized");
 
+    PROFILE_INSTANT("boot:complete");
     serial_outsl("--- Initialization Complete. Entering Main Loop ---");
 
     for (;;) {

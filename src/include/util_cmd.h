@@ -6,6 +6,7 @@
 #define SANDFLEA9_UTIL_CMD_H
 
 #include "dialect.h"
+#include "../util/str_slice.h"
 
 typedef enum {
     CMD_WT_STR,
@@ -17,6 +18,7 @@ typedef enum {
 typedef struct cmd_word_t {
     char *loc;
     u16 len;
+    str_view_t text;   // view into loc/len — use word->text directly
 
     union {
         i64 val_i64;
@@ -31,7 +33,12 @@ typedef struct cmd_word_t {
 
 cmd_word_t *cmd_parse(const char *str, void *(*Alloc_Func)(u64));
 
-u8 cmd_word_eq(cmd_word_t *word, const char *match);
+// Borrow the word's text as a str_view_t — zero-copy, no allocation.
+str_view_t cmd_word_view(const cmd_word_t *w);
+
+// Compare a word against a C string literal. Uses str_view_eq internally
+// for O(1) length check via word->len before the memcmp.
+u8 cmd_word_eq(const cmd_word_t *word, const char *match);
 
 u0 cmd_parse_free(cmd_word_t *root, void (*Free_Func)(void *));
 

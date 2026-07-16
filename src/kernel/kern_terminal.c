@@ -10,6 +10,7 @@
 #include "../include/kern_terminal.h"
 #include "../include/kern_mem.h"
 #include "../include/kern_vmm.h"
+#include "../include/kern_profile.h"
 #include "../include/stbsupport.h"
 #include "../include/dialect.h"
 #include "../include/ssfn.h"
@@ -314,6 +315,7 @@ u0 screen_push_buf(const char *buf, i32 len) {
 }
 
 u0 screen_push_line(const char *str) {
+    PROFILE_SCOPE("screen:push_line");
     // Re-entrant guard: if we're already inside a cell-buffer write
     // (called from scroll_cell_buffer), skip straight to the scrollback.
     if (screen_cellbuf_line_active) {
@@ -376,6 +378,7 @@ static char *screen_line_stb_callback(char *buf, void *user, i32 len) {
 }
 
 u0 screen_push_linef(const char *fmt, ...) {
+    PROFILE_SCOPE("screen:push_linef");
     char local_buf[STB_SPRINTF_MIN + 1];
 
     va_list args;
@@ -512,6 +515,7 @@ void term_putc(u8 c) {
 // Write a buffer through the ANSI parser. Each byte in GROUND state gets
 // dispatched to term_putc() which writes it into the cell buffer.
 void term_write(const char *buf, i32 len) {
+    PROFILE_SCOPE("term:write");
     if (!buf || len <= 0 || !active_session) return;
     for (i32 i = 0; i < len; i++) {
         ansi_putc((u8)buf[i]);

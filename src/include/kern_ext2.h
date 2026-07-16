@@ -111,6 +111,8 @@ u0 ext2_write_block(u32 block_id, u8 *buffer);
 u0 ext2_write_inode(u32 inode_no, ext2_inode_t *inode);
 u8 *get_block_ptr(u32 block_id);
 u32 ext2_get_bmap(ext2_inode_t *inode, u32 logical_block);
+u32 ext2_alloc_block(void);
+void ext2_set_bmap(ext2_inode_t *inode, u32 logical_block, u32 phys_block);
 
 // File creation
 u32 ext2_create_file(const char *path);

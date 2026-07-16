@@ -4,6 +4,7 @@
 
 #include "../include/util_cmd.h"
 #include "../util/util_str.h"
+#include "str_slice.h"
 
 static bool is_numeric(const char *str, u32 len) {
     if (len == 0) return false;
@@ -29,18 +30,16 @@ static bool is_numeric(const char *str, u32 len) {
 }
 
 
-u8 cmd_word_eq(cmd_word_t *word, const char *match) {
-    if(!word || !match) return 0;
+u8 cmd_word_eq(const cmd_word_t *word, const char *match) {
+    if (!word || !match) return 0;
+    str_view_t wv = cmd_word_view(word);
+    str_view_t mv = str_view_from_c(match);
+    return str_view_eq(wv, mv);
+}
 
-    i32 mlen = str_len(match);
-    i32 wlen = word->len;
-
-    if (mlen != wlen) return 0;
-    for (i32 i = 0; i < mlen; i++) {
-        if (word->loc[i] != match[i]) return 0;
-    }
-
-    return 1;
+str_view_t cmd_word_view(const cmd_word_t *w) {
+    if (!w) return str_view_from_parts(null, 0);
+    return w->text;
 }
 
 // Changed allocator signature to size_t to match malloc, or you can cast malloc when calling
@@ -86,6 +85,7 @@ cmd_word_t *cmd_parse(const char *str, void *(*Alloc_Func)(u64)) {
         New_Word:
         // Calculate length of the CURRENT word
         current->len = (str + i) - current->loc;
+        current->text = str_view_from_parts(current->loc, current->len);
 
         // Numeric Parsing logic
         if (is_numeric(current->loc, current->len)) {

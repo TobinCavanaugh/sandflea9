@@ -6,6 +6,7 @@
 #include "../include/kern_mem.h"
 #include "../include/kern_ide.h"
 #include "../include/kern_vmm.h"
+#include "../include/kern_profile.h"
 #include "../util/util_str.h"
 
 // --- Logging Control ---
@@ -18,6 +19,7 @@ u32 block_size = 0;
 u8 *bgdt_cache = null; // Optimized: Cache the BGDT in RAM
 
 u0 ext2_read_block(u32 block_id, u8 *buffer) {
+    PROFILE_SCOPE("ext2:read_block");
     if (!buffer || block_size == 0) return;
     u32 sectors_per_block = block_size / 512;
     u32 start_sector = block_id * sectors_per_block;
@@ -25,6 +27,7 @@ u0 ext2_read_block(u32 block_id, u8 *buffer) {
 }
 
 u0 ext2_read_blocks(u32 start_block, u32 count, u8 *buffer) {
+    PROFILE_SCOPE("ext2:read_blocks");
     if (!buffer || block_size == 0 || count == 0) return;
     if (count == 1) { ext2_read_block(start_block, buffer); return; }
     u32 sectors_per_block = block_size / 512;
@@ -194,6 +197,107 @@ u32 ext2_get_bmap(ext2_inode_t *inode, u32 logical_block) {
     }
 
     return 0;
+}
+
+/* ext2_set_bmap — inverse of ext2_get_bmap: write a physical block number
+   into the inode's block pointer table at logical_block. Allocates indirect
+   blocks on demand. Caller is responsible for allocating the data block
+   via ext2_alloc_block() and passing it as phys_block. */
+void ext2_set_bmap(ext2_inode_t *inode, u32 logical_block, u32 phys_block) {
+    if (block_size == 0 || phys_block == 0) return;
+    u32 n = block_size / 4;  /* entries per indirect block */
+
+    /* allocate_and_clear — helper lambda (manual inline) */
+    #define ALLOC_AND_CLEAR(target) do {                                 \
+        (target) = ext2_alloc_block();                                   \
+        if ((target) == 0) return;                                       \
+        u8 *zbuf = kmalloc(block_size);                                  \
+        if (zbuf) { mem_set(zbuf, 0, block_size);                        \
+                    ext2_write_block((target), zbuf); kfree(zbuf); }     \
+        else { u8 zsec[512]; mem_set(zsec, 0, 512);                      \
+               for (u32 _s = 0; _s < block_size/512; _s++)               \
+                   ide_write_sectors((target)*(block_size/512)+_s,1,zsec);} \
+        inode->blocks += block_size / 512;                               \
+    } while(0)
+
+    if (logical_block < 12) {
+        if (inode->block[logical_block] == 0)
+            inode->blocks += block_size / 512;
+        inode->block[logical_block] = phys_block;
+        return;
+    }
+    logical_block -= 12;
+
+    if (logical_block < n) {
+        /* single indirect */
+        if (inode->block[12] == 0) ALLOC_AND_CLEAR(inode->block[12]);
+        u8 *buf = kmalloc(block_size);
+        if (!buf) return;
+        ext2_read_block(inode->block[12], buf);
+        if (((u32*)buf)[logical_block] == 0) inode->blocks += block_size / 512;
+        ((u32*)buf)[logical_block] = phys_block;
+        ext2_write_block(inode->block[12], buf);
+        kfree(buf);
+        return;
+    }
+    logical_block -= n;
+
+    if (logical_block < n * n) {
+        /* double indirect */
+        if (inode->block[13] == 0) ALLOC_AND_CLEAR(inode->block[13]);
+        u32 d_idx = logical_block / n;
+        u32 i_idx = logical_block % n;
+        u8 *d_buf = kmalloc(block_size);
+        if (!d_buf) return;
+        ext2_read_block(inode->block[13], d_buf);
+        u32 *d_table = (u32*)d_buf;
+        if (d_table[d_idx] == 0) ALLOC_AND_CLEAR(d_table[d_idx]);
+        u8 *i_buf = kmalloc(block_size);
+        if (i_buf) {
+            ext2_read_block(d_table[d_idx], i_buf);
+            if (((u32*)i_buf)[i_idx] == 0) inode->blocks += block_size / 512;
+            ((u32*)i_buf)[i_idx] = phys_block;
+            ext2_write_block(d_table[d_idx], i_buf);
+            kfree(i_buf);
+        }
+        ext2_write_block(inode->block[13], d_buf);
+        kfree(d_buf);
+        return;
+    }
+    logical_block -= n * n;
+
+    if (logical_block < n * n * n) {
+        /* triple indirect */
+        if (inode->block[14] == 0) ALLOC_AND_CLEAR(inode->block[14]);
+        u32 t_idx = logical_block / (n * n);
+        u32 d_idx = (logical_block / n) % n;
+        u32 i_idx = logical_block % n;
+        u8 *t_buf = kmalloc(block_size);
+        if (!t_buf) return;
+        ext2_read_block(inode->block[14], t_buf);
+        u32 *t_table = (u32*)t_buf;
+        if (t_table[t_idx] == 0) ALLOC_AND_CLEAR(t_table[t_idx]);
+        u8 *d_buf = kmalloc(block_size);
+        if (!d_buf) { kfree(t_buf); return; }
+        ext2_read_block(t_table[t_idx], d_buf);
+        u32 *d_table = (u32*)d_buf;
+        if (d_table[d_idx] == 0) ALLOC_AND_CLEAR(d_table[d_idx]);
+        u8 *i_buf = kmalloc(block_size);
+        if (i_buf) {
+            ext2_read_block(d_table[d_idx], i_buf);
+            if (((u32*)i_buf)[i_idx] == 0) inode->blocks += block_size / 512;
+            ((u32*)i_buf)[i_idx] = phys_block;
+            ext2_write_block(d_table[d_idx], i_buf);
+            kfree(i_buf);
+        }
+        ext2_write_block(t_table[t_idx], d_buf);
+        kfree(d_buf);
+        ext2_write_block(inode->block[14], t_buf);
+        kfree(t_buf);
+        return;
+    }
+
+    #undef ALLOC_AND_CLEAR
 }
 
 static u32 ext2_find_child(ext2_inode_t *dir_inode, const char *name) {
@@ -402,7 +506,7 @@ static u32 ext2_alloc_inode(void) {
 }
 
 // Find and allocate a free data block. Returns 0 if no free blocks.
-static u32 ext2_alloc_block(void) {
+u32 ext2_alloc_block(void) {
     if (!bgdt_cache || block_size == 0 || !sb_ptr) return 0;
 
     ext2_bgd_t *bgdt = (ext2_bgd_t *)bgdt_cache;

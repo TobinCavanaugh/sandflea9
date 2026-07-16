@@ -12,6 +12,8 @@
 #include "../include/kern_fs.h"
 #include "../include/kern_sched.h"
 #include "../include/wasm_spawn.h"
+#include "../include/kern_profile.h"
+#include "../util/str_slice.h"
 
 #define DoM3Logging 0
 
@@ -705,6 +707,7 @@ u0 handle_command() {
     serial_outsf("[[%s]]\n", word->loc);
 
     if (cmd_word_eq(word, "proc")) {
+        PROFILE_SCOPE("cmd:proc");
         kern_task_t *head = sched_get_task_list_head();
         if (!head) {
             screen_push_line("No tasks found.");
@@ -788,15 +791,16 @@ u0 handle_command() {
     }
 
     if (cmd_word_eq(word, "doom")) {
+        PROFILE_SCOPE("cmd:doom");
         // Doom has a custom game loop (initGame + tickGame) that doesn't fit
         // the normal wasm_thread_entry -> _start convention. Use thread_entry
         // to have wasm_spawn handle process/foreground setup while doom
         // provides its own loader (wasm_doom_test) with custom imports.
         char *path = null;
         if (word->next != null) {
-            path = str_dup_len(word->next->loc, word->next->len, kmalloc);
+            path = str_view_to_c(word->next->text);
         } else {
-            path = str_dup("doom-v0.1.0.wasm", kmalloc);
+            path = str_view_to_c(STR_VIEW_LIT("doom-v0.1.0.wasm"));
         }
 
         wasm_spawn_opts_t opts = {
@@ -813,12 +817,28 @@ u0 handle_command() {
         goto Label_Free;
     }
 
+    if(cmd_word_eq(word, "write") && word->next && word->next->next){
+        PROFILE_SCOPE("cmd:write");
+        i32 fd = fs_open_view(word->next->text);
+        cmd_word_t *w = word->next->next;
+        fs_write(fd, w->loc, str_len(w->loc));
+
+        fs_close(fd);
+    }
+
+    if(cmd_word_eq(word, "touch") && word->next) {
+        PROFILE_SCOPE("cmd:touch");
+        fs_create(word->next->loc);
+        goto Label_Free;
+    }
+
     if (cmd_word_eq(word, "wasm")) {
+        PROFILE_SCOPE("cmd:wasm");
         // `wasm <file>` runs an arbitrary .wasm with the common host import set.
         // argv = ["wasm", file], no foreground, no wait (fire-and-forget).
         char *path = null;
         if (word->next != null) {
-            path = str_dup_len(word->next->loc, word->next->len, kmalloc);
+            path = str_view_to_c(word->next->text);
         }
         char *argv[2] = { "wasm", path };
         int argc = path ? 2 : 1;
@@ -837,6 +857,7 @@ u0 handle_command() {
     if (cmd_word_eq(word, "doxw")) {
         // Stress test: spawn file_test.wasm N times. No foreground, no wait
         // (fire-and-forget); we don't track individual PIDs here.
+        PROFILE_SCOPE("cmd:doxw");
         i64 count = 10;
         if (word->next && word->next->val_type == CMD_WT_i64) {
             count = word->next->val_i64;
@@ -861,6 +882,7 @@ u0 handle_command() {
     }
 
     if (cmd_word_eq(word, "dox")) {
+        PROFILE_SCOPE("cmd:dox");
         i64 count = 10;
         if (word->next && word->next->val_type == CMD_WT_i64) {
             count = word->next->val_i64;
@@ -875,6 +897,7 @@ u0 handle_command() {
     }
 
     if (cmd_word_eq(word, "do")) {
+        PROFILE_SCOPE("cmd:do");
         i64 val = 5;
         if (word->next && word->next->val_type == CMD_WT_i64) {
             val = word->next->val_i64;
@@ -887,6 +910,7 @@ u0 handle_command() {
 
 
     if (cmd_word_eq(word, "kmalloc")) {
+        PROFILE_SCOPE("cmd:kmalloc");
         u64 size = 0;
         serial_outs("Testing Kmalloc and page fault handling.\n");
         i64 inc = 0;
@@ -905,6 +929,7 @@ u0 handle_command() {
     }
 
     if (cmd_word_eq(word, "kill") && word->next) {
+        PROFILE_SCOPE("cmd:kill");
         if (word->next->val_type != CMD_WT_i64) {
             screen_push_line("Argument is not a valid i64 value");
         } else {
@@ -920,16 +945,18 @@ u0 handle_command() {
 
 
     if (cmd_word_eq(word, "cls")) {
+        PROFILE_SCOPE("cmd:cls");
         typingbuf[0] = 0;
         screen_terminal_clear();
         goto Label_Free;
     }
 
     if (cmd_word_eq(word, "lsr")) {
+        PROFILE_SCOPE("cmd:lsr");
         // `lsr [path]` — recursive dir listing via the foreground lsr.wasm.
         char *path = null;
         if (word->next != null) {
-            path = str_dup_len(word->next->loc, word->next->len, kmalloc);
+            path = str_view_to_c(word->next->text);
         }
         char *argv[2] = { "lsr", path };
         int argc = path ? 2 : 1;
@@ -947,13 +974,13 @@ u0 handle_command() {
 
 
     if (cmd_word_eq(word, "open") && word->next != null) {
-        char *path = str_dup(word->next->loc, kmalloc);
-        path[word->next->len] = 0;
+        PROFILE_SCOPE("cmd:open");
+        str_view_t path_sv = word->next->text;
 
-        i32 w = fs_open(path);
+        i32 w = fs_open_view(path_sv);
 
         if (w < 0) {
-            screen_push_linef("Failed to open file at `%s`", path);
+            screen_push_linef("Failed to open file at `%.*s`", (int)path_sv.len, path_sv.data);
             goto Label_Free;
         }
 
@@ -975,19 +1002,21 @@ u0 handle_command() {
     }
 
     if (cmd_word_eq(word, "ext2") && word->next != null) {
-        char *path = str_dup_len(word->next->loc, word->next->len, kmalloc);
+        PROFILE_SCOPE("cmd:ext2");
+        char *path = str_view_to_c(word->next->text);
         kern_process_t *proc = process_create();
         sched_create_process_thread(proc, test_ext2, path);
         goto Label_Free;
     }
 
     if (cmd_word_eq(word, "wat2wasm")) {
+        PROFILE_SCOPE("cmd:wat2wasm");
         // `wat2wasm <input.wat> <output.wasm>` — compile WAT to WASM.
         // Also supports: `wat2wasm <input.wat> -o <output.wasm>`
         // Runs natively via wasm2c (embedded wabt), no wasm3 required.
         char *input = null, *output = null;
         if (word->next != null) {
-            input = str_dup_len(word->next->loc, word->next->len, kmalloc);
+            input = str_view_to_c(word->next->text);
         }
         // Check for optional "-o" flag before the output filename
         cmd_word_t *out_word = word->next ? word->next->next : null;
@@ -995,7 +1024,7 @@ u0 handle_command() {
             out_word = out_word->next;  // skip "-o", point to actual filename
         }
         if (out_word != null) {
-            output = str_dup_len(out_word->loc, out_word->len, kmalloc);
+            output = str_view_to_c(out_word->text);
         }
         if (!input || !output) {
             screen_push_line("Usage: wat2wasm <input.wat> <output.wasm>");
@@ -1015,13 +1044,14 @@ u0 handle_command() {
     }
 
     if (cmd_word_eq(word, "fileinfo") && word->next != null) {
-        char *path = str_dup_len(word->next->loc, word->next->len, kmalloc);
-        i32 fd = fs_open(path);
+        PROFILE_SCOPE("cmd:fileinfo");
+        str_view_t path_sv = word->next->text;
+        i32 fd = fs_open_view(path_sv);
         if (fd < 0) {
-            screen_push_linef("fileinfo: could not open %s", path);
+            screen_push_linef("fileinfo: could not open %.*s", (int)path_sv.len, path_sv.data);
         } else {
             u32 size = fs_size(fd);
-            screen_push_linef("fileinfo: %s, size = %u bytes", path, size);
+            screen_push_linef("fileinfo: %.*s, size = %u bytes", (int)path_sv.len, path_sv.data, size);
             u8 buf[16];
             i32 r = fs_read(fd, buf, 16);
             if (r > 0) {
@@ -1038,15 +1068,15 @@ u0 handle_command() {
             }
             fs_close(fd);
         }
-        kfree(path);
         goto Label_Free;
     }
 
     if (cmd_word_eq(word, "cat")) {
+        PROFILE_SCOPE("cmd:cat");
         // `cat [path]` — foreground cat.wasm.
         char *path = null;
         if (word->next != null) {
-            path = str_dup_len(word->next->loc, word->next->len, kmalloc);
+            path = str_view_to_c(word->next->text);
         }
         char *argv[2] = { "cat", path };
         int argc = path ? 2 : 1;
@@ -1063,28 +1093,29 @@ u0 handle_command() {
     }
 
     if (cmd_word_eq(word, "write") && word->next != null && word->next->next != null) {
-        char *path = str_dup_len(word->next->loc, word->next->len, kmalloc);
-        char *str = str_dup_len(word->next->next->loc, word->next->next->len, kmalloc);
+        PROFILE_SCOPE("cmd:write");
+        str_view_t path_sv = word->next->text;
+        char *str  = str_view_to_c(word->next->next->text);
 
-        i32 fd = fs_open(path);
+        i32 fd = fs_open_view(path_sv);
         if (fd >= 0) {
             i32 written = fs_write(fd, (u8 *) str, word->next->next->len);
             if (written >= 0) {
-                screen_push_linef("Wrote %d bytes to %s", written, path);
+                screen_push_linef("Wrote %d bytes to %.*s", written, (int)path_sv.len, path_sv.data);
             } else {
                 screen_push_line("Error writing to file");
             }
             fs_close(fd);
         } else {
-            screen_push_linef("Could not open: %s", path);
+            screen_push_linef("Could not open: %.*s", (int)path_sv.len, path_sv.data);
         }
 
-        kfree(path);
         kfree(str);
         goto Label_Free;
     }
 
     if (cmd_word_eq(word, "kmalloc2")) {
+        PROFILE_SCOPE("cmd:kmalloc2");
         u64 sum = 0;
         serial_outs("Testing Kmalloc and freeing.\n");
         while (sum < system.total_mem_size * 4) {
@@ -1101,6 +1132,7 @@ u0 handle_command() {
 
 
     if (cmd_word_eq(word, "pci")) {
+        PROFILE_SCOPE("cmd:pci");
         pci_device_t *dev = system.pci_list_head;
         while (dev) {
             screen_push_linef("C:%X S:%X | V:%X D:%X\n",

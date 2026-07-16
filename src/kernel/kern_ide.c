@@ -1,6 +1,7 @@
 #include "../include/kern_ide.h"
 #include "../include/kern_asmstubs.h"
 #include "../include/kern_serial.h"
+#include "../include/kern_profile.h"
 
 u0 ide_init() {
     serial_outsl("IDE: Initializing Primary Bus...");
@@ -55,6 +56,7 @@ bool ide_detect() {
 }
 
 u0 ide_read_sectors(u32 lba, u8 count, u8 *buffer) {
+    PROFILE_SCOPE("ide:read_sectors");
     u64 irq = save_irq_and_disable();
 
     // 1. Select Drive and send upper 4 bits of LBA

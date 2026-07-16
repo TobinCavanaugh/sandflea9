@@ -8,6 +8,11 @@
 
 u0 apic_timer_init(u64 lapic_base, u8 vector, u32 ms);
 
+// ── Exported calibration globals — read by profile_now_us() ─────────────────
+u64 apic_lapic_base   = 0;
+u32 apic_ticks_per_ms = 0;
+u32 apic_period_ticks = 0;
+
 extern u64 rdmsr(u32 msr);
 
 u64 get_apic_base() {
@@ -57,6 +62,11 @@ u0 apic_timer_init(u64 lapic_base, u8 vector, u32 ms) {
 
     u32 tpms = ticks_in_10ms / 10;
     u32 total_ticks = tpms * ms;
+
+    // Export calibration for the profiler
+    apic_lapic_base   = lapic_base;
+    apic_ticks_per_ms = tpms;
+    apic_period_ticks = total_ticks;
 
     lapic_write(lapic_base, LAPIC_TIMER_LVT, vector | LAPIC_TIMER_PERIODIC);
     lapic_write(lapic_base, LAPIC_TIMER_DIV, 0x3);
