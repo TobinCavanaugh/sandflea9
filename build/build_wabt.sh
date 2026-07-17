@@ -230,7 +230,19 @@ WABT_SOURCES=(
 # ---- Custom memcpy/memset/memmove/memcmp ---------------------------------
 # Override wasi-libc's bulk-memory versions so we don't emit
 # memory.copy/memory.fill opcodes.
-cat > "$WABT_OUT_DIR/wasm_memcpy.cc" << 'WASM_MEMCPY'
+#
+# Cache note: emit the .cc only on the first run (or after a manual
+# remove); subsequent runs leave the cached .cc stable so the -nt compile
+# gate below can correctly skip. Without this, the unconditional
+# `cat > .cc` here would refresh its mtime every script run, which
+# forces a wasteful .o recompile; that fresh mtime would propagate into
+# the wat2wasm.wasm link, which in turn cascades into a forced
+# src/external/wasm2c_wat2wasm.c recompile downstream (~30s). To force
+# a recompile after editing this heredoc, run
+# `rm build/wabt_wasi/wasm_memcpy.o` and re-run.
+WASM_MEMCPY_CC="$WABT_OUT_DIR/wasm_memcpy.cc"
+if [ ! -f "$WASM_MEMCPY_CC" ]; then
+    cat > "$WASM_MEMCPY_CC" << 'WASM_MEMCPY'
 #include <stddef.h>
 extern "C" {
 void* memcpy(void* dest, const void* src, size_t n) {
@@ -264,11 +276,14 @@ int memcmp(const void* s1, const void* s2, size_t n) {
 }
 }
 WASM_MEMCPY
+fi
 
 # ---- Compile wasm_memcpy.cc ----------------------------------------------
 log "Building wabt memcpy shim"
 MEMCPY_OBJ="$WABT_OUT_DIR/wasm_memcpy.o"
-$WASI_CC -c $WABT_CFLAGS "$WABT_OUT_DIR/wasm_memcpy.cc" -o "$MEMCPY_OBJ" 2>&1
+if [ ! -f "$MEMCPY_OBJ" ] || [ "$WASM_MEMCPY_CC" -nt "$MEMCPY_OBJ" ]; then
+    $WASI_CC -c $WABT_CFLAGS "$WASM_MEMCPY_CC" -o "$MEMCPY_OBJ" 2>&1
+fi
 
 # ---- Compile wabt library ------------------------------------------------
 log "Building wabt library"
@@ -284,23 +299,43 @@ for src in "${WABT_SOURCES[@]}"; do
 done
 
 # ---- wat2wasm tool -------------------------------------------------------
+# Cache gate: src is part of vendored wabt, stable across runs.
 log "Building wat2wasm tool"
 TOOL_OBJ="$WABT_OUT_DIR/tools_wat2wasm.o"
-$WASI_CC -c $WABT_CFLAGS "$WABT_DIR/src/tools/wat2wasm.cc" -o "$TOOL_OBJ" 2>&1
+TOOL_SRC="$WABT_DIR/src/tools/wat2wasm.cc"
+if [ ! -f "$TOOL_OBJ" ] || [ "$TOOL_SRC" -nt "$TOOL_OBJ" ]; then
+    $WASI_CC -c $WABT_CFLAGS "$TOOL_SRC" -o "$TOOL_OBJ" 2>&1
+fi
 
 # ---- Link → wat2wasm.wasm ------------------------------------------------
+# Cache gate: only relink + restrip if the .wasm is missing or any linker
+# input is newer than the existing .wasm. Without this, every build
+# re-emits wat2wasm.wasm with a fresh mtime, which build_kernel.sh's
+# wasm2c step then sees as "needs regen", regenerating the in-tree C
+# and forcing a 30-second src/external/wasm2c_wat2wasm.c recompile
+# downstream.
 log "Linking wat2wasm.wasm"
-$WASI_CC \
-    $WABT_LDFLAGS \
-    "$TOOL_OBJ" $OBJS \
-    -o "$WASM_DIR/wat2wasm.wasm" 2>&1
+SHOULD_LINK=0
+[ ! -f "$WASM_DIR/wat2wasm.wasm" ] && SHOULD_LINK=1
+[ "$TOOL_OBJ" -nt "$WASM_DIR/wat2wasm.wasm" ] && SHOULD_LINK=1
+for obj in $OBJS; do
+    [ "$obj" -nt "$WASM_DIR/wat2wasm.wasm" ] && SHOULD_LINK=1
+done
+if [ $SHOULD_LINK -eq 1 ]; then
+    $WASI_CC \
+        $WABT_LDFLAGS \
+        "$TOOL_OBJ" $OBJS \
+        -o "$WASM_DIR/wat2wasm.wasm" 2>&1
 
-# ---- Strip custom sections ----------------------------------------------
-if command -v wasm-strip >/dev/null 2>&1; then
-    log "Stripping debug/target_features sections"
-    wasm-strip "$WASM_DIR/wat2wasm.wasm"
-elif [ -x "/mnt/c/bin/wabt/bin/wasm-strip" ]; then
-    /mnt/c/bin/wabt/bin/wasm-strip "$WASM_DIR/wat2wasm.wasm"
+    # Strip custom sections — gated on SHOULD_LINK so we don't re-write
+    # the .wasm in place on no-op runs (which would refresh its mtime
+    # even though the content is bit-identical, defeating the gate above).
+    if command -v wasm-strip >/dev/null 2>&1; then
+        log "Stripping debug/target_features sections"
+        wasm-strip "$WASM_DIR/wat2wasm.wasm"
+    elif [ -x "/mnt/c/bin/wabt/bin/wasm-strip" ]; then
+        /mnt/c/bin/wabt/bin/wasm-strip "$WASM_DIR/wat2wasm.wasm"
+    fi
 fi
 
 WASM_SIZE=$(stat -c%s "$WASM_DIR/wat2wasm.wasm" 2>/dev/null \

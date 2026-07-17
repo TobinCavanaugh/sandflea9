@@ -201,6 +201,10 @@ m3ApiRawFunction(wasm_lsr) {
     u8 *mem = m3_GetMemory(runtime, &memory_size, 0);
     if (mem && path_offset < memory_size) {
         const char *path = (const char *) (mem + path_offset);
+
+        // Save/restore active drive — lsr is read-only.
+        drive_t *saved_drive = active_drive;
+
         u32 inode_no = 2;
         ext2_inode_t *start_inode = ext2_find_path(path, &inode_no);
         if (start_inode) {
@@ -212,11 +216,79 @@ m3ApiRawFunction(wasm_lsr) {
             }
             ext2_explorer_deinit(&exp);
             kfree(start_inode);
+            ext2_switch_drive(saved_drive);
             m3ApiReturn(0);
         } else {
             screen_push_linef("lsr: Path not found: %s", path);
+            ext2_switch_drive(saved_drive);
             m3ApiReturn(-1);
         }
+    } else {
+        m3ApiReturn(-1);
+    }
+}
+
+// Flat (non-recursive) directory listing — used by ls.wasm.
+// Saves/restores active drive so ls doesn't permanently switch drives.
+m3ApiRawFunction(wasm_ls) {
+    m3ApiReturnType (i32)
+    m3ApiGetArg     (u32, path_offset)
+
+    u32 memory_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &memory_size, 0);
+    if (mem && path_offset < memory_size) {
+        const char *path = (const char *) (mem + path_offset);
+
+        // Save active drive — ext2_find_path may switch it, but ls is
+        // read-only and should not change the user's working drive.
+        drive_t *saved_drive = active_drive;
+
+        u32 inode_no = 2;
+        ext2_inode_t *dir_inode = ext2_find_path(path, &inode_no);
+        if (!dir_inode) {
+            screen_push_linef("ls: path not found: %s", path);
+            ext2_switch_drive(saved_drive);
+            m3ApiReturn(-1);
+        }
+        if ((dir_inode->mode & 0xF000) != 0x4000) {
+            screen_push_line(path);
+            kfree(dir_inode);
+            ext2_switch_drive(saved_drive);
+            m3ApiReturn(0);
+        }
+
+        u32 block_size = active_drive->block_size;
+        u8 *dir_data = kmalloc(block_size);
+        if (dir_data) {
+            u32 total_blocks = (dir_inode->size + block_size - 1) / block_size;
+            for (u32 b = 0; b < total_blocks; b++) {
+                u32 phys_block = ext2_get_bmap(dir_inode, b);
+                if (phys_block == 0) continue;
+                ext2_read_block(phys_block, dir_data);
+                u32 cur_offset = 0;
+                while (cur_offset < block_size) {
+                    ext2_dir_entry_t *entry = (ext2_dir_entry_t *)(dir_data + cur_offset);
+                    if (entry->rec_len < 8) break;
+                    if (entry->inode != 0) {
+                        if (entry->name_len != 1 || entry->name[0] != '.') {
+                            if (entry->name_len != 2 || entry->name[0] != '.' || entry->name[1] != '.') {
+                                char name[256];
+                                u32 ncopy = entry->name_len < 255 ? entry->name_len : 255;
+                                mem_copy((u8*)name, (u8*)entry->name, ncopy);
+                                name[ncopy] = '\0';
+                                const char *type = (entry->file_type == 2) ? "/" : "";
+                                screen_push_linef("%-32s %s", name, type);
+                            }
+                        }
+                    }
+                    cur_offset += entry->rec_len;
+                }
+            }
+            kfree(dir_data);
+        }
+        kfree(dir_inode);
+        ext2_switch_drive(saved_drive);
+        m3ApiReturn(0);
     } else {
         m3ApiReturn(-1);
     }
@@ -1073,6 +1145,7 @@ u0 wasm_thread_entry(u0 *arg) {
     m3_LinkRawFunction(module, "env", "fd_close",        "i(i)",    &wasm_fd_close);
     m3_LinkRawFunction(module, "env", "fd_write",        "i(iiii)", &wasm_fd_write);
         m3_LinkRawFunction(module, "env", "lsr",             "i(i)",    &wasm_lsr);
+        m3_LinkRawFunction(module, "env", "ls",              "i(i)",    &wasm_ls);
         m3_LinkRawFunction(module, "env", "get_arg_count",   "i()",     &wasm_get_arg_count);
         m3_LinkRawFunction(module, "env", "get_arg",         "i(iii)",  &wasm_get_arg);
 

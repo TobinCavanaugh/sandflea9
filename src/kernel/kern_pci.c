@@ -43,7 +43,7 @@ pci_device_t *pci_init_system() {
             u16 vendor_id = pci_read_16(bus, slot, 0, 0x00);
             if (vendor_id == 0xFFff) continue;
 
-            u8 header_type = pci_read_32(bus, slot, 0, 0x0C) >> 16;
+            u8 header_type = (pci_read_32(bus, slot, 0, 0x0C) >> 16) & 0xFF;
             u8 func_count = (header_type & 0x80) ? 8 : 1; // hmmm
 
             for (u8 func = 0; func < func_count; func++) {

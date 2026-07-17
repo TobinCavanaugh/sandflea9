@@ -21,9 +21,13 @@
 #define IDE_STATUS_DRQ  0x08  // Data Request
 #define IDE_STATUS_ERR  0x01  // Error
 
+// Drive select values (LBA mode, top 4 bits of head)
+#define IDE_DRIVE_MASTER 0xE0
+#define IDE_DRIVE_SLAVE  0xF0
+
 u0 ide_init();
-bool ide_detect();
-u0 ide_read_sectors(u32 lba, u8 count, u8 *buffer);
-u0 ide_write_sectors(u32 lba, u8 count, u8 *buffer);
+bool ide_detect(u8 drive_sel);
+u0 ide_read_sectors(u8 drive_sel, u32 lba, u8 count, u8 *buffer);
+u0 ide_write_sectors(u8 drive_sel, u32 lba, u8 count, u8 *buffer);
 
 #endif //KERN_IDE_H

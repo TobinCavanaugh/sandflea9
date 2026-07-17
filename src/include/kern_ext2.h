@@ -100,8 +100,31 @@ typedef struct {
     char name[256];
 } ext2_explore_result_t;
 
+// ── Multi-drive support ───────────────────────────────────────────────────
+
+#define MAX_DRIVES 4
+
+typedef struct {
+    char name[32];               // "A", "data", etc.
+    u8   ide_drive_sel;          // IDE_DRIVE_MASTER or IDE_DRIVE_SLAVE
+    bool present;                // true if drive was detected
+    ext2_superblock_t sb;        // per-drive superblock
+    u32  block_size;             // per-drive block size (1024 << sb.block_size)
+    u8  *bgdt_cache;             // per-drive block group descriptor table
+} drive_t;
+
+extern drive_t drives[MAX_DRIVES];
+extern u8      drive_count;
+extern drive_t *active_drive;
+
+// Current working directory (for cd/ls). Includes drive prefix when on non-A drives.
+// e.g. "/", "/wasm", "//B/", "//B/wasm"
+extern char cwd[256];
+
 
 u0 ext2_init();
+u0 ext2_init_drive(drive_t *d);
+u0 ext2_switch_drive(drive_t *d);
 ext2_inode_t *find_file_in_root(char *target_name);
 ext2_inode_t *ext2_find_path(const char *path, u32 *out_inode_no);
 ext2_inode_t *ext2_get_inode(u32 inode_no, ext2_inode_t *out_inode);

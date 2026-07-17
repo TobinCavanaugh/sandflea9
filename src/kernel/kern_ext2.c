@@ -13,17 +13,68 @@
 #define EXT2_DEBUG 0
 #define DEBUG_LOG(expr) do { if (EXT2_DEBUG) { expr; } } while (0)
 
-ext2_superblock_t sb_static;
-ext2_superblock_t *sb_ptr = &sb_static;
-u32 block_size = 0;
-u8 *bgdt_cache = null; // Optimized: Cache the BGDT in RAM
+// ── Multi-drive globals ───────────────────────────────────────────────────
+drive_t drives[MAX_DRIVES] = {0};
+u8      drive_count = 0;
+drive_t *active_drive = null;
+
+// Current working directory. Tracks the active drive implicitly — if the
+// user does `cd //B`, the drive switches AND cwd captures the prefix.
+// On the boot drive (A), cwd is just "/path". On other drives: "//B/path".
+char cwd[256] = "/";
+
+// Legacy globals — kept for source compatibility with existing code.
+// They are repointed by ext2_switch_drive() whenever the active drive changes.
+ext2_superblock_t *sb_ptr  = null;
+u32               block_size = 0;
+u8               *bgdt_cache = null;
+
+// ── Drive switching ───────────────────────────────────────────────────────
+
+u0 ext2_switch_drive(drive_t *d) {
+    if (!d || !d->present) return;
+    active_drive = d;
+    sb_ptr      = &d->sb;
+    block_size  = d->block_size;
+    bgdt_cache  = d->bgdt_cache;
+}
+
+// ── Drive initialization ──────────────────────────────────────────────────
+
+u0 ext2_init_drive(drive_t *d) {
+    if (!d || !d->present) return;
+
+    u8 sb_buf[1024];
+    ide_read_sectors(d->ide_drive_sel, 2, 2, sb_buf);
+    mem_copy((u8 *)&d->sb, sb_buf, sizeof(ext2_superblock_t));
+
+    if (d->sb.magic_signature != EXT2_SIGNATURE) {
+        serial_outsf("EXT2: Drive '%s' — no valid ext2 signature, skipping\n", d->name);
+        d->present = false;
+        return;
+    }
+
+    d->block_size = 1024 << d->sb.block_size;
+
+    // Cache BGDT — read directly with IDE (no ext2_read_block dependency)
+    u32 bgdt_block = (d->block_size == 1024) ? 2 : 1;
+    u32 sectors_per_block = d->block_size / 512;
+    u32 start_sector = bgdt_block * sectors_per_block;
+    d->bgdt_cache = kmalloc(d->block_size);
+    if (d->bgdt_cache) {
+        ide_read_sectors(d->ide_drive_sel, start_sector, sectors_per_block, d->bgdt_cache);
+    }
+
+    serial_outsf("EXT2: Drive '%s' — label '%.16s', %d bytes/block, BGDT cached\n",
+                 d->name, d->sb.volume_name, d->block_size);
+}
 
 u0 ext2_read_block(u32 block_id, u8 *buffer) {
     PROFILE_SCOPE("ext2:read_block");
     if (!buffer || block_size == 0) return;
     u32 sectors_per_block = block_size / 512;
     u32 start_sector = block_id * sectors_per_block;
-    ide_read_sectors(start_sector, sectors_per_block, buffer);
+    ide_read_sectors(active_drive->ide_drive_sel, start_sector, sectors_per_block, buffer);
 }
 
 u0 ext2_read_blocks(u32 start_block, u32 count, u8 *buffer) {
@@ -36,7 +87,7 @@ u0 ext2_read_blocks(u32 start_block, u32 count, u8 *buffer) {
     // ide_read_sectors takes u8 count; split into chunks if needed (max 255 sectors per call)
     while (total_sectors > 0) {
         u8 chunk = (total_sectors > 255) ? 255 : (u8)total_sectors;
-        ide_read_sectors(start_sector, chunk, buffer);
+        ide_read_sectors(active_drive->ide_drive_sel, start_sector, chunk, buffer);
         total_sectors -= chunk;
         start_sector += chunk;
         buffer += chunk * 512;
@@ -47,27 +98,35 @@ u0 ext2_write_block(u32 block_id, u8 *buffer) {
     if (!buffer || block_size == 0) return;
     u32 sectors_per_block = block_size / 512;
     u32 start_sector = block_id * sectors_per_block;
-    ide_write_sectors(start_sector, sectors_per_block, buffer);
+    ide_write_sectors(active_drive->ide_drive_sel, start_sector, sectors_per_block, buffer);
 }
 
 u0 ext2_init() {
-    u8 sb_buf[1024];
-    ide_read_sectors(2, 2, sb_buf);
-    mem_copy((u8 *) sb_ptr, sb_buf, sizeof(ext2_superblock_t));
+    // Probe and initialize all present drives
+    // Drive 0 (master) = "A" (boot drive, always present if detected)
+    drive_count = 0;
 
-    if (sb_ptr->magic_signature == EXT2_SIGNATURE) {
-        serial_outsl("EXT2: Valid filesystem detected via IDE.");
-        block_size = 1024 << sb_ptr->block_size;
+    drives[0].name[0] = 'A';
+    drives[0].name[1] = '\0';
+    drives[0].ide_drive_sel = IDE_DRIVE_MASTER;
+    drives[0].present = true;
+    ext2_init_drive(&drives[0]);
+    if (drives[0].present) drive_count++;
 
-        // Cache BGDT
-        u32 bgdt_block = (block_size == 1024) ? 2 : 1;
-        bgdt_cache = kmalloc(block_size);
-        ext2_read_block(bgdt_block, bgdt_cache);
+    // Drive 1 (slave) = "B" (persistent data drive)
+    drives[1].name[0] = 'B';
+    drives[1].name[1] = '\0';
+    drives[1].ide_drive_sel = IDE_DRIVE_SLAVE;
+    drives[1].present = ide_detect(IDE_DRIVE_SLAVE);
+    if (drives[1].present) {
+        ext2_init_drive(&drives[1]);
+        if (drives[1].present) drive_count++;
+    }
 
-        serial_outsf("EXT2: Block size %d bytes, BGDT cached.\n", block_size);
-    } else {
-        serial_outsl("EXT2: Invalid magic signature on IDE drive!");
-        block_size = 0;
+    // Activate drive 0 (A) by default
+    if (drives[0].present) {
+        ext2_switch_drive(&drives[0]);
+        serial_outsl("EXT2: Active drive set to 'A'");
     }
 }
 
@@ -216,7 +275,7 @@ void ext2_set_bmap(ext2_inode_t *inode, u32 logical_block, u32 phys_block) {
                     ext2_write_block((target), zbuf); kfree(zbuf); }     \
         else { u8 zsec[512]; mem_set(zsec, 0, 512);                      \
                for (u32 _s = 0; _s < block_size/512; _s++)               \
-                   ide_write_sectors((target)*(block_size/512)+_s,1,zsec);} \
+                   ide_write_sectors(active_drive->ide_drive_sel,(target)*(block_size/512)+_s,1,zsec);} \
         inode->blocks += block_size / 512;                               \
     } while(0)
 
@@ -333,6 +392,45 @@ static u32 ext2_find_child(ext2_inode_t *dir_inode, const char *name) {
 ext2_inode_t *ext2_find_path(const char *path, u32 *out_inode_no) {
     if (!path || *path == '\0' || block_size == 0) return null;
 
+    // ── //drive prefix: cross to a different drive ──────────────────────
+    if (path[0] == '/' && path[1] == '/') {
+        const char *drive_start = path + 2;
+
+        // Extract drive name (up to next '/' or end of string)
+        const char *scan = drive_start;
+        while (*scan && *scan != '/') scan++;
+        u32 name_len = (u32)(scan - drive_start);
+
+        if (name_len == 0) {
+            // "//" with no drive name — synthetic root, handled at command level
+            return null;
+        }
+
+        // Look up drive by name
+        for (u8 i = 0; i < drive_count; i++) {
+            if (!drives[i].present) continue;
+            // Compare name_len chars and ensure whole-names match
+            u32 dn_len = 0;
+            while (dn_len < 32 && drives[i].name[dn_len] != '\0') dn_len++;
+            if (name_len == dn_len) {
+                bool match = true;
+                for (u32 j = 0; j < name_len; j++) {
+                    if (drive_start[j] != drives[i].name[j]) { match = false; break; }
+                }
+                if (match) {
+                    ext2_switch_drive(&drives[i]);
+                    // Advance path past the drive name
+                    path = (*scan == '/') ? scan : "/";
+                    goto drive_switched;
+                }
+            }
+        }
+        // No matching drive found — // was present but drive name invalid
+        return null;
+    drive_switched:;
+    }
+
+    // ── Normal path resolution (same regardless of drive) ───────────────
     u32 current_inode_no = 2;
     u32 actual_inode_size = max(sizeof(ext2_inode_t), (u32) sb_ptr->inode_size);
     ext2_inode_t *current_inode = kmalloc(actual_inode_size);

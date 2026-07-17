@@ -138,7 +138,7 @@ WASM_RT_NO_RETURN void wasm_rt_trap(wasm_rt_trap_t);
 const char* wasm_rt_strerror(wasm_rt_trap_t trap);
 
 void wasm_rt_allocate_memory(wasm_rt_memory_t*, uint64_t initial_pages,
-                             uint64_t max_pages, bool is64, uint32_t page_size);
+                             uint64_t max_pages, bool is64);
 uint64_t wasm_rt_grow_memory(wasm_rt_memory_t*, uint64_t pages);
 void wasm_rt_free_memory(wasm_rt_memory_t*);
 

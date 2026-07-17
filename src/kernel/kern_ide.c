@@ -5,17 +5,21 @@
 
 u0 ide_init() {
     serial_outsl("IDE: Initializing Primary Bus...");
-    if (ide_detect()) {
+    if (ide_detect(IDE_DRIVE_MASTER)) {
         serial_outsl("IDE: Primary Master drive detected!");
     } else {
         serial_outsl("IDE: No Primary Master drive found.");
     }
+    if (ide_detect(IDE_DRIVE_SLAVE)) {
+        serial_outsl("IDE: Primary Slave drive detected!");
+    } else {
+        serial_outsl("IDE: No Primary Slave drive found.");
+    }
 }
 
-bool ide_detect() {
-    // 1. Select the master drive on the primary bus
-    // 0xA0 = Master, 0xB0 = Slave
-    outb(IDE_DRIVE_SEL, 0xA0);
+bool ide_detect(u8 drive_sel) {
+    // 1. Select the drive on the primary bus
+    outb(IDE_DRIVE_SEL, drive_sel);
 
     // 2. Clear sector count and LBA registers (send 0)
     outb(IDE_SEC_COUNT, 0);
@@ -55,13 +59,12 @@ bool ide_detect() {
     return true;
 }
 
-u0 ide_read_sectors(u32 lba, u8 count, u8 *buffer) {
+u0 ide_read_sectors(u8 drive_sel, u32 lba, u8 count, u8 *buffer) {
     PROFILE_SCOPE("ide:read_sectors");
     u64 irq = save_irq_and_disable();
 
     // 1. Select Drive and send upper 4 bits of LBA
-    // 0xE0 = LBA mode + Master
-    outb(IDE_DRIVE_SEL, 0xE0 | ((lba >> 24) & 0x0F));
+    outb(IDE_DRIVE_SEL, drive_sel | ((lba >> 24) & 0x0F));
 
     // 2. Send sector count
     outb(IDE_SEC_COUNT, count);
@@ -97,12 +100,11 @@ u0 ide_read_sectors(u32 lba, u8 count, u8 *buffer) {
     restore_irq(irq);
 }
 
-u0 ide_write_sectors(u32 lba, u8 count, u8 *buffer) {
+u0 ide_write_sectors(u8 drive_sel, u32 lba, u8 count, u8 *buffer) {
     u64 irq = save_irq_and_disable();
 
     // 1. Select Drive and send upper 4 bits of LBA
-    // 0xE0 = LBA mode + Master
-    outb(IDE_DRIVE_SEL, 0xE0 | ((lba >> 24) & 0x0F));
+    outb(IDE_DRIVE_SEL, drive_sel | ((lba >> 24) & 0x0F));
 
     // 2. Send sector count
     outb(IDE_SEC_COUNT, count);

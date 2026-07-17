@@ -20,7 +20,7 @@
 
 #include "wasm3-0.5.0/source/m3_env.h"
 #include "wasm3-0.5.0/source/m3_api_libc.h"
-
+#include "../include/kern_ide.h"
 
 // TODO Running kmalloc2 and then kmalloc causes early page fault? I think
 
@@ -828,7 +828,8 @@ u0 handle_command() {
 
     if(cmd_word_eq(word, "touch") && word->next) {
         PROFILE_SCOPE("cmd:touch");
-        fs_create(word->next->loc);
+        i32 fd = fs_create(word->next->loc);
+        if (fd >= 0) fs_close(fd);
         goto Label_Free;
     }
 
@@ -972,6 +973,93 @@ u0 handle_command() {
         goto Label_Free;
     }
 
+
+    // ── cd: change directory / switch drives ────────────────────────────
+    if (cmd_word_eq(word, "cd")) {
+        PROFILE_SCOPE("cmd:cd");
+
+        if (word->next == null) {
+            screen_push_linef("cwd: %s", cwd);
+            goto Label_Free;
+        }
+
+        char *target = str_view_to_c(word->next->text);
+        if (!target) goto Label_Free;
+
+        // `cd //` — go to synthetic root (just prints drives via ls)
+        if (target[0] == '/' && target[1] == '/' && target[2] == '\0') {
+            screen_push_line("cd: use ls // to list drives");
+            kfree(target);
+            goto Label_Free;
+        }
+
+        // Resolve the path to validate it exists and is a directory
+        u32 inode_no = 2;
+        ext2_inode_t *dir_inode = ext2_find_path(target, &inode_no);
+        if (!dir_inode) {
+            screen_push_linef("cd: path not found: %s", target);
+            kfree(target);
+            goto Label_Free;
+        }
+        if ((dir_inode->mode & 0xF000) != 0x4000) {
+            screen_push_linef("cd: not a directory: %s", target);
+            kfree(dir_inode);
+            kfree(target);
+            goto Label_Free;
+        }
+        kfree(dir_inode);
+
+        // Update cwd
+        u32 tlen = str_len(target);
+        if (tlen >= 255) tlen = 254;
+        mem_copy((u8*)cwd, (u8*)target, tlen);
+        cwd[tlen] = '\0';
+
+        kfree(target);
+        goto Label_Free;
+    }
+
+    // ── ls: spawn ls.wasm (flat listing) or list drives ──────────────────
+    if (cmd_word_eq(word, "ls")) {
+        PROFILE_SCOPE("cmd:ls");
+
+        char *ls_path = null;
+        if (word->next != null) {
+            ls_path = str_view_to_c(word->next->text);
+        } else {
+            ls_path = str_dup(cwd, kmalloc);
+        }
+        if (!ls_path) goto Label_Free;
+
+        // `ls //` — list drives (handled in-kernel)
+        if (ls_path && ls_path[0] == '/' && ls_path[1] == '/' && ls_path[2] == '\0') {
+            screen_push_line("DRIVES:");
+            screen_push_line("NAME  IDE       STATUS");
+            screen_push_line("----  ---       ------");
+            for (u8 i = 0; i < MAX_DRIVES; i++) {
+                if (!drives[i].present) continue;
+                const char *sel_name = (drives[i].ide_drive_sel == IDE_DRIVE_MASTER) ? "MASTER" : "SLAVE";
+                const char *active = (&drives[i] == active_drive) ? " < active" : "";
+                screen_push_linef("%-4s  %-8s  %s%s", drives[i].name, sel_name,
+                                  drives[i].present ? "ok" : "--", active);
+            }
+            if (ls_path) kfree(ls_path);
+            goto Label_Free;
+        }
+
+        // Spawn ls.wasm with the path as argv[1]
+        char *argv[2] = { "ls", ls_path };
+        wasm_spawn_opts_t opts = {
+            .path = "ls.wasm",
+            .argc = 2,
+            .argv = (char *const *) argv,
+            .foreground = true,
+            .wait = true,
+        };
+        wasm_spawn(&opts);
+        if (ls_path) kfree(ls_path);
+        goto Label_Free;
+    }
 
     if (cmd_word_eq(word, "open") && word->next != null) {
         PROFILE_SCOPE("cmd:open");

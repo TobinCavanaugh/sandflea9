@@ -47,19 +47,41 @@ WASM2C_OUT_C="src/external/wasm2c_wat2wasm.c"
 WASM2C_OUT_H="src/external/wasm2c_wat2wasm.h"
 
 if [ -x "$WASM2C_BIN" ] && [ -f "$WASM2C_WASM" ]; then
-    if [ "$WASM2C_WASM" -nt "$WASM2C_OUT_C" ] || [ ! -f "$WASM2C_OUT_C" ]; then
-        log "wasm2c: $WASM2C_WASM → $WASM2C_OUT_C"
+    # Re-run wasm2c when the .wasm input changed since the intermediate
+    # was last generated (cheap — sub-second).
+    if [ ! -f "$WASM2C_OUT_DIR/wat2wasm.c" ] || \
+       [ "$WASM2C_WASM" -nt "$WASM2C_OUT_DIR/wat2wasm.c" ]; then
+        log "wasm2c: $WASM2C_WASM → $WASM2C_OUT_DIR/wat2wasm.c"
         "$WASM2C_BIN" "$WASM2C_WASM" -o "$WASM2C_OUT_DIR/wat2wasm.c" 2>&1
-        cp "$WASM2C_OUT_DIR/wat2wasm.c"  "$WASM2C_OUT_C"
-        cp "$WASM2C_OUT_DIR/wat2wasm.h"  "$WASM2C_OUT_H"
-        # Fix includes: rename to our adapted header; force the in-tree
+    fi
+
+    # Apples-to-apples preparation: keep a sibling "prepared" intermediate
+    # that has the include-name sed applied. We MUST do this in the
+    # intermediate (not just the in-tree) before the cmp below — otherwise
+    # raw-vs-sed-edited always differs and the cp always runs, which is
+    # exactly the cascading-rebuild bug this whole step exists to avoid.
+    WASM2C_PREPARED="$WASM2C_OUT_DIR/wat2wasm_prepared.c"
+    if [ ! -f "$WASM2C_PREPARED" ] || \
+       [ "$WASM2C_OUT_DIR/wat2wasm.c" -nt "$WASM2C_PREPARED" ]; then
+        cp "$WASM2C_OUT_DIR/wat2wasm.c" "$WASM2C_PREPARED"
+        # Fixes include: rename to our adapted header; force the in-tree
         # wasm-rt.h (kernel-clean, no pthread deps).
-        sed -i 's|#include "wat2wasm.h"|#include "wasm2c_wat2wasm.h"|' "$WASM2C_OUT_C"
+        sed -i 's|#include "wat2wasm.h"|#include "wasm2c_wat2wasm.h"|' "$WASM2C_PREPARED"
+    fi
+
+    # Refresh in-tree src only if the prepared content actually differs.
+    # Otherwise, preserve the mtime so the per-source `-nt` check below
+    # can correctly skip the 30-second wasm2c_wat2wasm.c compile on no-op
+    # incremental builds.
+    if ! cmp -s "$WASM2C_PREPARED" "$WASM2C_OUT_C"; then
+        log "wasm2c: new content — refreshing $WASM2C_OUT_C"
+        cp "$WASM2C_PREPARED" "$WASM2C_OUT_C"
+        cp "$WASM2C_OUT_DIR/wat2wasm.h"  "$WASM2C_OUT_H"
         sed -i 's|#include ".*wabt.*/wasm-rt.h"|#include "wasm-rt.h"|' "$WASM2C_OUT_H"
         sed -i 's|//#include "wasm-rt.h"|#include "wasm-rt.h"|' "$WASM2C_OUT_H"
         ok "wasm2c: $(wc -c < "$WASM2C_OUT_C") bytes C, $(wc -c < "$WASM2C_OUT_H") bytes H"
     else
-        log "wasm2c output up-to-date; skipping"
+        log "wasm2c: byte-identical output — preserving $WASM2C_OUT_C mtime"
     fi
 else
     if [ ! -f "$WASM2C_OUT_C" ]; then
@@ -106,9 +128,27 @@ done
 
 # ---- C -------------------------------------------------------------------
 log "Compiling C"
-# Track newest header to enforce global rebuild on header change.
-NEWEST_HEADER=$(find src/include -type f -name "*.h" \
+# Track newest header to enforce global rebuild on header change. Includes
+# src/external/*.h (e.g. wasm-rt.h) so editing those correctly cascades to
+# all dependent .c files. Skip vendored wabt upstream so third-party
+# headers can't trigger spurious rebuilds.
+NEWEST_HEADER=$(find src/include src/external -type f -name "*.h" \
+    -not -path "src/external/wabt-1.0.41/*" \
     -printf '%T@\n' 2>/dev/null | sort -n | tail -1)
+
+# Compile at most PARALLEL_MAX gcc invocations concurrently. nproc on
+# WSL gives the host's virtual-core count, which we cap (default 4) to
+# keep RSS predictable: each gcc -O3 kernel compile peaks at ~200 MB.
+# Override via env: PARALLEL_MAX=N bash build.sh
+PARALLEL_MAX="${PARALLEL_MAX:-$(nproc 2>/dev/null || echo 4)}"
+log "  parallel jobs: $PARALLEL_MAX"
+
+# `set -e` doesn't propagate exit codes from backgrounded workers, so we
+# track every PID and reap individually. A failure aborts the whole
+# build; in-flight workers become orphaned briefly but that's fine —
+# the build is failing anyway. No shared .o files = no corruption.
+PIDS=()
+
 for src in "${C_SOURCES[@]}"; do
     # Flatten nested path for object name (e.g. src_kernel_kern_ext2.o).
     filename=$(echo "$src" | sed 's|/|_|g' | sed 's|\.c$||')
@@ -124,11 +164,32 @@ for src in "${C_SOURCES[@]}"; do
         fi
     fi
 
+    LINK_LIST="$LINK_LIST $obj_path"
+
     if [ $SHOULD_REBUILD -eq 1 ]; then
         log "  CC  $src"
-        gcc $CFLAGS "$src" -o "$obj_path"
+        # Throttle: reap one worker before launching the next once we
+        # hit the cap, so #PIDS stays <= PARALLEL_MAX throughout.
+        gcc $CFLAGS "$src" -o "$obj_path" &
+        PIDS+=($!)
+        if [ "${#PIDS[@]}" -ge "$PARALLEL_MAX" ]; then
+            reap_pid="${PIDS[0]}"
+            if wait "$reap_pid"; then
+                PIDS=("${PIDS[@]:1}")
+            else
+                err "gcc failed (pid $reap_pid processing $src) -- aborting"
+                exit 1
+            fi
+        fi
     fi
-    LINK_LIST="$LINK_LIST $obj_path"
+done
+
+# Drain remaining workers.
+for pid in "${PIDS[@]}"; do
+    if ! wait "$pid"; then
+        err "gcc failed (pid $pid) -- aborting"
+        exit 1
+    fi
 done
 
 # ---- Font blob -----------------------------------------------------------

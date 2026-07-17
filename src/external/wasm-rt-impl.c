@@ -18,9 +18,8 @@ void wasm_rt_trap(wasm_rt_trap_t code) {
 void wasm_rt_allocate_memory(wasm_rt_memory_t* mem,
                              uint64_t initial_pages,
                              uint64_t max_pages,
-                             bool is64,
-                             uint32_t page_size) {
-  mem->page_size = page_size ? page_size : WASM_DEFAULT_PAGE_SIZE;
+                             bool is64) {
+  mem->page_size = WASM_DEFAULT_PAGE_SIZE;
   mem->pages     = initial_pages;
   mem->max_pages = max_pages ? max_pages : 0x10000;
   mem->is64      = is64;
