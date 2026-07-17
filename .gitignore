@@ -1,11 +1,15 @@
 cmake-build-debug/
 obj/
-iso_root/disk.img
+# Built kernel + bootloader that goes into iso_root/. iso_root itself
+# is NOT ignored: limine-uefi-cd.bin is committed as the ISO seed.
 iso_root/kernel.elf
 disk.img
+data.img
+sandfleaOS.iso
 *.log
 log.txt
 src/external/wabt-1.0.41/
+dashboard/node_modules
 
 src/kernel/wasm3-0.5.0
 src/kernel/musl-1.2.6
