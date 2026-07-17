@@ -1,0 +1,8 @@
+# Force CRLF line endings on Windows-native batch files. Without this,
+# contributors with core.autocrlf=false (or input) can unknowingly
+# commit LF-only versions, which makes cmd.exe fail batch parsing with
+# the cryptic  "': was unexpected at this time.'"  error.
+#
+# Everything else stays LF — bash heredocs, build/*.sh, src/*, etc.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
