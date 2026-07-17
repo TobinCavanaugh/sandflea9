@@ -12,7 +12,7 @@ REM confusingly without this check.
 where wsl >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] WSL is not installed or not on PATH.
-    echo         Install WSL (Ubuntu recommended): wsl --install
+    echo         Install WSL ^(Ubuntu recommended^): wsl --install
     echo         Then verify:  wsl --status
     exit /b 1
 )
@@ -21,7 +21,7 @@ setlocal enabledelayedexpansion
 
 set "WAT2WASM=C:\bin\wabt\bin\wat2wasm.exe"
 if exist "%WAT2WASM%" (
-    echo --- Compiling WASM (Windows wat2wasm.exe) ---
+    echo --- Compiling WASM ^(Windows wat2wasm.exe^) ---
     if not exist "obj\wasm" mkdir "obj\wasm"
     for %%f in (src\wasm\wat\*.wat) do (
         echo   %%f
