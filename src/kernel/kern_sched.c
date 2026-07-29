@@ -9,6 +9,7 @@
 #include "../include/kern_serial.h"
 #include "../include/kern_fs.h"
 #include "../include/kern_terminal.h"
+#include "../include/kern_profile.h"
 
 extern u0 task_switch_asm(kern_task_t *current, kern_task_t *next);
 
@@ -20,6 +21,7 @@ kern_process_t *foreground_proc = null;
 u64 read_cr3();
 
 u0 sched_init() {
+    PROFILE_AUTO_BEGIN;
     kernel_process = kmalloc(sizeof(kern_process_t));
     kernel_process->pid = 0;
     kernel_process->cr3 = read_cr3();
@@ -37,6 +39,7 @@ u0 sched_init() {
 
     current_task = root_task;
     task_list_head = root_task;
+    PROFILE_AUTO_END;
 }
 
 i32 task_id_c = 0;

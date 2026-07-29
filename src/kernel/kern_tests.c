@@ -411,7 +411,7 @@ u0 wasm_doom_test(u0 *arg) {
     // (the user could press F2 and session_switch before we set the flag).
     term_session_t *doom_session = active_session;
     doom_session_ref = doom_session;
-    if (doom_session) doom_session->doom_active = true;
+    if (doom_session) doom_session->owns_framebuffer = true;
 
     // --- Boot-phase profiling: track elapsed time at each step ---
     // sw has ~10ms granularity; times in timer ticks (~10ms each)
@@ -686,7 +686,7 @@ u0 wasm_doom_test(u0 *arg) {
 Label_Done:
     #undef BOOT_LOG
     keyboard_flush_queue();  // clear leftover extended key codes from Doom gameplay
-    if (doom_session) doom_session->doom_active = false;
+    if (doom_session) doom_session->owns_framebuffer = false;
     doom_frame_width = 0;
     doom_frame_height = 0;
     if (runtime) m3_FreeRuntime(runtime);
@@ -791,7 +791,7 @@ u0 handle_command() {
     }
 
     if (cmd_word_eq(word, "doom")) {
-        PROFILE_SCOPE("cmd:doom");
+        PROFILE_BEGIN("cmd:doom");
         // Doom has a custom game loop (initGame + tickGame) that doesn't fit
         // the normal wasm_thread_entry -> _start convention. Use thread_entry
         // to have wasm_spawn handle process/foreground setup while doom
@@ -813,6 +813,8 @@ u0 handle_command() {
             // wasm_spawn printed diagnostics; path wasn't consumed
             if (path) kfree(path);
         }
+
+        PROFILE_END("cmd:doom");
         // On success, wasm_doom_test owns `path` and frees it in Label_Done.
         goto Label_Free;
     }
@@ -1218,6 +1220,28 @@ u0 handle_command() {
         goto Label_Free;
     }
 
+
+    // ── cache: query or resize the ext2 block cache ───────────────────
+    if (cmd_word_eq(word, "cache")) {
+        PROFILE_SCOPE("cmd:cache");
+        u32 hits = 0, misses = 0, used = 0, cap = 0;
+        block_cache_stats(&hits, &misses, &used, &cap);
+        u32 block_size = active_drive->block_size;
+
+        if (word->next && word->next->val_type == CMD_WT_i64) {
+            u32 new_cap = (u32) word->next->val_i64;
+            block_cache_set_capacity(new_cap);
+            block_cache_stats(&hits, &misses, &used, &cap);
+            screen_push_linef("cache: resized to %u entries (~%u KB)",
+                              cap, (cap * block_size) / 1024);
+        } else {
+            u32 total = hits + misses;
+            u32 pct = total > 0 ? (hits * 100) / total : 0;
+            screen_push_linef("cache: %u/%u used, %u hits / %u misses (%u%% hit rate)",
+                              used, cap, hits, misses, pct);
+        }
+        goto Label_Free;
+    }
 
     if (cmd_word_eq(word, "pci")) {
         PROFILE_SCOPE("cmd:pci");

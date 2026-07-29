@@ -26,17 +26,17 @@ sandfleaOS currently has a **single-display, take-over model** — one thing own
 |-----------|-------------|-------------|
 | `screen_draw()` | memcpy from `surface.address` → `trueAddress` | Full-screen copy every frame (~8MB for 1920x1080) |
 | `screen_render_shell()` | Renders text lines + status bar + input line | Hardcoded layout, no windowing |
-| `doom_active` flag | Doom bypasses the shell and draws directly | Binary take-over — terminal loses control |
+| `owns_framebuffer` flag | Doom bypasses the shell and draws directly | Binary take-over — terminal loses control |
 | `display_t` | Surface + backbuffer + trueAddress per monitor | Only one active at a time (`current_display`) |
 | `foreground_proc` | Routes keyboard to the foreground WASM process | No visual indication of which window owns input |
 | Keyboard queue | Single global queue + foreground process queue | Keys go to whoever is foreground — no way to switch |
 
 ### The Core Problem
 
-There is **no concept of windows** at any level. The entire screen is a single canvas that every consumer (terminal, Doom, future apps) fights over. The `doom_active`/`!doom_active` binary in `main.c:244-287` is the architecture:
+There is **no concept of windows** at any level. The entire screen is a single canvas that every consumer (terminal, Doom, future apps) fights over. The `owns_framebuffer`/`!owns_framebuffer` binary in `main.c:244-287` is the architecture:
 
 ```c
-if (doom_active) {
+if (owns_framebuffer) {
     // Doom's thread owns the screen entirely — just yield CPU
     asm volatile("hlt");
 } else {
@@ -118,7 +118,7 @@ Boot
   │
   ├── VT1 (Doom) ────────── created when "doom" command runs
   │     │                     (or lazily when F2 is first pressed)
-  │     └── owns: doom_active = true, draws to VT1's backbuffer
+  │     └── owns: owns_framebuffer = true, draws to VT1's backbuffer
   │
   ├── VT2 (user shell) ──── created on F3 press (new login shell)
   │
@@ -156,7 +156,7 @@ void handle_vt_switch(u8 scancode) {
     fg_queue_read_ptr = current_vt->fg_queue_read_ptr;
     fg_queue_write_ptr = current_vt->fg_queue_write_ptr;
     memcpy(fg_key_queue, current_vt->fg_key_queue, FG_QUEUE_SIZE);
-    doom_active = current_vt->foreground_has_fullscreen;
+    owns_framebuffer = current_vt->foreground_has_fullscreen;
     
     // 5. Blit the VT's backbuffer to the real framebuffer
     //    (zero-copy if we page-flip — see Section 5)
@@ -165,7 +165,7 @@ void handle_vt_switch(u8 scancode) {
            current_vt->backbuffer.pitch * current_vt->backbuffer.height);
     
     // 6. Re-render if it's a text VT
-    if (!doom_active) screen_render_shell();
+    if (!owns_framebuffer) screen_render_shell();
 }
 ```
 
@@ -175,7 +175,7 @@ void handle_vt_switch(u8 scancode) {
 |------|--------|
 | New: `src/include/kern_vt.h` | `virt_terminal_t` struct, `vt_init()`, `vt_switch()` |
 | New: `src/kernel/kern_vt.c` | VT array management, backbuffer allocation, F-key dispatch |
-| `src/kernel/main.c` | Replace `if (doom_active) { ... } else { ... }` with VT dispatch |
+| `src/kernel/main.c` | Replace `if (owns_framebuffer) { ... } else { ... }` with VT dispatch |
 | `src/kernel/kern_screen.c` | Add `screen_blit(dst_surface, src_surface)` for VT→framebuffer copy |
 | `src/kernel/wasm_spawn.c` | Associate spawned processes with current VT |
 | `src/include/kern_keyboard.h` | Add `KEY_F1`..`KEY_F4` constants |
@@ -203,7 +203,7 @@ memcpy(dst + (dst_y_off + y) * dst_pitch_px + dst_x_off,
        ...);
 ```
 
-**This blits to `surface.address` (the backbuffer), NOT to `trueAddress`.** So Doom is already writing to our backbuffer. The shell then calls `screen_draw()` which memcpy's surface→trueAddress. But when `doom_active` is true, `screen_render_shell()` is never called, so `screen_draw()` is never called. Meaning: Doom's pixels are in the backbuffer but **never get copied to the real framebuffer** except... wait, Doom's `drawFrame` host function in `kern_tests.c` actually writes to the backbuffer, and then... there must be something else that flips.
+**This blits to `surface.address` (the backbuffer), NOT to `trueAddress`.** So Doom is already writing to our backbuffer. The shell then calls `screen_draw()` which memcpy's surface→trueAddress. But when `owns_framebuffer` is true, `screen_render_shell()` is never called, so `screen_draw()` is never called. Meaning: Doom's pixels are in the backbuffer but **never get copied to the real framebuffer** except... wait, Doom's `drawFrame` host function in `kern_tests.c` actually writes to the backbuffer, and then... there must be something else that flips.
 
 Let me check — looking at the Doom test flow in `kern_tests.c`:
 
@@ -473,7 +473,7 @@ while (1) {
 ```
 Day 1:  kern_vt.h / kern_vt.c — VT structs, init, switch function
 Day 2:  Keyboard handler — F1-F4 scancodes → VT switch
-Day 3:  main.c refactor — replace doom_active with VT dispatch
+Day 3:  main.c refactor — replace owns_framebuffer with VT dispatch
 Day 4:  wasm_spawn.c — associate spawned process with current VT
 Day 5:  Test: F1=shell, F2=Doom, swap between them
 ```
@@ -552,7 +552,7 @@ handle_vt_switch(1) // VT index 1 (second VT)
   │     ├── fg_queue_read_ptr = virt_terminals[1].fg_queue_read_ptr
   │     ├── fg_queue_write_ptr = virt_terminals[1].fg_queue_write_ptr
   │     ├── memcpy(fg_key_queue, virt_terminals[1].fg_key_queue, FG_QUEUE_SIZE)
-  │     └── doom_active = (virt_terminals[1].foreground is fullscreen app)
+  │     └── owns_framebuffer = (virt_terminals[1].foreground is fullscreen app)
   │
   ├── 4. Blit VT's backbuffer to real framebuffer
   │     ├── screen_blit(current_display->trueAddress,
@@ -560,7 +560,7 @@ handle_vt_switch(1) // VT index 1 (second VT)
   │     └── OR: page-flip if implementing zero-copy
   │
   └── 5. Render if it's a text VT
-        └── if (!doom_active) screen_render_shell()
+        └── if (!owns_framebuffer) screen_render_shell()
                 ├── screen_clear(COLOR_BLACK)
                 ├── Render text lines from screen_text_root
                 ├── Draw status bar

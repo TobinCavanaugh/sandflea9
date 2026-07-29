@@ -78,7 +78,7 @@ typedef struct {
     char    typingbuf[256];
 
     // Does this session's foreground app take over the framebuffer directly?
-    bool    doom_active;
+    bool    owns_framebuffer;
 } term_session_t;
 
 // Active session + session array

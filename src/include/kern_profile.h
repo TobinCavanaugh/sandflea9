@@ -67,6 +67,9 @@ profile_time_t profile_now_us(void);
     serial_outsf_ch(SERIAL_CH_PROFILE, "%llu:E:%s\n", \
                     (u64)profile_now_us(), name)
 
+#define PROFILE_AUTO_BEGIN PROFILE_BEGIN(__func__)
+#define PROFILE_AUTO_END PROFILE_END(__func__)
+
 // Instant event (no duration).
 // Usage: PROFILE_INSTANT("page_fault addr=0x%x", addr)
 // Note: the first argument is the format-string tail (%% specifiers allowed)

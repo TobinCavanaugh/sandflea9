@@ -46,6 +46,7 @@ C_SOURCES=(
     "src/kernel/wat2wasm_wrapper.c"
     "src/external/wasm-rt-impl.c"
     "src/external/wasm2c_wat2wasm.c"
+    "src/external/xxhash/xxhash.c"
     "src/kernel/ssfn.c"
     "src/kernel/stbsupport.c"
     "src/kernel/x64/idt.c"

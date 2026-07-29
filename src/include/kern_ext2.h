@@ -137,6 +137,10 @@ u32 ext2_get_bmap(ext2_inode_t *inode, u32 logical_block);
 u32 ext2_alloc_block(void);
 void ext2_set_bmap(ext2_inode_t *inode, u32 logical_block, u32 phys_block);
 
+// Block cache — runtime-tunable LRU cache at the ext2_read_block level.
+void block_cache_set_capacity(u32 entries);
+void block_cache_stats(u32 *out_hits, u32 *out_misses, u32 *out_used, u32 *out_cap);
+
 // File creation
 u32 ext2_create_file(const char *path);
 

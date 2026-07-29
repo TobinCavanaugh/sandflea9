@@ -5,6 +5,7 @@
 #include "../include/kern_pci.h"
 #include "../include/kern_asmstubs.h"
 #include "../include/kern_vmm.h"
+#include "../include/kern_profile.h"
 
 u32 pci_serial_base = 0;
 
@@ -33,29 +34,48 @@ u0 pci_register_device(u8 bus, u8 slot, u8 func, u16 vendor, u16 device) {
 }
 
 pci_device_t *pci_init_system() {
+    PROFILE_BEGIN("boot:pci_init_system");
     serial_outsl("Enumerating pci...");
 
     for (u16 bus = 0; bus < 256; bus++) {
-
-        // TODO Check ports implemented instead of brute forcing them
         for (u8 slot = 0; slot < 32; slot++) {
-
+            // 1. Single read to check if device exists at this slot
             u16 vendor_id = pci_read_16(bus, slot, 0, 0x00);
-            if (vendor_id == 0xFFff) continue;
+            if (vendor_id == 0xFFFF) {
+                continue;
+            }
 
-            u8 header_type = (pci_read_32(bus, slot, 0, 0x0C) >> 16) & 0xFF;
-            u8 func_count = (header_type & 0x80) ? 8 : 1; // hmmm
+            // 2. Read header_type once to determine if it's a multi-function device
+            // Header type is in the 3rd byte of the 0x0C DWORD
+            u32 header_data = pci_read_32(bus, slot, 0, 0x0C);
+            u8 header_type = (u8)(header_data >> 16);
+            bool is_multi_function = (header_type & 0x80) != 0;
 
-            for (u8 func = 0; func < func_count; func++) {
+            // 3. Determine how many functions to check
+            // If multi-function, we check up to 8. Otherwise, just function 0.
+            u8 max_func = is_multi_function ? 8 : 1;
+
+            for (u8 func = 0; func < max_func; func++) {
+                // 4. Check if this specific function exists
                 u16 f_vendor = pci_read_16(bus, slot, func, 0x00);
-                if (f_vendor == 0xFFff) continue;
+                if (f_vendor == 0xFFFF) {
+                    // If function 0 was valid but function 1 isn't,
+                    // and it's a multi-function device, we stop checking functions.
+                    if (func > 0) break;
+                    // Note: We don't 'continue' if func 0 is invalid because
+                    // the vendor_id check at the top handles the slot level.
+                    continue;
+                }
 
-                u16 device = pci_read_16(bus, slot, func, 0x02);
-                pci_register_device(bus, slot, func, vendor_id, device);
+                u16 device_id = pci_read_16(bus, slot, func, 0x02);
+
+                // 5. Register the specific function
+                pci_register_device(bus, slot, func, vendor_id, device_id);
             }
         }
     }
 
+    PROFILE_END("boot:pci_init_system");
     return pci_list_head;
 }
 

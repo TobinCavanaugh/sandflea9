@@ -453,7 +453,7 @@ This means **every WASM app automatically gets display access if it asks for it*
 Doom currently:
 1. Has a custom `wasm_doom_test()` that does its own loading + game loop
 2. Uses `doom_drawFrame` host function → writes to `disp->trueAddress`
-3. Manually sets `doom_active = true`
+3. Manually sets `owns_framebuffer = true`
 4. Manually clears the framebuffer
 
 ### 8.2 New Doom
@@ -492,7 +492,7 @@ void handle_command_doom() {
 | Game loop | Custom `while(1)` in C | WASM `_start()` with its own loop |
 | Draw function | `ui.drawFrame` → custom | `display.drawFrame` → standard |
 | Framebuffer access | Direct to `trueAddress` | Writes to WASM buffer → host blits |
-| Session management | Manual `doom_active` | Auto via `owns_display` |
+| Session management | Manual `owns_framebuffer` | Auto via `owns_display` |
 | TTY switching | Manual session save/restore | Automatic (session infrastructure) |
 
 ---
@@ -573,7 +573,7 @@ m3ApiRawFunction(wasm_display_draw_frame) {
 1. Recompile Doom WASM to import from `"display"` instead of `"ui"`
 2. Remove custom `wasm_doom_test()` entry point
 3. Doom uses standard `wasm_thread_entry` with `link_extra` for game-specific imports
-4. Remove manual `doom_active` — use `owns_display` instead
+4. Remove manual `owns_framebuffer` — use `owns_display` instead
 
 ### Phase 3: Shared Pages (Tier 2)
 

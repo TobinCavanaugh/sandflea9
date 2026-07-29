@@ -8,6 +8,7 @@
 #include "../include/kern_vmm.h"
 #include "../include/kern_profile.h"
 #include "../util/util_str.h"
+#include "../external/xxhash/xxhash.h"
 
 // --- Logging Control ---
 #define EXT2_DEBUG 0
@@ -69,28 +70,287 @@ u0 ext2_init_drive(drive_t *d) {
                  d->name, d->sb.volume_name, d->block_size);
 }
 
+// ============================================================================
+// Block cache — transparent LRU cache at the ext2_read_block level.
+//
+// Hash-table with open addressing + linear probing. LRU eviction via a
+// monotonic tick counter. Keys on (drive_sel, block_id) so entries from
+// different drives never collide.
+//
+// Tune at runtime: `cache 128` in the shell, or via block_cache_set_capacity().
+// Default: 64 entries (~64 KB at 1KB blocks, ~128 KB at 2KB blocks).
+// ============================================================================
+
+#define BLOCK_CACHE_MIN_ENTRIES  16
+#define BLOCK_CACHE_MAX_ENTRIES  16384  // ~16 MB at 1KB blocks, fits a 14MB WAD
+#define BLOCK_CACHE_DEFAULT      64    // ~64 KB — conservative, bump via `cache N`
+
+typedef struct {
+    u8   drive_sel;
+    u32  block_id;
+    u8  *data;          // kmalloc'd buffer, block_size bytes
+    u64  last_access;   // monotonic tick for LRU eviction
+    bool valid;
+} bc_entry_t;
+
+static bc_entry_t *g_bc       = NULL;
+static u32         g_bc_cap    = 0;   // table capacity (always power of 2)
+static u32         g_bc_used   = 0;   // currently occupied slots
+static u64         g_bc_tick   = 0;   // LRU clock — incremented on every access
+static u32         g_bc_hits   = 0;   // stats: successful lookups
+static u32         g_bc_misses = 0;   // stats: lookups that missed
+static u32         g_bc_target = BLOCK_CACHE_DEFAULT;  // user-configurable size
+
+// ── Internal helpers ─────────────────────────────────────────────────────
+
+// Hash (drive_sel, block_id) → slot index. drive_sel is unique per physical
+// drive (0xE0 master, 0xF0 slave), so keys from different drives never collide
+// in a meaningful way even if block_id overlaps.
+static u32 bc_slot(u8 ds, u32 bid) {
+    u64 k = ((u64)ds << 32) | (u64)bid;
+    return (u32)(XXH64(&k, sizeof(k), 0) & (g_bc_cap - 1));
+}
+
+// Allocate or resize the table. Called lazily on first read, or explicitly
+// via block_cache_set_capacity().
+static void bc_init(void) {
+    u32 target = g_bc_target;
+    if (target < BLOCK_CACHE_MIN_ENTRIES) target = BLOCK_CACHE_MIN_ENTRIES;
+    if (target > BLOCK_CACHE_MAX_ENTRIES) target = BLOCK_CACHE_MAX_ENTRIES;
+
+    // Round up to next power of 2 (fast modulo via bitmask)
+    u32 cap = 1;
+    while (cap < target) cap <<= 1;
+
+    // No-op if already the right size
+    if (g_bc && g_bc_cap == cap) return;
+
+    // Free old table
+    if (g_bc) {
+        for (u32 i = 0; i < g_bc_cap; i++) {
+            if (g_bc[i].valid && g_bc[i].data) kfree(g_bc[i].data);
+        }
+        kfree(g_bc);
+    }
+
+    // Allocate and zero new table
+    u32 bytes = cap * sizeof(bc_entry_t);
+    g_bc = (bc_entry_t *) kmalloc(bytes);
+    if (!g_bc) {
+        g_bc_cap  = 0;
+        g_bc_used = 0;
+        serial_outsl("BC: cache init OOM — caching disabled");
+        return;
+    }
+    mem_set((u8 *)g_bc, 0, bytes);
+    g_bc_cap    = cap;
+    g_bc_used   = 0;
+    g_bc_target = target;
+
+    serial_outsf("BC: cache ready — %u entries (~%u KB)\n",
+                 cap, block_size ? (cap * block_size) / 1024 : 0);
+}
+
+// Lookup — copies cached data into out_buf. Returns true on hit.
+static bool bc_lookup(u8 ds, u32 bid, u8 *out_buf) {
+    if (!g_bc || g_bc_cap == 0 || block_size == 0) return false;
+
+    u32 slot = bc_slot(ds, bid);
+    u32 start = slot;
+
+    do {
+        bc_entry_t *e = &g_bc[slot];
+        if (!e->valid) {
+            slot = (slot + 1) & (g_bc_cap - 1);
+            continue;
+        }
+        if (e->drive_sel == ds && e->block_id == bid) {
+            mem_copy(out_buf, e->data, block_size);
+            e->last_access = ++g_bc_tick;
+            g_bc_hits++;
+            return true;
+        }
+        slot = (slot + 1) & (g_bc_cap - 1);
+    } while (slot != start);
+
+    g_bc_misses++;
+    return false;
+}
+
+// Insert — copies data into cache. Evicts LRU entry if table is full.
+// If the block is already cached, updates in-place.
+static void bc_insert(u8 ds, u32 bid, u8 *data) {
+    if (!g_bc || g_bc_cap == 0 || block_size == 0) return;
+
+    u32 slot = bc_slot(ds, bid);
+    u32 start = slot;
+    u32 empty_slot = 0xFFFFFFFFu;
+    u32 lru_slot   = 0;
+    u64 lru_tick   = 0xFFFFFFFFFFFFFFFFull;
+
+    do {
+        bc_entry_t *e = &g_bc[slot];
+        if (!e->valid) {
+            empty_slot = slot;
+            break;
+        }
+        // Already present — update in-place (shouldn't happen normally
+        // since caller checks bc_lookup first, but be safe).
+        if (e->drive_sel == ds && e->block_id == bid) {
+            mem_copy(e->data, data, block_size);
+            e->last_access = ++g_bc_tick;
+            return;
+        }
+        if (e->last_access < lru_tick) {
+            lru_tick = e->last_access;
+            lru_slot = slot;
+        }
+        slot = (slot + 1) & (g_bc_cap - 1);
+    } while (slot != start);
+
+    // No empty slot found — evict LRU
+    if (empty_slot == 0xFFFFFFFFu) {
+        empty_slot = lru_slot;
+        if (g_bc[empty_slot].data) kfree(g_bc[empty_slot].data);
+        g_bc[empty_slot].data  = NULL;
+        g_bc[empty_slot].valid = false;
+        if (g_bc_used > 0) g_bc_used--;
+    }
+
+    // Allocate buffer for the new entry
+    if (!g_bc[empty_slot].data) {
+        g_bc[empty_slot].data = kmalloc(block_size);
+        if (!g_bc[empty_slot].data) return;  // OOM — skip caching this block
+    }
+
+    bc_entry_t *e = &g_bc[empty_slot];
+    e->drive_sel   = ds;
+    e->block_id    = bid;
+    e->last_access = ++g_bc_tick;
+    e->valid       = true;
+    mem_copy(e->data, data, block_size);
+    g_bc_used++;
+}
+
+// Update an existing cache entry (called from ext2_write_block).
+// If the block isn't cached, inserts it (write-through with cache fill).
+static void bc_update(u8 ds, u32 bid, u8 *data) {
+    if (!g_bc || g_bc_cap == 0 || block_size == 0) return;
+
+    u32 slot = bc_slot(ds, bid);
+    u32 start = slot;
+
+    do {
+        bc_entry_t *e = &g_bc[slot];
+        if (!e->valid) {
+            slot = (slot + 1) & (g_bc_cap - 1);
+            continue;
+        }
+        if (e->drive_sel == ds && e->block_id == bid) {
+            mem_copy(e->data, data, block_size);
+            e->last_access = ++g_bc_tick;
+            return;
+        }
+        slot = (slot + 1) & (g_bc_cap - 1);
+    } while (slot != start);
+
+    // Not in cache — insert so subsequent reads hit
+    bc_insert(ds, bid, data);
+}
+
+// ── Public API ────────────────────────────────────────────────────────────
+
+// Resize the cache at runtime. Safe to call at any time — rehashes.
+void block_cache_set_capacity(u32 entries) {
+    if (entries < BLOCK_CACHE_MIN_ENTRIES) entries = BLOCK_CACHE_MIN_ENTRIES;
+    if (entries > BLOCK_CACHE_MAX_ENTRIES) entries = BLOCK_CACHE_MAX_ENTRIES;
+    if (entries == g_bc_target && g_bc) return;
+    g_bc_target = entries;
+    bc_init();
+}
+
+// Query cache statistics.
+void block_cache_stats(u32 *out_hits, u32 *out_misses, u32 *out_used, u32 *out_cap) {
+    if (out_hits)   *out_hits   = g_bc_hits;
+    if (out_misses) *out_misses = g_bc_misses;
+    if (out_used)   *out_used   = g_bc_used;
+    if (out_cap)    *out_cap    = g_bc_cap;
+}
+
+// ── ext2_read_block (with cache) ──────────────────────────────────────────
+
 u0 ext2_read_block(u32 block_id, u8 *buffer) {
     PROFILE_SCOPE("ext2:read_block");
     if (!buffer || block_size == 0) return;
+
+    // Lazy-init cache on first read
+    if (!g_bc) bc_init();
+
+    // Check cache first
+    if (bc_lookup(active_drive->ide_drive_sel, block_id, buffer)) {
+        return;  // cache hit — no IDE I/O
+    }
+
+    // Cache miss — read from disk
     u32 sectors_per_block = block_size / 512;
     u32 start_sector = block_id * sectors_per_block;
     ide_read_sectors(active_drive->ide_drive_sel, start_sector, sectors_per_block, buffer);
+
+    // Insert into cache for next time
+    bc_insert(active_drive->ide_drive_sel, block_id, buffer);
 }
 
 u0 ext2_read_blocks(u32 start_block, u32 count, u8 *buffer) {
     PROFILE_SCOPE("ext2:read_blocks");
     if (!buffer || block_size == 0 || count == 0) return;
     if (count == 1) { ext2_read_block(start_block, buffer); return; }
+
+    // Lazy-init cache so multi-block reads also use it
+    if (!g_bc) bc_init();
+
+    // ── Cache fast-path ──────────────────────────────────────────────
+    // If every block is already cached, we can skip IDE I/O entirely.
+    // This is what makes the second `doom` launch near-instant.
+    // On the first block miss we bail — the whole run will come from IDE.
+    // (Partial-hit handling would break IDE batching, so we don't bother.)
+    bool all_cached = (g_bc != NULL);
+    if (all_cached) {
+        for (u32 i = 0; i < count; i++) {
+            if (!bc_lookup(active_drive->ide_drive_sel, start_block + i,
+                           buffer + i * block_size)) {
+                all_cached = false;
+                break;   // first miss → fall through to IDE path
+            }
+        }
+    }
+    if (all_cached) return;  // zero IDE I/O, purely cache-served
+
+    // ── IDE path (cache miss) ────────────────────────────────────────
     u32 sectors_per_block = block_size / 512;
     u32 start_sector = start_block * sectors_per_block;
     u32 total_sectors = count * sectors_per_block;
-    // ide_read_sectors takes u8 count; split into chunks if needed (max 255 sectors per call)
-    while (total_sectors > 0) {
-        u8 chunk = (total_sectors > 255) ? 255 : (u8)total_sectors;
-        ide_read_sectors(active_drive->ide_drive_sel, start_sector, chunk, buffer);
-        total_sectors -= chunk;
-        start_sector += chunk;
-        buffer += chunk * 512;
+
+    u8 *read_ptr   = buffer;
+    u32 remaining  = total_sectors;
+    u32 sector     = start_sector;
+
+    // Read all sectors in chunks (max 255 per IDE PIO command)
+    while (remaining > 0) {
+        u8 chunk = (remaining > 255) ? 255 : (u8)remaining;
+        ide_read_sectors(active_drive->ide_drive_sel, sector, chunk, read_ptr);
+        remaining -= chunk;
+        sector    += chunk;
+        read_ptr  += chunk * 512;
+    }
+
+    // Populate cache so the NEXT read hits the fast-path above.
+    // Only populate if the entire run fits — otherwise each insert would
+    // evict the previous one, burning CPU for zero future benefit.
+    if (g_bc && count <= g_bc_cap) {
+        for (u32 i = 0; i < count; i++) {
+            bc_insert(active_drive->ide_drive_sel, start_block + i,
+                      buffer + i * block_size);
+        }
     }
 }
 
@@ -99,6 +359,10 @@ u0 ext2_write_block(u32 block_id, u8 *buffer) {
     u32 sectors_per_block = block_size / 512;
     u32 start_sector = block_id * sectors_per_block;
     ide_write_sectors(active_drive->ide_drive_sel, start_sector, sectors_per_block, buffer);
+
+    // Keep cache coherent — update or insert the written data
+    // (write-through with cache fill, so subsequent reads hit)
+    if (g_bc) bc_update(active_drive->ide_drive_sel, block_id, buffer);
 }
 
 u0 ext2_init() {

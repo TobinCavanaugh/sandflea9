@@ -126,7 +126,7 @@ i32 session_init(u32 id, u16 cols, u16 rows) {
     memset(s->fg_key_queue, 0, FG_QUEUE_SIZE);
     s->foreground_proc = NULL;
     memset(s->typingbuf, 0, 256);
-    s->doom_active = false;
+    s->owns_framebuffer = false;
 
     return 0;
 }
@@ -144,9 +144,9 @@ static void session_save_globals(term_session_t *s) {
 
     mem_copy((u8*)s->typingbuf, (u8*)typingbuf, 256);
 
-    // doom_active is a global declared in kern_tests.h
+    // owns_framebuffer is a global declared in kern_tests.h
     // Since we can't include that here, we just save what we know.
-    // The active session tracks its own doom_active flag.
+    // The active session tracks its own owns_framebuffer flag.
 }
 
 static void session_restore_globals(term_session_t *s) {
@@ -178,8 +178,8 @@ void session_switch(u32 id) {
     // 3. Restore globals from the target session
     session_restore_globals(active_session);
 
-    // 4. Sync doom_active global from the active session's flag
-    //    (doom_active is extern'd in kern_tests.h; we handle it via
+    // 4. Sync owns_framebuffer global from the active session's flag
+    //    (owns_framebuffer is extern'd in kern_tests.h; we handle it via
     //     a separate mechanism — see the note in main.c)
 
     restore_irq(irq);
@@ -335,7 +335,7 @@ u0 screen_push_line(const char *str) {
     // newline so the cursor advances.  We temporarily swap active_session
     // so that term_write / ansi_putc / term_putc operate on the right
     // session's cell buffer.
-    if (target->cells && !target->doom_active) {
+    if (target->cells && !target->owns_framebuffer) {
         screen_cellbuf_line_active = true;
 
         term_session_t *saved_active = active_session;
@@ -888,11 +888,11 @@ void term_render() {
 
     term_session_t *s = active_session;
 
-    // If this session has a fullscreen app (doom_active), the app owns
+    // If this session has a fullscreen app (owns_framebuffer), the app owns
     // the real framebuffer directly — don't touch it at all.
     // Clear the real framebuffer to black on first entry so the app
     // starts on a clean canvas (no leftover terminal text or header bar).
-    if (s->doom_active) {
+    if (s->owns_framebuffer) {
         if (!fb_cleared_for_doom) {
             fb_cleared_for_doom = true;
             if (disp && disp->trueAddress) {

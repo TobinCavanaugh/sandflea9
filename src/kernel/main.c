@@ -141,7 +141,6 @@ void kern_entry(void) {
 
     system.pci_list_head = pci_init_system();
     serial_outsl("PCI: System bus scanned");
-    PROFILE_INSTANT("boot:pci_done");
 
     // In kern_entry...
     pci_device_t *pci_uart = system.pci_list_head;

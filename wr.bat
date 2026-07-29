@@ -31,4 +31,4 @@ qemu-system-x86_64.exe -cdrom sandfleaOS.iso ^
     -serial file:serial_output.log ^
     -serial file:test_log.txt ^
     -serial file:profile.log ^
-    -accel tcg
+    -accel whpx

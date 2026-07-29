@@ -19,7 +19,7 @@ Every terminal system has three layers. sandfleaOS currently has a skeleton of e
 │  - Which process is foreground?            │
 │  - Keyboard routing                        │
 │  Already partially exists:                 │
-│    foreground_proc, doom_active            │
+│    foreground_proc, owns_framebuffer            │
 ├────────────────────────────────────────────┤
 │  Layer 2: Terminal Emulation               │
 │  - Cell buffer (rows × cols of {char, fg,  │

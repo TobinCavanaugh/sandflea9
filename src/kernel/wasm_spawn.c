@@ -23,6 +23,7 @@
 
 #include "wasm3-0.5.0/source/m3_env.h"
 #include "wasm3-0.5.0/source/m3_api_libc.h"
+#include "../external/xxhash/xxhash.h"
 
 // ============================================================================
 // Helpers
@@ -65,14 +66,300 @@ static u0 wasm_proc_cleanup(u0 *ctx) {
     wasm_run_args_t *ra = (wasm_run_args_t *) ctx;
     if (!ra) return;
     if (ra->runtime)         m3_FreeRuntime(ra->runtime);
-    if (ra->env)             m3_FreeEnvironment(ra->env);
+    // ra->env is always null — the shared g_wasm_cache_env lives forever.
     if (ra->wasm_data)       kfree(ra->wasm_data);
     if (ra->wasm_path_alloc) kfree(ra->wasm_path_alloc);
     kfree(ra);
 }
 
 // ============================================================================
+// Parse-result cache — PoC stage.
+// Each unique .wasm is parsed ONCE per boot (or until evicted). Subsequent
+// spawns compute the same XXH64 hash, walk a single-linked list, find a hit,
+// and skip the parse step. The master parsed module is NEVER m3_LoadModule'd
+// directly — every spawn gets a deep clone.
+//
+// Why a deep clone (and not a re-load): wasm3 forbids loading one parsed
+// module into multiple runtimes (moduleAlreadyLinked error, "Do not free
+// modules once successfully loaded into the runtime"). Cloning is the only
+// public-API-safe way to reuse a parse across runs.
+//
+// Lifetime model:
+//   - Cache owns: bytes, master-parsed module, master strings.
+//   - Clone shares raw-byte pointers with cache (zero-copy).
+//   - Clone DEEP-COPIES all string fields (names[], globals[].name, import
+//     moduleUtf8/fieldUtf8) so m3_FreeModule on the clone won't free strings
+//     still referenced by master.
+//
+// Single-core assumption: we don't take a spinlock here. wasm_spawn is
+// serialized per the comment near s_wasi_ctx — cache list access is single
+// threaded by construction.
+// ============================================================================
+
+// Cache entry: one per unique .wasm ever seen by the kernel.
+typedef struct wasm_parse_cache_entry {
+    XXH64_hash_t                   hash;    // xxh64 of raw bytes, seed=0
+    u8                            *bytes;   // kmalloc'd; outlives all clones
+    u32                            size;
+    IM3Module                      master;  // parsed; never m3_LoadModule'd
+    struct wasm_parse_cache_entry *next;
+} wasm_parse_cache_entry_t;
+
+// Head of the cache list. Simple prepend-on-insert; O(n) lookup; bounded by
+// the number of distinct .wasm files ever spawned. Fine for PoC.
+static wasm_parse_cache_entry_t *g_wasm_parse_cache = NULL;
+
+// Shared environment that outlives all runtimes so that cached master
+// modules' funcTypes pointers remain valid across spawns. Created lazily
+// on first use and never freed (lives for the entire boot).
+static IM3Environment g_wasm_cache_env = NULL;
+
+// Linear-list lookup. Returns NULL on miss. O(n); fine for PoC.
+static wasm_parse_cache_entry_t *wasm_parse_cache_lookup(XXH64_hash_t hash) {
+    wasm_parse_cache_entry_t *e = g_wasm_parse_cache;
+    while (e) {
+        if (e->hash == hash) return e;
+        e = e->next;
+    }
+    return NULL;
+}
+
+// Prepend. Cache takes ownership of bytes + master module — caller MUST NOT
+// kfree them after this returns.
+static wasm_parse_cache_entry_t *wasm_parse_cache_insert(XXH64_hash_t hash, u8 *bytes, u32 size, IM3Module master) {
+    wasm_parse_cache_entry_t *e =
+        (wasm_parse_cache_entry_t *) kmalloc(sizeof(wasm_parse_cache_entry_t));
+    if (!e) {
+        serial_outsl("WASM: cache insert OOM; master not cached");
+        return NULL;
+    }
+    e->hash   = hash;
+    e->bytes  = bytes;
+    e->size   = size;
+    e->master = master;
+    e->next   = g_wasm_parse_cache;
+    g_wasm_parse_cache = e;
+    serial_outsf("WASM: cached parsed module, hash=%llx, size=%u\n",
+                 (unsigned long long) hash, size);
+    return e;
+}
+
+// Deep-clone a parsed module so it can be m3_LoadModule'd into a fresh
+// runtime. All raw-byte pointer fields reference `src_bytes` (the same
+// persistent buffer the cache owns), so we don't duplicate megabytes.
+//
+// m3_FreeModule compat: we deep-copy every string that m3_FreeModule
+// would otherwise free (so freeing the clone won't touch shared master
+// strings). All arrays are kmalloc'd so they can be m3_Free'd independently.
+//
+// Field-by-field contract:
+//  M3Module fields:
+//   runtime, next            — NULL (never bound to runtime)
+//   environment              — same shared env (clones share funcType dedup)
+//   wasmStart/wasmEnd        — shared src_bytes (zero-copy)
+//   name                     — shallow (".unnamed" literal; m3_FreeModule
+//                              does NOT free module name; only global/func names)
+//   funcTypes[]              — fresh array; elements shared with env,
+//                              m3_Free frees only the array
+//   functions[]              — fresh array; per-function: struct mem_copy,
+//                              names[] deep-copied up to numNames;
+//                              module back-ptr re-pointed to clone
+//   dataSegments[]           — fresh array; initExpr/data pointer fields
+//                              shared with src_bytes
+//   globals[]                — fresh array; per-global: initExpr shared
+//                              with src_bytes; name + import strings
+//                              deep-copied because m3_FreeModule's
+//                              FreeImportInfo frees them
+//   elementSection/elementSectionEnd — shared src_bytes
+//   table0                   — left NULL; parse never pre-populates it,
+//                              wasm3 lazy-loads against THIS clone's
+//                              functions[] when needed
+//
+// Returns NULL on any allocation failure (caller treats as spawn OOM).
+static IM3Module wasm_clone_module(IM3Module src, u8 *src_bytes, IM3Environment env) {
+    (void) src_bytes;  // invariant: cache_bytes == src_bytes at call site,
+                        // so a RELOC would be a no-op. Kept as a parameter
+                        // to document that constraint.
+
+    // kmallocz (m3_Malloc = calloc = kmallocz) so the dst M3Module is
+    // guaranteed zero on allocation — unparsed-section fields stay NULL/0
+    // without polluting present-section fields (e.g. add_test.wat globals).
+    IM3Module dst = (IM3Module) kmallocz(sizeof(M3Module));
+    if (!dst) return NULL;
+
+    dst->runtime        = NULL;
+    dst->environment    = env;                   // use current env, not
+                                                  // master's (which may be
+                                                  // freed on cache hit)
+    dst->wasmStart      = src->wasmStart;     // shared src_bytes
+    dst->wasmEnd        = src->wasmEnd;
+    dst->name           = src->name;          // ".unnamed" static literal
+    dst->startFunction  = src->startFunction;
+    dst->memoryInfo     = src->memoryInfo;
+    dst->memoryImported = src->memoryImported;
+    dst->next           = NULL;
+
+    // funcTypes: shallow-copy ARRAY (elements shared with env).
+    if (src->numFuncTypes > 0) {
+        dst->funcTypes = (IM3FuncType *) kmalloc(sizeof(IM3FuncType) * src->numFuncTypes);
+        if (!dst->funcTypes) { kfree(dst); return NULL; }
+        for (u32 i = 0; i < src->numFuncTypes; i++) {
+            dst->funcTypes[i] = src->funcTypes[i];
+        }
+        dst->numFuncTypes = src->numFuncTypes;
+    }
+    dst->numFuncImports = src->numFuncImports;
+
+    // functions: deep-copy ARRAY, per-function struct copy + import name
+    // deep-copy + name deep-copy.
+    //
+    // CRITICAL: M3Function has its OWN import.moduleUtf8/fieldUtf8 strings
+    // that Function_Release frees via FreeImportInfo. Without deep-copying
+    // these, freeing the clone would free master's strings. ALSO: null out
+    // all runtime-tied fields (compiled, code, constants, codePageRefs,
+    // ownsWasmCode) so a future refactor that does load the master can't
+    // silently poison clones with stale pointers.
+    if (src->numFunctions > 0) {
+        dst->functions = (M3Function *) kmalloc(sizeof(M3Function) * src->numFunctions);
+        if (!dst->functions) {
+            kfree(dst->funcTypes); kfree(dst); return NULL;
+        }
+        for (u32 i = 0; i < src->numFunctions; i++) {
+            M3Function *sf = &src->functions[i];
+            M3Function *df = &dst->functions[i];
+            mem_copy((u8 *) df, (u8 *) sf, sizeof(M3Function));
+            df->module = dst;          // back-pointer to clone
+            df->wasm    = sf->wasm;    // shared src_bytes
+            df->wasmEnd = sf->wasmEnd;
+            // Invalidate every runtime-tied / mutable field. Master never
+            // gets m3_LoadModule'd, so these are NULL/0 today — we're
+            // making that invariant explicit so a future change can't break
+            // us silently.
+            df->compiled         = NULL;
+            df->constants        = NULL;
+            df->ownsWasmCode     = false;
+            // Reset compile-derived scalars. m3_CompileFunction mutates
+            // these on first call; starting them at 0 means we don't
+            // depend on what kmalloc happened to leave in the master's
+            // bytes.
+            df->maxStackSlots        = 0;
+            df->numRetSlots          = 0;
+            df->numRetAndArgSlots    = 0;
+            df->numConstantBytes     = 0;
+#           if (d_m3EnableCodePageRefCounting)
+            df->codePageRefs     = NULL;
+            df->numCodePageRefs  = 0;
+#           endif
+            // Deep-copy import strings — Function_Release's FreeImportInfo
+            // will free these. Aliased names[0] (== fieldUtf8) gets a
+            // redundant copy; harmless, may waste ~16 bytes per import.
+            df->import.moduleUtf8 = NULL;
+            df->import.fieldUtf8  = NULL;
+            if (sf->import.moduleUtf8) {
+                u32 l = str_len(sf->import.moduleUtf8) + 1;
+                char *copy = (char *) kmalloc(l);
+                mem_copy((u8 *) copy, (const u8 *) sf->import.moduleUtf8, l);
+                df->import.moduleUtf8 = copy;
+            }
+            if (sf->import.fieldUtf8) {
+                u32 l = str_len(sf->import.fieldUtf8) + 1;
+                char *copy = (char *) kmalloc(l);
+                mem_copy((u8 *) copy, (const u8 *) sf->import.fieldUtf8, l);
+                df->import.fieldUtf8 = copy;
+            }
+            // Only the populated names[0..numNames-1] need deep-copy.
+            // Function_Release frees non-aliased entries via m3_Free.
+            for (u32 n = 0; n < sf->numNames; n++) {
+                if (sf->names[n]) {
+                    u32 l = str_len(sf->names[n]) + 1;
+                    char *copy = (char *) kmalloc(l);
+                    mem_copy((u8 *) copy, (const u8 *) sf->names[n], l);
+                    df->names[n] = copy;
+                } else {
+                    df->names[n] = NULL;
+                }
+            }
+        }
+        dst->numFunctions = src->numFunctions;
+    }
+
+    // dataSegments: deep-copy ARRAY; raw-byte pointer fields relocated.
+    if (src->numDataSegments > 0) {
+        dst->dataSegments = (M3DataSegment *) kmalloc(sizeof(M3DataSegment) * src->numDataSegments);
+        if (!dst->dataSegments) {
+            kfree(dst->functions); kfree(dst->funcTypes); kfree(dst); return NULL;
+        }
+        for (u32 i = 0; i < src->numDataSegments; i++) {
+            M3DataSegment *s = &src->dataSegments[i];
+            M3DataSegment *d = &dst->dataSegments[i];
+            d->memoryRegion = s->memoryRegion;
+            d->initExprSize = s->initExprSize;
+            d->size         = s->size;
+            d->initExpr     = s->initExpr;   // shared src_bytes
+            d->data         = s->data;       // shared src_bytes
+        }
+        dst->numDataSegments = src->numDataSegments;
+    }
+
+    // globals: deep-copy ARRAY; raw-byte pointer relocated; strings deep-copied
+    // (m3_FreeModule's FreeImportInfo frees them).
+    if (src->numGlobals > 0) {
+        dst->globals = (M3Global *) kmalloc(sizeof(M3Global) * src->numGlobals);
+        if (!dst->globals) {
+            kfree(dst->dataSegments); kfree(dst->functions);
+            kfree(dst->funcTypes); kfree(dst); return NULL;
+        }
+        for (u32 i = 0; i < src->numGlobals; i++) {
+            M3Global *s = &src->globals[i];
+            M3Global *d = &dst->globals[i];
+            d->type         = s->type;
+            d->imported     = s->imported;
+            d->isMutable    = s->isMutable;
+            d->intValue     = s->intValue;
+            d->initExpr     = s->initExpr;    // shared src_bytes
+            d->initExprSize = s->initExprSize;
+            d->name = NULL;
+            d->import.moduleUtf8 = NULL;
+            d->import.fieldUtf8  = NULL;
+
+            if (s->name) {
+                u32 l = str_len(s->name) + 1;
+                char *copy = (char *) kmalloc(l);
+                mem_copy((u8 *) copy, (const u8 *) s->name, l);
+                d->name = copy;
+            }
+            if (s->import.moduleUtf8) {
+                u32 l = str_len(s->import.moduleUtf8) + 1;
+                char *copy = (char *) kmalloc(l);
+                mem_copy((u8 *) copy, (const u8 *) s->import.moduleUtf8, l);
+                d->import.moduleUtf8 = copy;
+            }
+            if (s->import.fieldUtf8) {
+                u32 l = str_len(s->import.fieldUtf8) + 1;
+                char *copy = (char *) kmalloc(l);
+                mem_copy((u8 *) copy, (const u8 *) s->import.fieldUtf8, l);
+                d->import.fieldUtf8 = copy;
+            }
+        }
+        dst->numGlobals = src->numGlobals;
+    }
+
+    // element section: byte-pointer fields into src_bytes; left shared.
+    dst->numElementSegments = src->numElementSegments;
+    dst->elementSection     = src->elementSection;
+    dst->elementSectionEnd  = src->elementSectionEnd;
+
+    // table0: NOT pre-populated by parse. m3 lazy-load fills it against
+    // THIS clone's own functions[] array — don't pre-fill here.
+    dst->table0 = NULL;
+    dst->table0Size = 0;
+
+    return dst;
+}
+
+// ============================================================================
 // Host imports — previously declared in kern_tests.c.
+
 // These are the host functions available to *.wasm programs via (import "env" ...).
 // ============================================================================
 
@@ -1103,14 +1390,20 @@ u0 wasm_thread_entry(u0 *arg) {
     }
 
     // 2. Allocate environment + runtime.
+    // Use a shared environment that lives as long as the parse cache so
+    // that cached modules' funcTypes pointers (which reference the env's
+    // linked list) remain valid across spawns.
     {
         PROFILE_SCOPE("wasm:env_runtime");
-        env = m3_NewEnvironment();
-        if (!env) {
-            screen_push_line("WASM: Could not create environment");
-            goto Label_Done;
+        if (!g_wasm_cache_env) {
+            g_wasm_cache_env = m3_NewEnvironment();
+            if (!g_wasm_cache_env) {
+                screen_push_line("WASM: Could not create shared environment");
+                goto Label_Done;
+            }
         }
-        ra->env = env;
+        env = g_wasm_cache_env;
+        // ra->env stays null — the shared env is never freed per-spawn.
         u32 stack_bytes = ra->stack_kb * 1024u;
         runtime = m3_NewRuntime(env, stack_bytes, null);
         if (!runtime) {
@@ -1120,21 +1413,82 @@ u0 wasm_thread_entry(u0 *arg) {
         ra->runtime = runtime;
     }
 
-    // 3. Parse + load.
+    // 3. Hash + cache lookup, then parse-or-clone, then load.
+    // PoC parse-cache: on a hash hit we skip m3_ParseModule entirely;
+    // on a miss we parse once and stash the master in the cache.
+    XXH64_hash_t wasm_hash;
+    {
+        PROFILE_SCOPE("wasm:hash");
+        wasm_hash = XXH64(wasm_data, wasm_size, 0);
+    }
+    wasm_parse_cache_entry_t *cache_entry = wasm_parse_cache_lookup(wasm_hash);
+
     IM3Module module = null;
     M3Result result;
-    {
-        PROFILE_SCOPE("wasm:parse_load");
-        result = m3_ParseModule(env, &module, wasm_data, wasm_size);
-        if (result || !module) {
-            screen_push_linef("WASM: Parse error: %s", result ? result : "null module");
-            goto Label_Done;
+    if (cache_entry) {
+        // HIT: skip parse. The hash_buf is throwaway; cache_entry->bytes is
+        // the persistent buffer that survives across spawns.
+        {
+            PROFILE_SCOPE("wasm:cache_hit");
+            serial_outsf("WASM: cache hit %s (hash=%llx)\n",
+                         wasm_path, (unsigned long long) wasm_hash);
+            kfree(wasm_data);
+            wasm_data = null;
+            ra->wasm_data = null;
+            module = wasm_clone_module(cache_entry->master, cache_entry->bytes, env);
+            if (!module) {
+                screen_push_linef("WASM: clone failed (cache hit for %s)", wasm_path);
+                goto Label_Done;
+            }
+            cache_entry = NULL;
         }
-        result = m3_LoadModule(runtime, module);
-        if (result) {
-            screen_push_linef("WASM: Load error: %s", result);
-            goto Label_Done;
+    } else {
+        // MISS: parse, then hand bytes + master to the cache, then clone for
+        // THIS spawn so m3_LoadModule can take ownership of the clone while
+        // master stays unlinked.
+        {
+            PROFILE_SCOPE("wasm:parse");
+            result = m3_ParseModule(env, &module, wasm_data, wasm_size);
+            if (result || !module) {
+                screen_push_linef("WASM: Parse error: %s", result ? result : "null module");
+                goto Label_Done;
+            }
+            // Hand wasm_data + master to the cache; ownership transfers.
+            wasm_parse_cache_entry_t *inserted =
+                wasm_parse_cache_insert(wasm_hash, wasm_data, wasm_size, module);
+            if (!inserted) {
+                // OOM: cache failed but parse succeeded. Fall back to loading
+                // the master directly (no cache benefit, no clone). Bytes
+                // stay owned by us so Label_Done can kfree them.
+                goto do_load;
+            }
+            // After insert: cache owns wasm_data and master module.
+            wasm_data = null;
+            ra->wasm_data = null;
+            module = wasm_clone_module(inserted->master, inserted->bytes, env);
+            if (!module) {
+                screen_push_linef("WASM: clone failed after parse for %s", wasm_path);
+                // The clone alloc failed but the master is fine in cache.
+                // We just can't run THIS spawn. Fall through to free
+                // everything via Label_Done. Bytes are owned by cache, so
+                // they survive.
+                goto Label_Done;
+            }
+            cache_entry = NULL;
         }
+    }
+do_load:
+    // m3_LoadModule transfers ownership of the module to the runtime.
+    // Per wasm3.h: "Do not free modules once successfully loaded into
+    // the runtime" and "only modules not loaded into a M3Runtime need
+    // to be freed. A module is considered unloaded if m3_LoadModule
+    // returned a result."
+    result = m3_LoadModule(runtime, module);
+    if (result) {
+        screen_push_linef("WASM: Load error: %s", result);
+        m3_FreeModule(module);
+        module = null;
+        goto Label_Done;
     }
 
     // 4. Link common imports (every program gets fd_*, get_arg_*, and env.lsr).
@@ -1204,11 +1558,9 @@ u0 wasm_thread_entry(u0 *arg) {
 
 Label_Done:
     // Free WASM-owned resources. After freeing, null the slot in `ra` so
-    // the cleanup hook (wasm_proc_cleanup) is a no-op for these fields
-    // when it runs after a normal exit. The args struct itself is freed
-    // by the cleanup hook — see process_exit.
+    // Cleanup — env is shared (g_wasm_cache_env), never freed per-spawn.
+    // Null everything so the cleanup hook is a no-op after normal exit.
     if (runtime) { m3_FreeRuntime(runtime);   ra->runtime = null; }
-    if (env)     { m3_FreeEnvironment(env);   ra->env     = null; }
     if (wasm_data) { kfree(wasm_data);        ra->wasm_data = null; }
     if (ra->wasm_path_alloc) { kfree(ra->wasm_path_alloc); ra->wasm_path_alloc = null; }
 }
