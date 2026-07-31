@@ -192,6 +192,13 @@ u8 shift_down = false;
 // order) doesn't desync the modifier state.
 #define IS_CTRL_DOWN() (scancode_pressed[0x1D])
 
+// ─── PS/2 (i8042) keyboard state ────────────────────────────────────────────
+// Phase 0 of media/writings/usb_basic_implementation_plan.md:
+// PS/2 keyboard is TEMPORARILY DISABLED while we bring up xHCI USB input.
+// Flip this back to true (and un-comment the IRQ33 ISR registration in
+// main.c) once the USB HID boot-protocol decoder is wired up.
+static bool ps2_keyboard_enabled = true;  /* re-enabled so QEMU's PS/2 scancodes from QMP send-key land in the key queue */
+
 // Raw scancode tracking for doom/etc
 bool scancode_pressed[128] = {0};
 bool scancode_edge_down[128] = {0};
@@ -254,99 +261,74 @@ u8 keyboard_eat_key() {
     return c;
 }
 
+static u8 is_extended = 0;
+
 u0 keyboard_handle_keypress(registers_t *t) {
+    // Phase 0: PS/2 (i8042) keyboard path is temporarily disabled while
+    // we exercise the new xHCI USB driver. Re-enable by setting
+    // ps2_keyboard_enabled = true and un-commenting the IRQ33 ISR
+    // registration in main.c.
+    if (!ps2_keyboard_enabled) return;
+
     u8 status = inb(0x64);
-    static u8 is_extended = 0;
 
     if (status & 0x01) {
         u8 sc = inb(0x60);
 
-        // 1. Handle Extended Byte Prefix
+        // Extended prefix — leave the consumer to decide how to interpret
         if (sc == 0xE0) {
             is_extended = 1;
             return;
         }
 
-        // 2. Handle Key Releases (Break Codes)
-        if (sc & 0x80) {
-            u8 released = sc & 0x7F;
+        bool is_down = (sc & 0x80) == 0;
+        u8 clean_sc = is_down ? sc : (sc & 0x7F);
 
-            // Update scancode tracking
-            scancode_pressed[released] = false;
-            scancode_edge_up[released] = true;
+        // Hand off to the shared injection path: scancode tracking, ascii
+        // encoding, and queue push all happen in one place now.
+        kbd_inject_scancode_set1(clean_sc, is_extended != 0, is_down);
 
-            // Only reset shift if it's a non-extended left/right shift
-            if (!is_extended && (released == 0x2A || released == 0x36)) {
-                shift_down = 0;
-            }
+        // CRITICAL: reset extended state so the next key isn't treated as extended
+        is_extended = 0;
+    }
+}
 
-            // (No ctrl_down tracking here — derived from scancode_pressed[0x1D]
-            //  at encode time so simultaneous left+right Ctrl works.)
+// ─── Shared scancode injection ──────────────────────────────────────────────
+// All keyboard sources (PS/2 i8042 today, USB HID boot-protocol tomorrow)
+// feed set-1 make/break events through this function.
+void kbd_inject_scancode_set1(u8 sc, bool is_extended, bool is_down) {
+    if (sc >= 128) return;
 
-            // Always reset extended state after processing the byte
-            is_extended = 0;
-            return;
-        }
+    if (is_down) {
+        // Track raw scancode state for doom & game input
+        scancode_pressed[sc] = true;
+        scancode_edge_down[sc] = true;
 
-        // 3. Handle Key Presses (Make Codes)
-
-        // Update scancode tracking (extended or not)
-        if (sc < 128) {
-            scancode_pressed[sc] = true;
-            scancode_edge_down[sc] = true;
-        }
-
-        // Check for Shift Press (Left or Right)
+        // Track shift state from set-1 make codes (left=0x2A, right=0x36)
         if (!is_extended && (sc == 0x2A || sc == 0x36)) {
             shift_down = 1;
         }
 
-        // (No ctrl_down tracking here — scancode_pressed[0x1D] is already
-        //  set to true for any 0x1D press, both regular and E0-extended.)
-
         u8 ascii = 0;
-
-        // If it's a standard key, get the ASCII mapping
         if (!is_extended) {
             ascii = get_ascii_from_scancode(sc);
-
-            // Apply shift modification if applicable
-            if (shift_down) {
-                ascii = keyboard_shift(ascii);
-            }
-
-            // Apply Ctrl+letter encoding (Ctrl+A..Z → 0x01..0x1A).
-            // scancode_pressed[sc] above is already set to true, so doom/etc
-            // still see the raw scancode; only the ASCII byte gets re-encoded.
-            // Uses scancode_pressed[0x1D] so simultaneous left+right Ctrl
-            // (and out-of-order releases) stay in sync.
+            if (shift_down) ascii = keyboard_shift(ascii);
+            // Ctrl+letter → 0x01..0x1A (Ctrl+A..Z). scancode_pressed[0x1D]
+            // is already true here, so simultaneous left+right Ctrl is fine.
             if (IS_CTRL_DOWN() && ascii >= 'a' && ascii <= 'z') {
                 ascii = ascii & 0x1F;
             }
         } else {
             switch (sc) {
-                case 0x48:
-                    ascii = KEY_UP;
-                    break;
-                case 0x50:
-                    ascii = KEY_DOWN;
-                    break;
-                case 0x49:
-                    ascii = KEY_PGUP;
-                    break;
-                case 0x51:
-                    ascii = KEY_PGDN;
-                    break;
-                case 0x4B:
-                    ascii = KEY_LEFT;
-                    break;
-                case 0x4D:
-                    ascii = KEY_RIGHT;
-                    break;
+                case 0x48: ascii = KEY_UP; break;
+                case 0x50: ascii = KEY_DOWN; break;
+                case 0x49: ascii = KEY_PGUP; break;
+                case 0x51: ascii = KEY_PGDN; break;
+                case 0x4B: ascii = KEY_LEFT; break;
+                case 0x4D: ascii = KEY_RIGHT; break;
             }
         }
 
-        // 4. Add to queue if we have a valid character
         if (ascii != 0) {
             u32 next_write = (queue_write_ptr + 1) % KEY_QUEUE_SIZE;
             if (next_write != queue_read_ptr) {
@@ -354,9 +336,17 @@ u0 keyboard_handle_keypress(registers_t *t) {
                 queue_write_ptr = next_write;
             }
         }
+    } else {
+        // Release path
+        scancode_pressed[sc] = false;
+        scancode_edge_up[sc] = true;
 
-        // 5. CRITICAL: Reset extended state so the next key isn't treated as extended
-        is_extended = 0;
+        // Reset shift on a non-extended left/right shift release
+        if (!is_extended && (sc == 0x2A || sc == 0x36)) {
+            shift_down = 0;
+        }
+        // (Ctrl is implied by scancode_pressed[0x1D]; release above does
+        //  that bookkeeping automatically for both transports.)
     }
 }
 

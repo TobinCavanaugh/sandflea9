@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>sandfleaOS — Serial Log Dashboard</title>
+<style>
+/* ── Reset & Variables ──────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0d1117;
+  --bg-card: #161b22;
+  --border: #30363d;
+  --text: #c9d1d9;
+  --text-dim: #8b949e;
+  --text-bright: #f0f6fc;
+  --font-mono: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', 'Monaco', monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --radius: 8px;
+  --transition: 150ms ease;
+}
+
+html, body {
+  height: 100%; background: var(--bg); color: var(--text);
+  font-family: var(--font-sans); overflow: hidden;
+}
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
+.header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 20px; border-bottom: 1px solid var(--border);
+  background: var(--bg-card); user-select: none; gap: 12px;
+}
+.header-left { display: flex; align-items: center; gap: 10px; }
+.logo {
+  font-weight: 700; font-size: 15px; color: var(--text-bright);
+  letter-spacing: -0.3px;
+}
+.logo span { color: #f78166; }
+.uptime { font-size: 11px; color: var(--text-dim); }
+.header-right { display: flex; align-items: center; gap: 14px; }
+.header-right a {
+  color: var(--text-dim); text-decoration: none; font-size: 12px;
+  padding: 4px 10px; border-radius: 5px; border: 1px solid var(--border);
+  transition: all var(--transition);
+}
+.header-right a:hover {
+  border-color: #58a6ff; color: var(--text-bright); background: #1c2533;
+}
+
+/* ── Tab Bar ─────────────────────────────────────────────────────────────── */
+.tab-bar {
+  display: flex; padding: 0 20px; background: var(--bg-card);
+  border-bottom: 1px solid var(--border); gap: 2px;
+}
+.tab {
+  padding: 10px 18px; font-size: 13px; font-weight: 500; cursor: pointer;
+  border: none; background: transparent; color: var(--text-dim);
+  border-bottom: 2px solid transparent; transition: all var(--transition);
+  position: relative; font-family: var(--font-sans); letter-spacing: 0.2px;
+  display: flex; align-items: center; gap: 7px;
+}
+.tab:hover { color: var(--text); background: rgba(255,255,255,0.03); }
+.tab.active { color: var(--text-bright); }
+.tab .dot {
+  width: 6px; height: 6px; border-radius: 50%; display: inline-block;
+  transition: background var(--transition), box-shadow var(--transition);
+}
+.tab .dot.live {
+  box-shadow: 0 0 6px 2px var(--dot-color, #4ade80);
+}
+.tab .dot.dead {
+  background: #6e7681 !important; box-shadow: none;
+}
+
+/* ── Toolbar ─────────────────────────────────────────────────────────────── */
+.toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 20px; background: var(--bg); border-bottom: 1px solid var(--border);
+  font-size: 11px; color: var(--text-dim); gap: 10px;
+}
+.toolbar-left { display: flex; align-items: center; gap: 12px; }
+.toolbar-right { display: flex; align-items: center; gap: 10px; }
+.btn {
+  padding: 4px 10px; font-size: 11px; border-radius: 5px;
+  border: 1px solid var(--border); background: var(--bg-card);
+  color: var(--text); cursor: pointer; transition: all var(--transition);
+  font-family: var(--font-sans); display: flex; align-items: center; gap: 4px;
+}
+.btn:hover { border-color: #58a6ff; color: var(--text-bright); background: #1c2533; }
+.btn:active { transform: scale(0.97); }
+.line-count { font-variant-numeric: tabular-nums; }
+.pause-indicator {
+  padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600;
+  background: rgba(251, 191, 36, 0.15); color: #fbbf24; display: none;
+}
+.pause-indicator.visible { display: inline-block; }
+
+/* ── Log View ───────────────────────────────────────────────────────────── */
+.log-container {
+  flex: 1; overflow: hidden; position: relative;
+  height: calc(100vh - 110px);
+}
+.log-pane {
+  display: none; height: 100%; overflow-y: auto; padding: 12px 0;
+  font-family: var(--font-mono); font-size: 12.5px; line-height: 1.65;
+  counter-reset: line;
+}
+.log-pane.active { display: block; }
+.log-pane::-webkit-scrollbar { width: 8px; }
+.log-pane::-webkit-scrollbar-track { background: transparent; }
+.log-pane::-webkit-scrollbar-thumb {
+  background: var(--border); border-radius: 4px;
+}
+.log-pane::-webkit-scrollbar-thumb:hover { background: #484f58; }
+
+.log-line {
+  display: flex; padding: 0 16px; transition: background 80ms ease;
+  white-space: pre-wrap; word-break: break-all;
+}
+.log-line:hover { background: rgba(255,255,255,0.03); }
+.line-num {
+  flex-shrink: 0; width: 48px; text-align: right; padding-right: 14px;
+  color: var(--text-dim); opacity: 0.55; font-size: 11px;
+  user-select: none;
+}
+.line-text { flex: 1; }
+
+/* ── Empty state ─────────────────────────────────────────────────────────── */
+.empty-state {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  height: 100%; color: var(--text-dim); text-align: center; gap: 8px;
+  font-size: 13px;
+}
+.empty-state .icon { font-size: 36px; opacity: 0.4; }
+.empty-state .sub { font-size: 11px; opacity: 0.6; }
+
+/* ── Toast ───────────────────────────────────────────────────────────────── */
+.toast {
+  position: fixed; bottom: 24px; right: 24px; padding: 10px 18px;
+  border-radius: var(--radius); font-size: 12px; font-weight: 500;
+  background: var(--bg-card); border: 1px solid var(--border);
+  color: var(--text); z-index: 100; pointer-events: none;
+  opacity: 0; transform: translateY(8px);
+  transition: opacity 0.25s, transform 0.25s;
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+
+/* ── Responsive ──────────────────────────────────────────────────────────── */
+@media (max-width: 600px) {
+  .tab { padding: 8px 12px; font-size: 11px; }
+  .toolbar { flex-wrap: wrap; }
+  .log-container { height: calc(100vh - 130px); }
+}
+
+/* ── d3-flame-graph overrides ────────────────────────────────────────────── */
+#flameChart {
+  width: 100%; height: 100%; background: var(--bg);
+}
+/* Kill transition animations — we redraw on poll, no need for animation */
+#flameChart g {
+  transition: none !important;
+}
+#flameChart .d3-flame-graph-tip {
+  background: rgba(22,27,34,0.95) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 6px !important;
+  padding: 6px 10px !important;
+  font-size: 11px !important;
+  color: var(--text-bright) !important;
+  font-family: var(--font-mono) !important;
+  pointer-events: none;
+  z-index: 100 !important;
+}
+#flameChart .d3-flame-graph-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  fill: #0d1117;
+  pointer-events: none;
+}
+#flameChart rect {
+  stroke: rgba(13,17,23,0.3);
+  stroke-width: 0.5;
+  transition: opacity 120ms ease;
+}
+#flameChart rect:hover {
+  stroke: #58a6ff;
+  stroke-width: 1.5;
+  opacity: 0.9;
+}
+.flame-pane {
+  display: none; height: 100%; overflow: hidden; position: relative;
+}
+.flame-pane.active { display: block; }
+</style>
+<link rel="stylesheet" href="/static/d3-flame-graph/dist/d3-flamegraph.css">
+<script src="/static/d3/dist/d3.min.js"></script>
+<script src="/static/d3-flame-graph/dist/d3-flamegraph.umd.min.js"></script>
+</head>
+<body>
+
+<!-- ── Header ─────────────────────────────────────────────────────────────── -->
+<div class="header">
+  <div class="header-left">
+    <div class="logo">sandflea<span>OS</span> &nbsp;Log Dashboard</div>
+    <div class="uptime" id="uptime">up 0s</div>
+  </div>
+  <div class="header-right">
+    <a href="/harness" id="harnessLink">Harness</a>
+    <span id="globalStatus" style="color:#f85149">●</span>
+    <span id="globalStatusText" style="font-size:11px;">no connection</span>
+  </div>
+</div>
+
+<!-- ── Tabs ───────────────────────────────────────────────────────────────── -->
+<div class="tab-bar" id="tabBar"></div>
+
+<!-- ── Toolbar ────────────────────────────────────────────────────────────── -->
+<div class="toolbar">
+  <div class="toolbar-left">
+    <span class="line-count" id="lineCount">0 lines</span>
+    <span class="pause-indicator" id="pauseIndicator">⏸ PAUSED</span>
+  </div>
+  <div class="toolbar-right">
+    <button class="btn" onclick="clearActivePane()" title="Clear current tab">🗑 Clear</button>
+    <button class="btn" onclick="togglePause()" id="pauseBtn" title="Pause/resume auto-scroll">⏯ Pause</button>
+    <button class="btn" onclick="scrollToBottom()" title="Jump to bottom">⬇ Bottom</button>
+  </div>
+</div>
+
+<!-- ── Log Panes ──────────────────────────────────────────────────────────── -->
+<div class="log-container" id="logContainer"></div>
+
+<!-- ── Toast ──────────────────────────────────────────────────────────────── -->
+<div class="toast" id="toast"></div>
+
+<script>
+const CHANNELS = {
+  primary:  { label: "Primary (COM1)",  color: "#4ade80" },
+  test:     { label: "Test (COM2)",     color: "#60a5fa" },
+  profile:  { label: "Profile (COM3)",  color: "#f472b6" },
+  flame:    { label: "🔥 Flame Graph",   color: "#fbbf24" },
+};
+let activeChannel = "primary";
+let sources = {};
+let lineCounts = {};
+let paused = false;
+let pauseReason = null;
+let serverStart = Date.now();
+
+function buildUI() {
+  const tabBar = document.getElementById("tabBar");
+  const logContainer = document.getElementById("logContainer");
+
+  for (const [name, ch] of Object.entries(CHANNELS)) {
+    const tab = document.createElement("button");
+    tab.className = "tab" + (name === activeChannel ? " active" : "");
+    tab.innerHTML = `<span class="dot" id="dot-${name}" style="background:${ch.color}"></span>${ch.label}`;
+    tab.onclick = () => switchTab(name);
+    tabBar.appendChild(tab);
+
+    const pane = document.createElement("div");
+    pane.className = "log-pane" + (name === activeChannel ? " active" : "");
+    pane.id = `pane-${name}`;
+    pane.innerHTML = `<div class="empty-state">
+      <div class="icon">📡</div>
+      <div>Waiting for ${ch.label} data…</div>
+      <div class="sub">Start QEMU (wr.bat) to populate this log</div>
+    </div>`;
+    if (name === "flame") {
+      pane.className = "flame-pane" + (name === activeChannel ? " active" : "");
+      pane.innerHTML = `<div id="flameChart"></div>`;
+    } else {
+      pane.addEventListener("scroll", onPaneScroll);
+    }
+    logContainer.appendChild(pane);
+
+    lineCounts[name] = 0;
+  }
+
+  window.addEventListener("resize", () => {
+    if (activeChannel === "flame" && flameChart) flameChart.width(window.innerWidth - 40);
+  });
+}
+
+function connectChannelIfSSE(name) {
+  if (name !== "flame") connectChannel(name);
+}
+
+function switchTab(name) {
+  activeChannel = name;
+  document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+  document.querySelectorAll(".log-pane").forEach(p => p.classList.remove("active"));
+  document.querySelectorAll(".flame-pane").forEach(p => p.classList.remove("active"));
+  const tab = document.getElementById("dot-" + name).parentElement;
+  tab.classList.add("active");
+  document.getElementById("pane-" + name).classList.add("active");
+  updateLineCount();
+  if (name === "flame") {
+    fetchFlameData();
+  } else if (!paused) {
+    scrollToBottom();
+  }
+}
+
+function clearActivePane() {
+  if (activeChannel === "flame") return;
+  const pane = document.getElementById("pane-" + activeChannel);
+  pane.innerHTML = "";
+  lineCounts[activeChannel] = 0;
+  updateLineCount();
+}
+
+function updatePauseUI() {
+  document.getElementById("pauseIndicator").classList.toggle("visible", paused);
+  document.getElementById("pauseBtn").textContent = paused ? "▶ Resume" : "⏯ Pause";
+}
+
+function togglePause() {
+  paused = !paused;
+  pauseReason = paused ? "manual" : null;
+  updatePauseUI();
+  if (!paused) {
+    if (activeChannel === "flame") fetchFlameData();
+    else scrollToBottom();
+  }
+}
+
+function scrollToBottom() {
+  if (paused) return;
+  const pane = document.getElementById("pane-" + activeChannel);
+  requestAnimationFrame(() => { pane.scrollTop = pane.scrollHeight; });
+}
+
+function onPaneScroll() {
+  const pane = document.getElementById("pane-" + activeChannel);
+  const atBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 50;
+
+  if (!atBottom && !paused) {
+    paused = true;
+    pauseReason = "auto";
+    updatePauseUI();
+  } else if (atBottom && paused && pauseReason === "auto") {
+    paused = false;
+    pauseReason = null;
+    updatePauseUI();
+  }
+}
+
+function appendLine(channel, text) {
+  const pane = document.getElementById("pane-" + channel);
+
+  if (lineCounts[channel] === 0) {
+    pane.innerHTML = "";
+  }
+
+  const line = document.createElement("div");
+  line.className = "log-line";
+
+  const num = document.createElement("span");
+  num.className = "line-num";
+  num.textContent = ++lineCounts[channel];
+
+  const txt = document.createElement("span");
+  txt.className = "line-text";
+  txt.textContent = text;
+
+  line.appendChild(num);
+  line.appendChild(txt);
+  pane.appendChild(line);
+
+  if (channel === activeChannel) {
+    updateLineCount();
+    scrollToBottom();
+  } else {
+    const dot = document.getElementById("dot-" + channel);
+    dot.style.transform = "scale(1.6)";
+    dot.style.opacity = "0.7";
+    setTimeout(() => {
+      dot.style.transform = "scale(1)";
+      dot.style.opacity = "1";
+    }, 200);
+  }
+}
+
+function clearPane(channel) {
+  const pane = document.getElementById("pane-" + channel);
+  pane.innerHTML = `<div class="empty-state">
+    <div class="icon">🔄</div>
+    <div>Log truncated (QEMU restarted)</div>
+    <div class="sub">New output will appear here</div>
+  </div>`;
+  lineCounts[channel] = 0;
+  if (channel === activeChannel) updateLineCount();
+}
+
+function updateLineCount() {
+  document.getElementById("lineCount").textContent =
+    lineCounts[activeChannel] + " line" + (lineCounts[activeChannel] !== 1 ? "s" : "");
+}
+
+function connectChannel(name) {
+  if (sources[name]) sources[name].close();
+
+  const es = new EventSource("/stream/" + name);
+  sources[name] = es;
+
+  es.addEventListener("status", (e) => {
+    setDot(name, true);
+    updateGlobalStatus();
+  });
+
+  es.addEventListener("append", (e) => {
+    appendLine(name, e.data);
+  });
+
+  es.addEventListener("clear", (e) => {
+    clearPane(name);
+  });
+
+  es.addEventListener("error", () => {
+    setDot(name, false);
+    updateGlobalStatus();
+  });
+
+  es.onopen = () => {
+    setDot(name, true);
+    updateGlobalStatus();
+  };
+}
+
+function setDot(name, live) {
+  const dot = document.getElementById("dot-" + name);
+  if (live) {
+    dot.classList.add("live");
+    dot.classList.remove("dead");
+    dot.style.setProperty("--dot-color", CHANNELS[name].color);
+    dot.style.background = CHANNELS[name].color;
+  } else {
+    dot.classList.remove("live");
+    dot.classList.add("dead");
+  }
+}
+
+function updateGlobalStatus() {
+  let alive = 0;
+  for (const name of Object.keys(CHANNELS)) {
+    const dot = document.getElementById("dot-" + name);
+    if (dot && dot.classList.contains("live")) alive++;
+  }
+  const el = document.getElementById("globalStatus");
+  const text = document.getElementById("globalStatusText");
+  if (alive >= Object.keys(CHANNELS).length - 1) {
+    el.style.color = "#4ade80"; text.textContent = "log channels live";
+  } else if (alive > 0) {
+    el.style.color = "#fbbf24"; text.textContent = `${alive}/${Object.keys(CHANNELS).length - 1} live`;
+  } else {
+    el.style.color = "#f85149"; text.textContent = "no connection";
+  }
+}
+
+let flameData = null;
+let flameChart = null;
+
+function speedscopeToTree(flameData) {
+  const profile = flameData.profiles?.[0];
+  if (!profile || !profile.events?.length) return null;
+
+  const events = profile.events;
+  const stack = [];
+  const roots = [];
+
+  for (const ev of events) {
+    if (ev.type === "O") {
+      const node = { name: ev.frame, value: 0, children: [] };
+      if (stack.length) {
+        stack[stack.length - 1].children.push(node);
+      } else {
+        roots.push(node);
+      }
+      node._start = ev.at;
+      stack.push(node);
+    } else if (ev.type === "C") {
+      for (let i = stack.length - 1; i >= 0; i--) {
+        if (stack[i].name === ev.frame) {
+          const node = stack.splice(i, 1)[0];
+          node.value = ev.at - (node._start || ev.at);
+          delete node._start;
+          break;
+        }
+      }
+    }
+  }
+
+  const endValue = profile.endValue || 0;
+  for (const node of stack) {
+    node.value = endValue - (node._start || endValue);
+    delete node._start;
+  }
+
+  const totalVal = roots.reduce((s, r) => s + Math.max(r.value, 0), 0) || 1;
+  return {
+    name: "sandfleaOS profile",
+    value: totalVal,
+    children: roots,
+  };
+}
+
+function fetchFlameData() {
+  if (paused && activeChannel === "flame") return;
+  fetch("/flame-data")
+    .then(r => r.json())
+    .then(data => {
+      flameData = data;
+      if (activeChannel === "flame") renderFlameGraph();
+    })
+    .catch(err => {
+      console.error("flame-data fetch failed:", err);
+    });
+}
+
+function renderFlameGraph() {
+  try {
+    const tree = speedscopeToTree(flameData);
+    if (!tree || !tree.children || !tree.children.length) {
+      if (flameChart) { try { flameChart.destroy(); } catch(e) {} }
+      flameChart = null;
+      return;
+    }
+
+    if (typeof d3 === "undefined" || typeof flamegraph === "undefined") return;
+
+    const flamegraphFactory = flamegraph.default || flamegraph;
+
+    if (flameChart) {
+      try { flameChart.destroy(); } catch(e) {}
+      flameChart = null;
+    }
+    document.querySelectorAll(".d3-flame-graph-tip").forEach(el => el.remove());
+
+    const containerEl = document.getElementById("flameChart");
+    if (containerEl) containerEl.innerHTML = "";
+
+    flameChart = flamegraphFactory()
+      .width(window.innerWidth - 40)
+      .cellHeight(20)
+      .minFrameSize(1)
+      .transitionDuration(0)
+      .selfValue(false);
+
+    flameChart.setColorMapper((d, originalColor) => {
+      if (d.data && d.data.name === "sandfleaOS profile") return "#161b22";
+      let h = 0;
+      const n = (d.data && d.data.name) || (d.name) || "";
+      for (let i = 0; i < n.length; i++) h = ((h << 5) - h + n.charCodeAt(i)) | 0;
+      return `hsl(${Math.abs(h) % 360}, 55%, 50%)`;
+    });
+
+    if (flamegraph.tooltip) {
+      flameChart.tooltip(
+        flamegraph.tooltip.defaultFlamegraphTooltip()
+          .text(d => {
+            const name = (d.data && d.data.name) || (d.name) || "?";
+            const val = (d.data && d.data.value) || (d.value) || 0;
+            return `${name} — ${val.toLocaleString()} µs` +
+              (val >= 1000 ? ` (${(val/1000).toFixed(1)}ms)` : '');
+          })
+      );
+    }
+
+    d3.select("#flameChart").datum(tree).call(flameChart);
+  } catch (err) {
+    console.error("renderFlameGraph error:", err);
+  }
+}
+
+function updateUptime() {
+  const sec = Math.floor((Date.now() - serverStart) / 1000);
+  const m = Math.floor(sec / 60), s = sec % 60;
+  document.getElementById("uptime").textContent =
+    `up ${m}m ${s}s`;
+}
+
+buildUI();
+for (const name of Object.keys(CHANNELS)) {
+  connectChannelIfSSE(name);
+}
+setInterval(updateUptime, 1000);
+updateUptime();
+setInterval(fetchFlameData, 2000);
+fetchFlameData();
+</script>
+</body>
+</html>

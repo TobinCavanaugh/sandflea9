@@ -38,6 +38,18 @@ u8 keyboard_eat_key();
 u0 keyboard_handle_keypress(registers_t *t);
 i32 screen_get_line_count();
 
+// Shared scancode injection point. Used by BOTH the i8042 PS/2 ISR and
+// (eventually) the USB HID boot-protocol decoder. Phase 0 refactor
+// consolidates the queue update + ascii encoding into one well-tested
+// path; both transports feed into the same global queue.
+//
+// `is_extended`: true if the E0 prefix was seen for this event
+//                (set-1 extended codes like arrow keys).
+// `is_down`:     true if make (press), false if break (release).
+// Caller passes the CLEAN set-1 scancode (low 7 bits) — break-bit
+// stripping is the caller's job, since it knows the source format.
+void kbd_inject_scancode_set1(u8 sc, bool is_extended, bool is_down);
+
 u8 keyboard_peek_key();
 u0 toggle_capslock();
 

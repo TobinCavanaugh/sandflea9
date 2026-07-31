@@ -30,6 +30,7 @@
 #include "../../limine/limine.h"
 #include "../include/limine_requests.h"
 #include "../include/kern_pci.h"
+#include "../include/kern_xhci.h"
 #include "../include/kern_interrupts.h"
 #include "../include/kern_screen.h"
 #include "../include/kern_ext2.h"
@@ -141,6 +142,11 @@ void kern_entry(void) {
 
     system.pci_list_head = pci_init_system();
     serial_outsl("PCI: System bus scanned");
+
+    // xHCI driver — Phase 1 (read-only PCI probe) + Phase 2 (BAR map +
+    // CAPS smoke test). Driver not yet bound to anything beyond probing.
+    xhci_pci_probe();
+    xhci_smoke_test_first();
 
     // In kern_entry...
     pci_device_t *pci_uart = system.pci_list_head;
@@ -262,6 +268,10 @@ void kern_entry(void) {
     serial_outsl("Threads: Heartbeat threads spawned");
 
     interrupt_register(32, timer_handler);
+    // [PHASE 0 / PS/2 DISABLED] IRQ 33 (i8042 keyboard) handler is
+    // temporarily not registered while we bring up xHCI USB. Restore the
+    // line below once the USB HID boot-protocol decoder is fully wired
+    // up and ready to take over input.
     interrupt_register(33, (void (*)(const registers_t *)) keyboard_handle_keypress);
 
     // Initialize terminal sessions (cell buffers, ANSI parser state, etc.)

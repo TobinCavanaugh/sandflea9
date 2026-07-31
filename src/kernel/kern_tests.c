@@ -21,6 +21,7 @@
 #include "wasm3-0.5.0/source/m3_env.h"
 #include "wasm3-0.5.0/source/m3_api_libc.h"
 #include "../include/kern_ide.h"
+#include "../include/kern_xhci.h"
 
 // TODO Running kmalloc2 and then kmalloc causes early page fault? I think
 
@@ -1252,6 +1253,12 @@ u0 handle_command() {
                               dev->vendor_id, dev->device_id);
             dev = dev->next;
         }
+        goto Label_Free;
+    }
+
+    if (cmd_word_eq(word, "usb")) {
+        PROFILE_SCOPE("cmd:usb");
+        xhci_list_devices();
         goto Label_Free;
     }
 

@@ -392,6 +392,7 @@ m3ApiRawFunction(wasm_fd_close) {
     screen_push_linef("wasm close: %d", fd);
     serial_outsf("wasm close: %d\n", fd);
     i32 result = fs_close(fd);
+    serial_outsf("wasm close: fs_close returned %d, about to m3ApiReturn\n", result);
     m3ApiReturn(result);
 }
 
@@ -1553,16 +1554,21 @@ do_load:
             serial_outsf("WASM: Call error: %s\n", result);
         } else {
             screen_push_line("WASM: _start returned");
+            serial_outsl("WASM: _start returned");
         }
     }
+
+    serial_outsl("WASM: entering Label_Done");
 
 Label_Done:
     // Free WASM-owned resources. After freeing, null the slot in `ra` so
     // Cleanup — env is shared (g_wasm_cache_env), never freed per-spawn.
     // Null everything so the cleanup hook is a no-op after normal exit.
     if (runtime) { m3_FreeRuntime(runtime);   ra->runtime = null; }
+    serial_outsl("WASM: freed runtime");
     if (wasm_data) { kfree(wasm_data);        ra->wasm_data = null; }
     if (ra->wasm_path_alloc) { kfree(ra->wasm_path_alloc); ra->wasm_path_alloc = null; }
+    serial_outsl("WASM: Label_Done complete");
 }
 
 // ============================================================================

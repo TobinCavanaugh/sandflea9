@@ -19,10 +19,13 @@ Heap: kmalloc initialized and ready for allocations
 Scheduler: Multi-threading support initialized
 Enumerating pci...
 PCI: System bus scanned
+xHCI: scanning PCI class 0x0C / sub 0x03 / prog-IF 0x30...
+xHCI: no controllers found.
+xHCI: smoke-test skipped, no controller present.
 VMM: Expanding heap from FFFFFFFF88040000 to FFFFFFFF88429000 (needed 3E8020)
 Video: Primary display surface address: ffffffff88040020, width=1280, height=800
 Video: 1 framebuffer(s) found. Primary: 1280x800 32bpp
-Kernel Stack Pointer: FFFF80007BFF7FD0
+Kernel Stack Pointer: FFFF80007BFF8FD0
 Font: SSFN regular font loaded
 Memory: Total 2030 MiB, Usable 1993 MiB
 Terminal: Screen line buffer initialized
@@ -47,29 +50,3 @@ VMM: Expanding heap from FFFFFFFF88482000 to FFFFFFFF88499000 (needed 16820)
 VMM: Expanding heap from FFFFFFFF88499000 to FFFFFFFF884B0000 (needed 16820)
 Terminal: Sessions initialized
 --- Initialization Complete. Entering Main Loop ---
-[[touch a.txt]]
-ext2_create: created a.txt (inode 33, block 4388)
-[[touch vvv.txt]]
-ext2_create: created vvv.txt (inode 34, block 4389)
-[[ls]]
-VMM: Expanding heap from FFFFFFFF884B0000 to FFFFFFFF884D1000 (needed 20020)
-Thread created: TID 4 in PID 1 (new count: 1)
-WASM: Loading ls.wasm
-VMM: Expanding heap from FFFFFFFF884D1000 to FFFFFFFF88512000 (needed 40020)
-VMM: Expanding heap from FFFFFFFF88512000 to FFFFFFFF8A513000 (needed 2000040)
-WASI: Linked kernel-native WASI implementation
-Reaping process PID 1 (CR3: 7f6c8000)
-Process PID 1 resources freed
-[[write vvv.txt 23456789]]
-[[cat vvv.txt]]
-Thread created: TID 5 in PID 2 (new count: 1)
-WASM: Loading cat.wasm
-WASI: Linked kernel-native WASI implementation
-WASM: Open called for path: vvv.txt -> fd=3
-WASM: Read called for fd: 3, count: 1024
-VMM: Expanding heap from FFFFFFFF8A513000 to FFFFFFFF8A554000 (needed 40020)
-WASM: Write called for fd: 1
-WASM: Read called for fd: 3, count: 1024
-wasm close: 3
-Reaping process PID 2 (CR3: 7f6c8000)
-Process PID 2 resources freed

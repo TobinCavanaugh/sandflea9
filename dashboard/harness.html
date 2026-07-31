@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sandfleaOS &mdash; Test Harness</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0d1117;
+    --bg-soft: #161b22;
+    --border: #30363d;
+    --fg: #c9d1d9;
+    --dim: #6e7681;
+    --accent: #4ade80;
+    --warn: #fbbf24;
+    --bad: #ef4444;
+    --link: #60a5fa;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; font-size: 13px; }
+  body { display: grid; grid-template-rows: auto 1fr; }
+  header { display: flex; align-items: center; gap: 16px; padding: 10px 16px;
+    background: var(--bg-soft); border-bottom: 1px solid var(--border); }
+  header .logo { font-weight: 700; color: var(--accent); letter-spacing: 0.5px; }
+  header nav { display: flex; gap: 12px; margin-left: 16px; }
+  header nav a { color: var(--dim); text-decoration: none; }
+  header nav a:hover { color: var(--link); }
+  header .spacer { flex: 1; }
+  .pill { display: inline-block; padding: 4px 10px; border-radius: 999px;
+    background: var(--border); color: var(--fg); font-size: 11px; }
+  .pill.ok { background: #033a16; color: var(--accent); }
+  .pill.wait { background: #3a2e03; color: var(--warn); }
+  .pill.bad { background: #3a0a0a; color: var(--bad); }
+  main { display: grid; grid-template-columns: 1fr 320px; min-height: 0; }
+  #stage { position: relative; background: #000; overflow: hidden;
+    display: flex; align-items: center; justify-content: center; }
+  #vnc-frame { display: block; max-width: 100%; max-height: 100%;
+    width: auto; height: auto; cursor: crosshair; outline: none;
+    image-rendering: crisp-edges;
+    image-rendering: pixelated; }
+  #vnc-frame:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  #focus-pill { position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    background: rgba(74, 222, 128, 0.95); color: #06170d; padding: 6px 14px;
+    border-radius: 999px; font-weight: 600; display: none; pointer-events: none; }
+  #focus-pill.visible { display: block; }
+  #focus-pill.hint { background: rgba(96, 165, 250, 0.95); color: #061226; }
+  #stage-meta { position: absolute; bottom: 8px; left: 12px;
+    background: rgba(0,0,0,0.5); color: #e7eef7; padding: 4px 10px; border-radius: 4px;
+    font-size: 11px; display: flex; gap: 12px; align-items: center; }
+  #stage-meta .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+  #stage-meta .dot.live { background: var(--accent); animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
+  aside { background: var(--bg-soft); border-left: 1px solid var(--border);
+    padding: 14px; display: flex; flex-direction: column; gap: 14px; min-height: 0;
+    overflow-y: auto; }
+  aside h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
+    color: var(--dim); margin: 0 0 6px 0; }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .row .name { flex: 1; }
+  button { background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+    padding: 6px 10px; border-radius: 4px; cursor: pointer; font-family: inherit;
+    font-size: 12px; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #06170d; border-color: var(--accent); }
+  button.primary:hover { filter: brightness(1.08); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  input[type=text], input[type=number], textarea { background: var(--bg);
+    border: 1px solid var(--border); color: var(--fg); padding: 6px 8px;
+    border-radius: 4px; font-family: inherit; font-size: 12px; width: 100%; }
+  textarea { resize: vertical; min-height: 60px; }
+  input:focus, textarea:focus, button:focus { outline: 2px solid var(--link);
+    outline-offset: 1px; }
+  .field { display: flex; align-items: center; gap: 8px; }
+  .field label { color: var(--dim); font-size: 11px; min-width: 70px; }
+  .status-grid { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px;
+    font-size: 11px; }
+  .status-grid .k { color: var(--dim); }
+  .status-grid .v { color: var(--fg); text-align: right; font-variant-numeric: tabular-nums; }
+  details { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; }
+  details summary { cursor: pointer; color: var(--dim); font-size: 11px; }
+  details[open] summary { color: var(--link); margin-bottom: 6px; }
+  code { background: var(--bg); padding: 1px 5px; border-radius: 3px; }
+  .last-key { font-size: 11px; color: var(--dim); }
+  .last-key .v { color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="logo">sandfleaOS</span>
+  <nav>
+    <a href="/">Logs</a>
+    <a href="/harness"><strong>Harness</strong></a>
+  </nav>
+  <span class="spacer"></span>
+  <span id="status-pill" class="pill wait">QMP: connecting…</span>
+</header>
+
+<main>
+  <div id="stage">
+    <canvas id="vnc-frame" tabindex="0" aria-label="OS framebuffer preview (click to capture keyboard)"></canvas>
+    <div id="focus-pill" class="hint">Click here to capture keyboard</div>
+    <div id="stage-meta">
+      <span class="dot" id="live-dot"></span>
+      <span id="meta-text">initializing…</span>
+    </div>
+  </div>
+
+  <aside>
+    <section>
+      <h3>USB device tree</h3>
+      <div class="row">
+        <input type="checkbox" id="dev-kbd" checked>
+        <span class="name">usb-kbd <span style="color:var(--dim)">(bus: xhci.0)</span></span>
+      </div>
+      <div class="row">
+        <input type="checkbox" id="dev-mouse" disabled>
+        <span class="name" style="color:var(--dim)">usb-mouse &mdash; WIP</span>
+      </div>
+      <div class="row">
+        <input type="checkbox" id="dev-tablet" disabled>
+        <span class="name" style="color:var(--dim)">usb-tablet &mdash; WIP</span>
+      </div>
+      <div class="row" style="margin-top: 8px;">
+        <button id="apply-devices" class="primary">Apply</button>
+        <button id="reset-devices" disabled>Reset</button>
+      </div>
+    </section>
+
+    <section>
+      <h3>Quick test input</h3>
+      <textarea id="quick-input" placeholder='e.g. "ls\n" or "echo hi\n"'></textarea>
+      <div class="row" style="margin-top: 8px;">
+        <button id="send-text" class="primary">Send</button>
+        <button id="send-ctrl-c">^C</button>
+      </div>
+      <details style="margin-top: 8px;">
+        <summary>Timing</summary>
+        <div class="field"><label>hold_ms</label><input type="number" id="hold-ms" min="0" max="5000" step="10" value="50"></div>
+        <div class="field"><label>gap_ms</label><input type="number" id="gap-ms" min="0" max="500" step="5" value="10"></div>
+      </details>
+      <div class="last-key" style="margin-top: 6px;">last key: <span class="v" id="last-key">&mdash;</span></div>
+    </section>
+
+    <section>
+      <h3>QMP status</h3>
+      <div class="status-grid">
+        <span class="k">state</span><span class="v" id="s-state">&mdash;</span>
+        <span class="k">connected</span><span class="v" id="s-conn">&mdash;</span>
+        <span class="k">attempts</span><span class="v" id="s-att">&mdash;</span>
+        <span class="k">last error</span><span class="v" id="s-err" style="color:var(--bad)">&mdash;</span>
+        <span class="k">devices</span><span class="v" id="s-dev">&mdash;</span>
+      </div>
+      <div id="setup-hint" style="display:none; margin-top:8px; padding:8px;
+        background:#3a2e03; border-radius:4px; font-size:11px; color:var(--warn);"></div>
+    </section>
+
+    <section>
+      <h3>Hotkeys</h3>
+      <div style="font-size:11px; color:var(--dim); line-height:1.5;">
+        <strong style="color:var(--fg)">Esc</strong> &mdash; release keyboard capture</div>
+      <div style="font-size:11px; color:var(--dim); line-height:1.5;">
+        <strong style="color:var(--fg)">Click stage</strong> &mdash; capture keyboard</div>
+    </section>
+  </aside>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  // ── DOM refs ────────────────────────────────────────────────────────────
+  const statusPill   = document.getElementById("status-pill");
+  const canvas       = document.getElementById("vnc-frame");
+  const focusPill    = document.getElementById("focus-pill");
+  const liveDot      = document.getElementById("live-dot");
+  const metaText     = document.getElementById("meta-text");
+  const lastKey      = document.getElementById("last-key");
+  const devKbd       = document.getElementById("dev-kbd");
+  const applyDevBtn  = document.getElementById("apply-devices");
+  const sendBtn      = document.getElementById("send-text");
+  const sendCtrlC    = document.getElementById("send-ctrl-c");
+  const quickInput   = document.getElementById("quick-input");
+  const holdMsInp    = document.getElementById("hold-ms");
+  const gapMsInp     = document.getElementById("gap-ms");
+
+  const sState = document.getElementById("s-state");
+  const sConn  = document.getElementById("s-conn");
+  const sAtt   = document.getElementById("s-att");
+  const sErr   = document.getElementById("s-err");
+  const sDev   = document.getElementById("s-dev");
+  const setupHint = document.getElementById("setup-hint");
+
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+
+  // ── Frame loop ──────────────────────────────────────────────────────────
+  // Polls /api/qmp/frame at ~30 FPS, draws each frame onto the canvas.
+  // Stops requesting while the tab is hidden.
+  let frameAbort = null;
+  let frameInFlight = false;
+  let frameCount = 0;
+  let frameLastTs = performance.now();
+
+  async function frameLoop() {
+    if (document.hidden) {
+      setTimeout(frameLoop, 250);
+      return;
+    }
+    if (frameInFlight) {
+      setTimeout(frameLoop, 8);
+      return;
+    }
+    frameInFlight = true;
+    frameAbort = new AbortController();
+    try {
+      const t0 = performance.now();
+      const res = await fetch(
+        "/api/qmp/frame?max_w=1024&fmt=jpeg&_t=" + Date.now(),
+        { signal: frameAbort.signal, cache: "no-store" }
+      );
+      if (!res.ok) {
+        if (res.status >= 500 && res.status < 600) {
+          // QMP not ready; back off but keep the loop alive
+          metaText.textContent = "frame: " + res.status + " (waiting for QMP)";
+          liveDot.classList.remove("live");
+          frameInFlight = false;
+          setTimeout(frameLoop, 500);
+          return;
+        }
+        throw new Error("HTTP " + res.status);
+      }
+      const blob = await res.blob();
+      const bitmap = await createImageBitmap(blob);
+      // Resize canvas backing store to match frame, preserve CSS sizing.
+      if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+      }
+      ctx.drawImage(bitmap, 0, 0);
+      bitmap.close();
+      frameCount++;
+      const t1 = performance.now();
+      const dt = t1 - t0;
+      metaText.textContent = `${bitmap.width}x${bitmap.height} \u00b7 ${dt|0}ms \u00b7 ${frameCount} frames`;
+      liveDot.classList.add("live");
+      frameInFlight = false;
+      setTimeout(frameLoop, 16);  // ~60 FPS request cadence; server caps at 30.
+    } catch (e) {
+      if (e.name !== "AbortError") {
+        console.warn("frame error", e);
+        metaText.textContent = "frame error: " + e.message;
+        liveDot.classList.remove("live");
+      }
+      frameInFlight = false;
+      setTimeout(frameLoop, 250);
+    }
+  }
+  frameLoop();
+
+  // ── Status polling (5s) ────────────────────────────────────────────────
+  let activeDevices = {};   // logical_id → {driver,bus}
+
+  async function refreshStatus() {
+    try {
+      const r = await fetch("/api/qmp/status?_t=" + Date.now(), { cache: "no-store" });
+      const j = await r.json();
+      sState.textContent = j.state || "?";
+      sConn.textContent  = j.connected ? "yes" : "no";
+      sAtt.textContent   = (j.attempts ?? "?").toString();
+      sErr.textContent   = j.last_error || "" ;
+      sDev.textContent   = Object.keys(j.devices || {}).length.toString();
+
+      // Pill
+      statusPill.classList.remove("ok", "wait", "bad");
+      if (j.connected) statusPill.classList.add("ok"),
+        statusPill.textContent = "QMP: connected";
+      else if (j.state === "waiting") statusPill.classList.add("wait"),
+        statusPill.textContent = "QMP: waiting (" + (j.attempts ?? "?") + ")";
+      else if (j.state === "lost") statusPill.classList.add("bad"),
+        statusPill.textContent = "QMP: lost";
+      else if (j.state === "starting") statusPill.classList.add("wait"),
+        statusPill.textContent = "QMP: starting\u2026";
+      else statusPill.classList.add("bad"), statusPill.textContent = "QMP: error";
+
+      // Setup hint
+      if (j.setup_hint && (j.state === "waiting" || j.state === "lost")) {
+        setupHint.style.display = "block";
+        setupHint.textContent = j.setup_hint;
+      } else {
+        setupHint.style.display = "none";
+      }
+
+      activeDevices = j.devices || {};
+    } catch (e) { /* ignore */ }
+  }
+  refreshStatus();
+  setInterval(refreshStatus, 5000);
+
+  // ── USB device apply / reset ───────────────────────────────────────────
+  applyDevBtn.addEventListener("click", async () => {
+    applyDevBtn.disabled = true;
+    try {
+      if (devKbd.checked) {
+        await fetch("/api/qmp/device", { method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "add", driver: "usb-kbd", bus: "xhci.0" }) });
+      } else {
+        await fetch("/api/qmp/device", { method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "del", driver: "usb-kbd" }) });
+      }
+      refreshStatus();
+    } finally { applyDevBtn.disabled = false; }
+  });
+
+  // ── Sidebar quick send ─────────────────────────────────────────────────
+  sendBtn.addEventListener("click", () => {
+    const text = quickInput.value;
+    if (!text) return;
+    fetch("/api/qmp/sendkey", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text, hold_ms: +holdMsInp.value, gap_ms: +gapMsInp.value }) })
+      .then(refreshStatus);
+  });
+  sendCtrlC.addEventListener("click", () => {
+    fetch("/api/qmp/sendkey", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ combo: ["ctrl", "c"], hold_ms: +holdMsInp.value }) });
+  });
+
+  // ── Keyboard capture on canvas ─────────────────────────────────────────
+  // Mapping from DOM event.code to QEMU qcode. Letters/digits are
+  // trivially lower-cased; non-letter special keys are explicit.
+  const KEYCODE_MAP = {
+    Space:"spc", Enter:"ret", Backspace:"backspace", Tab:"tab", Escape:"esc",
+    ArrowUp:"up", ArrowDown:"down", ArrowLeft:"left", ArrowRight:"right",
+    Home:"home", End:"end", PageUp:"pgup", PageDown:"pgdn",
+    Insert:"insert", Delete:"delete",
+    Minus:"minus", Equal:"equal", Backquote:"grave",
+    BracketLeft:"bracket_left", BracketRight:"bracket_right",
+    Semicolon:"semicolon", Quote:"apostrophe",
+    Comma:"comma", Period:"dot", Slash:"slash", Backslash:"backslash",
+    CapsLock:"caps_lock", NumLock:"num_lock", ScrollLock:"scroll_lock",
+    Numpad0:"kp_0", Numpad1:"kp_1", Numpad2:"kp_2", Numpad3:"kp_3", Numpad4:"kp_4",
+    Numpad5:"kp_5", Numpad6:"kp_6", Numpad7:"kp_7", Numpad8:"kp_8", Numpad9:"kp_9",
+    NumpadEnter:"kp_enter", NumpadAdd:"kp_plus", NumpadSubtract:"kp_minus",
+    NumpadMultiply:"kp_multiply", NumpadDivide:"kp_divide", NumpadDecimal:"kp_decimal",
+    F1:"f1", F2:"f2", F3:"f3", F4:"f4", F5:"f5", F6:"f6",
+    F7:"f7", F8:"f8", F9:"f9", F10:"f10", F11:"f11", F12:"f12",
+  };
+  // Build letter+digit mapping programmatically.
+  for (let i = 0; i < 26; i++) {
+    KEYCODE_MAP["Key" + String.fromCharCode(65 + i)] = String.fromCharCode(97 + i);  // a..z
+  }
+  for (let i = 0; i < 10; i++) {
+    KEYCODE_MAP["Digit" + i] = String(i);
+  }
+  const MODIFIER_MAP = {
+    ShiftLeft:"shift", ShiftRight:"shift",
+    ControlLeft:"ctrl", ControlRight:"ctrl",
+    AltLeft:"alt", AltRight:"altgr",
+    MetaLeft:"meta_l", MetaRight:"meta_r",
+  };
+
+  const modifierSet = new Set();
+
+  function postCombo(combo, holdMs) {
+    if (!combo.length) return;
+    lastKey.textContent = combo.join("+");
+    return fetch("/api/qmp/sendkey", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ combo: combo, hold_ms: holdMs }) });
+  }
+
+  function keyToQcode(code) {
+    if (MODIFIER_MAP[code]) return null;  // handled separately
+    if (KEYCODE_MAP[code]) return KEYCODE_MAP[code];
+    return null;
+  }
+
+  canvas.addEventListener("click", () => canvas.focus());
+
+  canvas.addEventListener("focus", () => {
+    focusPill.classList.remove("hint");
+    focusPill.classList.add("visible");
+    focusPill.textContent = "Keyboard captured — Esc to release";
+    document.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("keyup",   onKeyUp,   true);
+  });
+
+  canvas.addEventListener("blur", () => {
+    focusPill.classList.remove("visible");
+    focusPill.classList.add("hint");
+    focusPill.textContent = "Click here to capture keyboard";
+    modifierSet.clear();
+    document.removeEventListener("keydown", onKeyDown, true);
+    document.removeEventListener("keyup",   onKeyUp,   true);
+  });
+
+  function onKeyDown(e) {
+    // Release on Escape
+    if (e.code === "Escape") { e.preventDefault(); canvas.blur(); return; }
+    if (e.repeat) return;
+    // Don't steal keys when the user explicitly typed in a sidebar input
+    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+    const mod = MODIFIER_MAP[e.code];
+    if (mod) { modifierSet.add(mod); e.preventDefault(); return; }
+    const qc = keyToQcode(e.code);
+    if (!qc) return;
+    e.preventDefault();
+    const combo = [...modifierSet, qc];
+    postCombo(combo, +holdMsInp.value || 50);
+  }
+  function onKeyUp(e) {
+    const mod = MODIFIER_MAP[e.code];
+    if (mod) { modifierSet.delete(mod); e.preventDefault(); }
+  }
+})();
+</script>
+
+</body>
+</html>
