@@ -6,9 +6,9 @@ sandfleaOS is a hobbyist x86_64 operating system designed with a modern, WebAsse
 
 sandfleaOS is built on a few specific design principles:
 
-*   **WebAssembly-First:** Applications are treated as platform-independent Wasm modules. The system uses the Wasm3 interpreter integrated directly into the kernel/userspace bridge to provide a secure and isolated execution environment.
+*   Apps are WASM first, write in WASM once, use (hopefully) anywhere. WASM code runs in wasm3, no kernel rings, so don't find vulns in my vendored wasm3 pretty please.
 *   **Non-POSIX Compliance:** The system does not aim for 1:1 POSIX compatibility or strict adherence to UNIX traditions. Standards are adopted only when they provide a genuine technical advantage or convenience.
-*   **Modern Hardware Target:** The project focuses on x86_64 architecture with UEFI booting via Limine, prioritizing modern features over legacy compatibility (e.g., AHCI over IDE in the long term).
+*   x64 Limine only atm. Might do ARM support if i feel like learning ARM assembly and rewriting the hard parts of the OS.
 
 ## Key Features
 
@@ -55,7 +55,7 @@ sandfleaOS is built on a few specific design principles:
 The project is built using a custom toolchain and build scripts designed for cross-compilation.
 
 *   **Toolchain:** GCC (cross-compiler), NASM, `xorriso`, `mtools`, and `debugfs`.
-*   **Build System:** `build.sh` orchestrates the compilation of C and assembly, font processing, and ISO creation.
+*   **Build System:** `build.sh` because cmake is hell. Works with wsl if you install the programs
 *   **Entry Point:** The system begins execution at `kern_entry()` in `src/kernel/main.c`.
 
 ## Roadmap
