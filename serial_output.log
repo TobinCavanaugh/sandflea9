@@ -20,12 +20,49 @@ Scheduler: Multi-threading support initialized
 Enumerating pci...
 PCI: System bus scanned
 xHCI: scanning PCI class 0x0C / sub 0x03 / prog-IF 0x30...
-xHCI: no controllers found.
-xHCI: smoke-test skipped, no controller present.
+xHCI: 1b36:000d at 00:04.0, BAR0=0x000000c000000000
+xHCI: probe done, 1 controller(s) listed.
+xHCI: initialising controller at 00:04.0
+xHCI: BAR0 0x000000c000000000 → virt 0xffffffff20000000
+xHCI: CAPLENGTH=0x40 Slots=64 Ports=8 DBOFF=0x2000 RTSOFF=0x1000
+xHCI: controller halted
+xHCI: HCRST complete
+xHCI: CNR cleared
+xHCI: DCBAA at phys 0x000000007fea9000, 64 slots
+xHCI: command ring at phys 0x000000007fe9a000
+xHCI: event ring at phys 0x000000007fe98000
+xHCI: controller running, rings operational
+xHCI: controller initialised, scanning ports...
+xHCI: port 1 — no device connected
+xHCI: port 2 — no device connected
+xHCI: port 3 — no device connected
+xHCI: port 4 — no device connected
+xHCI: port 5 reset — speed=3
+xHCI: port 5 reset done, enabled
+xHCI: POST type=9 slot=0 parm=0x0000000000000000 stat=0x00000000 ctrl=0x00002400
+xHCI: port 5 status change event
+xHCI: EVT cmd-compl code=1 slot=1 evt(raw)=000000007fe9a000_01000000_01008401
+xHCI: enable slot → 1
+xHCI: ADDR-DEV slot=1 port=5 speed=3 set_addr=1
+xHCI:   SC dw0=08300000 dw1=00050000 dw2=00000000 dw3=00000000
+xHCI:   SC dw4=10000001 dw5=00000000 dw6=00000000 dw7=00000000
+xHCI:  EP0 dw0=40000000 dw1=00000008 dw2=7fe97001 dw3=00000000
+xHCI:  EP0 dw4=00000008 tr_phys=0x000000007fe97000
+xHCI:  ictx_phys=0x000000007fea7000 add_flags=0x00000003
+xHCI: POST type=11 slot=1 parm=0x000000007fea7000 stat=0x00000000 ctrl=0x01002c00
+xHCI: EVT cmd-compl code=1 slot=1 evt(raw)=000000007fe9a010_01000000_01008401
+xHCI: slot 1 addressed (BSR=0)
+xHCI:  output EP0 dw0=40000001 dw1=00000008 dw2=7fe97001 dw3=00000000 (DCS=1)
+xHCI: transfer timeout
+xHCI: control transfer timeout (slot 1)
+xHCI: GET_DESCRIPTOR(18) failed on slot 1
+xHCI: port 6 — no device connected
+xHCI: port 7 — no device connected
+xHCI: port 8 — no device connected
 VMM: Expanding heap from FFFFFFFF88040000 to FFFFFFFF88429000 (needed 3E8020)
 Video: Primary display surface address: ffffffff88040020, width=1280, height=800
 Video: 1 framebuffer(s) found. Primary: 1280x800 32bpp
-Kernel Stack Pointer: FFFF80007BFF8FD0
+Kernel Stack Pointer: FFFF800079F4BFC0
 Font: SSFN regular font loaded
 Memory: Total 2030 MiB, Usable 1993 MiB
 Terminal: Screen line buffer initialized

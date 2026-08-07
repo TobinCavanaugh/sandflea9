@@ -25,6 +25,40 @@ u64 vmm_get_hhdm() {
     return hhdm_offset;
 }
 
+// ── MMIO mapping helper ─────────────────────────────────────────────────────
+// Maps a physical MMIO region (e.g., PCI BAR) into kernel virtual space.
+// Returns the virtual base address. Uses uncacheable write-through flags
+// (PCD | PWT) so reads always go to the device, not the cache.
+//
+// Allocates from a dedicated MMIO virtual range at 0xFFFFFFFF20000000.
+// This is above the APIC mappings (0xFFFFFFFF1000xxxx) and below the
+// kernel heap (0xFFFFFFFF88000000).
+#define MMIO_VIRT_BASE  0xFFFFFFFF20000000
+static u64 mmio_virt_next = MMIO_VIRT_BASE;
+
+u64 vmm_mmio_map_phys(u64 phys_addr, u64 size) {
+    u64 page_count = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    u64 phys_page  = phys_addr & ~(PAGE_SIZE - 1);
+
+    // Guard: don't let the MMIO region collide with the kernel heap.
+    if (mmio_virt_next + page_count * PAGE_SIZE >= 0xFFFFFFFF88000000) {
+        serial_outsf("VMM: MMIO map overflow at virt 0x%016llx (size %llx)\n",
+                     mmio_virt_next, size);
+        return 0;
+    }
+
+    u64 virt_start = mmio_virt_next;
+
+    for (u64 i = 0; i < page_count; i++) {
+        vmm_map_page(phys_page + i * PAGE_SIZE,
+                     virt_start + i * PAGE_SIZE,
+                     PAGE_RW | PAGE_PCD | PAGE_PWT);
+    }
+
+    mmio_virt_next += page_count * PAGE_SIZE;
+    return virt_start;
+}
+
 u0 pmm_free(u64 phys_addr) {
     if (phys_addr == 0) return;
     u64 irq = save_irq_and_disable();

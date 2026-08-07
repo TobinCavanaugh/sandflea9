@@ -57,6 +57,8 @@ u64 pmm_get_free_count();
 
 u64 vmm_get_hhdm();
 
+u64 vmm_mmio_map_phys(u64 phys_addr, u64 size);
+
 u64 read_cr3();
 
 u0 vmm_map_page(u64 phys_addr, u64 virt_addr, u64 flags);

@@ -1,34 +1,62 @@
 // xHCI (USB 3.0) driver — public API.
 //
-// Phase 0 of media/writings/usb_basic_implementation_plan.md:
-// bring up scaffolding, expose a single probe function and a single
-// smoke-test function so we can verify PCI discovery and BAR mapping
-// before any ring or interrupt code is written.
+// Full driver: PCI probe, controller init, port enumeration, control
+// transfers, interrupt transfers, and boot-protocol keyboard input.
 
 #ifndef KERN_XHCI_H
 #define KERN_XHCI_H
 
 #include "dialect.h"
 #include "kern_pci.h"
+#include "kern_xhci_regs.h"
 
-// Walk pci_list_head and print every xHCI-class device found
-// (class_code=0x0C, subclass=0x03, prog_if=0x30). At present this is
-// read-only — it does NOT enable bus mastering, does NOT map BARs, and
-// does NOT install any interrupt handler. Driver binding comes later.
+// ── PCI probe + smoke test ──────────────────────────────────────────────────
+
 void xhci_pci_probe(void);
-
-// Once xhci_pci_probe() succeeds, this picks the first xHCI on the bus,
-// enables bus mastering (PCI COMMAND bit 2), vmm-maps BAR0 into kernel
-// virtual space, and reads back HCIVERSION + CAPLENGTH + DBOFF +
-// HCCPARAMS1 to verify the chip is alive. Driver still doesn't run.
 void xhci_smoke_test_first(void);
 
-// Read-only port scan: finds the first xHCI controller, maps BAR0 via
-// HHDM, reads HCSPARAMS1 for MaxPorts, then iterates every PORTSC
-// register and prints a table of connected devices (port number, speed,
-// status) to both the serial log and the kernel screen.
-// Safe to call at any time — does not touch USBCMD, does not start the
-// controller, does not enable interrupts or rings.
+// ── Controller init ─────────────────────────────────────────────────────────
+// Full controller initialisation: map BAR, stop controller, set up rings,
+// DCBAA, event ring, start controller. Call once at boot.
+// Returns true on success.
+bool xhci_init(void);
+
+// ── Port scanning ───────────────────────────────────────────────────────────
+u32  xhc_max_ports(void);
 void xhci_list_devices(void);
+
+// ── Ring / context helpers ─────────────────────────────────────────────────
+u64  xhci_input_ctx_phys(u32 slot_id);
+
+// ── Device enumeration ─────────────────────────────────────────────────────
+// Reset a port and enumerate the attached device.
+// Returns true if a device was successfully reset and enabled.
+bool xhci_port_reset(u32 port_num);
+
+// Fully enumerate a USB HID boot-protocol keyboard on the given port.
+// Returns the slot ID (1–8) on success, 0 on failure.
+u32  xhci_enumerate_keyboard(u32 port_num);
+
+// ── Keyboard input ──────────────────────────────────────────────────────────
+
+// Start polling a keyboard for HID reports. Must call after enumeration.
+void xhci_kbd_start_polling(u32 slot_id);
+
+// Check if a new HID report is available (non-blocking).
+// Polls event ring automatically.
+bool xhci_kbd_report_ready(u32 slot_id);
+
+// Retrieve the raw HID report buffer for a keyboard.
+// Returns pointer to 8-byte report, or null. Re-queues the interrupt transfer.
+u8  *xhci_kbd_get_report(u32 slot_id);
+
+// Process all pending events on the event ring.
+// Called from polling loops and ISRs.
+void xhci_process_events(void);
+
+// Check and handle any pending hot-plug enumeration requests.
+// Call from the main loop. Enumerates newly-connected keyboards.
+// Returns the slot ID if a new keyboard was enumerated, 0 otherwise.
+u32  xhci_pending_enumerate(void);
 
 #endif //KERN_XHCI_H

@@ -31,6 +31,7 @@
 #include "../include/limine_requests.h"
 #include "../include/kern_pci.h"
 #include "../include/kern_xhci.h"
+#include "../include/kern_usb_hid.h"
 #include "../include/kern_interrupts.h"
 #include "../include/kern_screen.h"
 #include "../include/kern_ext2.h"
@@ -143,10 +144,27 @@ void kern_entry(void) {
     system.pci_list_head = pci_init_system();
     serial_outsl("PCI: System bus scanned");
 
-    // xHCI driver — Phase 1 (read-only PCI probe) + Phase 2 (BAR map +
-    // CAPS smoke test). Driver not yet bound to anything beyond probing.
+    // xHCI driver — PCI probe only. USB keyboard enumeration is shelved
+    // (control-transfer DMA bug); input is via PS/2 i8042 instead.
+    // When the DMA issue is fixed, uncomment the block below.
     xhci_pci_probe();
-    xhci_smoke_test_first();
+    serial_outsl("xHCI: USB keyboard enumeration shelved — using PS/2");
+#if 0  // ── xHCI keyboard enumeration (shelved) ─────────────────────────
+    if (xhci_init()) {
+        serial_outsl("xHCI: controller initialised, scanning ports...");
+        for (u32 port = 1; port <= xhc_max_ports(); port++) {
+            u32 slot = xhci_enumerate_keyboard(port);
+            if (slot) {
+                xhci_kbd_start_polling(slot);
+                serial_outsf("xHCI: keyboard on port %d → slot %d, polling started\n", port, slot);
+                break;
+            }
+        }
+    } else {
+        serial_outsl("xHCI: init failed — USB keyboard not available");
+        xhci_smoke_test_first();
+    }
+#endif
 
     // In kern_entry...
     pci_device_t *pci_uart = system.pci_list_head;
@@ -282,6 +300,17 @@ void kern_entry(void) {
     serial_outsl("--- Initialization Complete. Entering Main Loop ---");
 
     for (;;) {
+        // USB HID polling shelved — input is via PS/2 i8042.
+        // Uncomment below when xHCI control-transfer DMA is fixed.
+#if 0
+        kbd_usb_poll();
+        u32 new_slot = xhci_pending_enumerate();
+        if (new_slot) {
+            xhci_kbd_start_polling(new_slot);
+            serial_outsf("USB: hot-plug keyboard on slot %d, polling started\n", new_slot);
+        }
+#endif
+
         // Keyboard input — always processed (even when a session's foreground
         // app is in fullscreen mode like Doom), so session switching via
         // F1-F4 works regardless of what the foreground app is doing.

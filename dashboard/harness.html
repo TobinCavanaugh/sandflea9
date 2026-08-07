@@ -110,10 +110,13 @@
 
   <aside>
     <section>
-      <h3>USB device tree</h3>
+      <h3>Input</h3>
       <div class="row">
-        <input type="checkbox" id="dev-kbd" checked>
-        <span class="name">usb-kbd <span style="color:var(--dim)">(bus: xhci.0)</span></span>
+        <span class="name">PS/2 keyboard <span style="color:var(--accent)">(active)</span></span>
+      </div>
+      <div class="row">
+        <input type="checkbox" id="dev-kbd" disabled>
+        <span class="name" style="color:var(--dim)">usb-kbd &mdash; shelved (DMA bug)</span>
       </div>
       <div class="row">
         <input type="checkbox" id="dev-mouse" disabled>
@@ -124,7 +127,7 @@
         <span class="name" style="color:var(--dim)">usb-tablet &mdash; WIP</span>
       </div>
       <div class="row" style="margin-top: 8px;">
-        <button id="apply-devices" class="primary">Apply</button>
+        <button id="apply-devices" disabled>Apply</button>
         <button id="reset-devices" disabled>Reset</button>
       </div>
     </section>
