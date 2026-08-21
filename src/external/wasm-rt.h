@@ -134,6 +134,8 @@ typedef struct {
 } wasm_rt_externref_table_t;
 
 /* Runtime API */
+bool wasm_rt_is_initialized(void);
+void wasm_rt_init(void);
 WASM_RT_NO_RETURN void wasm_rt_trap(wasm_rt_trap_t);
 const char* wasm_rt_strerror(wasm_rt_trap_t trap);
 

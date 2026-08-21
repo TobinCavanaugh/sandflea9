@@ -58,15 +58,18 @@ char *isr_errors[] = {
         "Reserved Intel", // 31
 };
 
-u0 panic_draw_status(char *msg) {
+u0 panic_draw_status(char *msg, const registers_t *t) {
     char buf[256];
-    stbsp_snprintf(buf, 255, " %-28s", msg);
-    i32 w = (28 + 1) * font_width + 1;
+    if (t) {
+        stbsp_snprintf(buf, 255, " EXCEPTION: %s (RIP: %llX, ERR: %X) ", msg, t->rip, (u32)t->error_code);
+    } else {
+        stbsp_snprintf(buf, 255, " %-28s", msg);
+    }
     display_t *disp = screen_current_display();
-    i32 x_pos = disp->surface.width - w;
-
-    screen_puts_r(buf, V2I(x_pos, 0), COLOR_WHITE, COLOR_RED);
-    screen_draw();
+    if (disp) {
+        screen_puts_r(buf, V2I(10, 10), COLOR_WHITE, COLOR_RED);
+        screen_draw();
+    }
 }
 
 u0 kern_interrupt_handler(const registers_t *t) {
@@ -132,9 +135,7 @@ u0 kern_interrupt_handler(const registers_t *t) {
         serial_outsf("  RAX: %llX | RBX: %llX | RCX: %llX | RDX: %llX\n", t->rax, t->rbx, t->rcx, t->rdx);
         serial_outsf("  RSP: %llX | RBP: %llX\n", t->rsp, t->rbp);
 
-        __asm__ volatile("int3");
-
-        panic_draw_status(err);
+        panic_draw_status(err, t);
         while (1) {
             for (volatile i64 i = 0; i < 1000000; i++) {
                 toggle_capslock();

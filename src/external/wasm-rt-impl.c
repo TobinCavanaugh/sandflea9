@@ -10,6 +10,16 @@
 /* Global jmp_buf for trap handling */
 wasm_rt_jmp_buf g_wasm_rt_jmp_buf;
 
+static bool g_wasm_rt_initialized = true;
+
+bool wasm_rt_is_initialized(void) {
+  return g_wasm_rt_initialized;
+}
+
+void wasm_rt_init(void) {
+  g_wasm_rt_initialized = true;
+}
+
 void wasm_rt_trap(wasm_rt_trap_t code) {
   assert(code != WASM_RT_TRAP_NONE);
   WASM_RT_LONGJMP(g_wasm_rt_jmp_buf, code);
