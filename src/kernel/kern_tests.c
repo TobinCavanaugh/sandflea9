@@ -413,12 +413,12 @@ u0 wasm_doom_test(u0 *arg) {
     // (the user could press F2 and session_switch before we set the flag).
     term_session_t *doom_session = active_session;
     doom_session_ref = doom_session;
+    if (doom_session) doom_session->owns_framebuffer = true;
 
     // --- Boot-phase profiling: track elapsed time at each step ---
     // sw has ~10ms granularity; times in timer ticks (~10ms each)
     #define BOOT_LOG(step) serial_outsf("DOOM BOOT[%lld]: " step "\n", sw)
 
-    screen_push_linef("DOOM: Opening %s...", wasm_path);
     BOOT_LOG("Opening WASM file...");
     i32 fd = fs_open(wasm_path);
     if (fd < 0) {
@@ -427,7 +427,6 @@ u0 wasm_doom_test(u0 *arg) {
     }
 
     u32 size = fs_size(fd);
-    screen_push_linef("DOOM: Reading %s (%d KB)...", wasm_path, size / 1024);
     BOOT_LOG("Allocating WASM buffer...");
     wasm_data = kmalloc(size);
     if (!wasm_data) {
@@ -440,7 +439,6 @@ u0 wasm_doom_test(u0 *arg) {
     fs_close(fd);
     BOOT_LOG("WASM file loaded.");
 
-    screen_push_line("DOOM: Initializing Wasm3 runtime...");
     BOOT_LOG("Initializing environment...");
     env = m3_NewEnvironment();
     if (!env) {
@@ -456,7 +454,6 @@ u0 wasm_doom_test(u0 *arg) {
     }
 
     IM3Module module = NULL;
-    screen_push_line("DOOM: Parsing WASM module...");
     BOOT_LOG("Parsing module...");
     M3Result result = m3_ParseModule(env, &module, wasm_data, size);
     if (result) {
@@ -469,7 +466,6 @@ u0 wasm_doom_test(u0 *arg) {
         goto Label_Done;
     }
 
-    screen_push_line("DOOM: Loading module bytecode...");
     BOOT_LOG("Loading module...");
     result = m3_LoadModule(runtime, module);
     if (result) {
@@ -600,7 +596,6 @@ u0 wasm_doom_test(u0 *arg) {
 
     serial_outsl("WASM DOOM: Entering game loop...");
     screen_push_line("DOOM: Running! Press ESC to exit...");
-    if (doom_session) doom_session->owns_framebuffer = true;
 
     // Clear the real framebuffer to black (we draw directly, so backbuffer clear won't help)
     {

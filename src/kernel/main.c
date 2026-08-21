@@ -63,7 +63,7 @@ u0 timer_handler(const registers_t *reg) {
 u0 delay(u64 ms) {
     volatile u64 start = sw;
     while (sw - start < ms) {
-        sched_yield();
+        asm volatile("hlt");
     }
 }
 
