@@ -315,8 +315,8 @@ m3ApiRawFunction(doom_drawFrame) {
         m3ApiSuccess();
     }
 
-    // Blit Doom framebuffer directly to the real hardware framebuffer
-    // (skips the backbuffer and full-screen copy for max performance)
+    // Blit Doom framebuffer directly to the real hardware framebuffer with
+    // aspect-correct integer scaling for high-resolution displays.
     if (doom_frame_width > 0 && doom_frame_height > 0) {
         u64 t_blit_start = sw;
         u32 memory_size = 0;
@@ -331,21 +331,54 @@ m3ApiRawFunction(doom_drawFrame) {
                 u32 copy_h = doom_frame_height;
                 u32 copy_w = doom_frame_width;
 
-                // Clamp to screen size
-                if (copy_w > disp->surface.width) copy_w = disp->surface.width;
-                if (copy_h > disp->surface.height) copy_h = disp->surface.height;
+                // Calculate integer scale factor (aspect-ratio preserving)
+                u32 scale_x = disp->surface.width / copy_w;
+                u32 scale_y = disp->surface.height / copy_h;
+                u32 scale = (scale_x < scale_y) ? scale_x : scale_y;
+                if (scale < 1) scale = 1;
 
-                // Center the Doom frame on screen
-                u32 dst_x_off = (disp->surface.width - copy_w) / 2;
-                u32 dst_y_off = (disp->surface.height - copy_h) / 2;
+                u32 scaled_w = copy_w * scale;
+                u32 scaled_h = copy_h * scale;
 
-                // Blit row by row (pitches can differ)
-                for (u32 y = 0; y < copy_h; y++) {
-                    mem_copy(
-                        (u8 *)(dst + (dst_y_off + y) * dst_pitch_px + dst_x_off),
-                        (u8 *)(src + y * src_pitch_px),
-                        copy_w * 4
-                    );
+                // Center the scaled Doom frame on screen
+                u32 dst_x_off = (disp->surface.width - scaled_w) / 2;
+                u32 dst_y_off = (disp->surface.height - scaled_h) / 2;
+
+                if (scale == 1) {
+                    for (u32 y = 0; y < copy_h; y++) {
+                        mem_copy(
+                            (u8 *)(dst + (dst_y_off + y) * dst_pitch_px + dst_x_off),
+                            (u8 *)(src + y * src_pitch_px),
+                            copy_w * 4
+                        );
+                    }
+                } else if (scale == 2) {
+                    for (u32 y = 0; y < copy_h; y++) {
+                        u32 *src_row = src + y * src_pitch_px;
+                        u32 *dst_row0 = dst + (dst_y_off + y * 2) * dst_pitch_px + dst_x_off;
+                        u32 *dst_row1 = dst_row0 + dst_pitch_px;
+
+                        for (u32 x = 0; x < copy_w; x++) {
+                            u32 p = src_row[x];
+                            dst_row0[x * 2]     = p;
+                            dst_row0[x * 2 + 1] = p;
+                            dst_row1[x * 2]     = p;
+                            dst_row1[x * 2 + 1] = p;
+                        }
+                    }
+                } else {
+                    for (u32 y = 0; y < copy_h; y++) {
+                        u32 *src_row = src + y * src_pitch_px;
+                        for (u32 sy = 0; sy < scale; sy++) {
+                            u32 *dst_row = dst + (dst_y_off + y * scale + sy) * dst_pitch_px + dst_x_off;
+                            for (u32 x = 0; x < copy_w; x++) {
+                                u32 p = src_row[x];
+                                for (u32 sx = 0; sx < scale; sx++) {
+                                    dst_row[x * scale + sx] = p;
+                                }
+                            }
+                        }
+                    }
                 }
 
                 prof_blit_time += (sw - t_blit_start);
