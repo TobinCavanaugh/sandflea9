@@ -50,23 +50,25 @@ typedef struct kern_process {
 extern kern_process_t *foreground_proc;
 
 typedef struct kern_task {
-    u64 rsp; // MUST BE FIRST
+    u64 rsp; // MUST BE FIRST (offset 0)
     i32 tid;
-    i32 state; // 0 ready, 1 running, 2 blocked, 3 dead
+    i32 state; // 0 ready, 1 running, 2 blocked, 3 dead, 4 sleeping
     u0 *stack_base;
-    kern_process_t *process;
-    struct kern_task * next;        // master list (all tasks, for PID lookup & reaping)
-    struct kern_task * next_ready;  // ready queue (READY/RUNNING only — O(1) dispatch)
-    u32 signal_wait_mask;  // IPC: signal mask this task is blocked on
+    kern_process_t *process; // MUST BE AT OFFSET 24 (accessed in kernel.asm)
+    struct kern_task *next;
+    u64 wake_at_tick; // timer tick when this sleeping task should wake up
+    u32 signal_wait_mask; // IPC: signal mask this task is blocked on
 } kern_task_t;
 
 #define TASK_STATE_READY 0
 #define TASK_STATE_RUNNING 1
 #define TASK_STATE_BLOCKED 2
 #define TASK_STATE_DEAD 3
+#define TASK_STATE_SLEEPING 4
 
 u0 sched_init();
 u0 sched_yield();
+u0 sched_sleep(u64 ms);
 u0 sched_run_next();
 u0 sched_thread_exit();
 
