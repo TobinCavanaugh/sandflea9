@@ -656,13 +656,6 @@ u0 wasm_doom_test(u0 *arg) {
 
         prof_loop_total += (sw - t_loop_start);
 
-        // Watchdog: if Doom hasn't drawn a frame in ~1 second, it likely quit internally
-        // (the WASM module's _exit() is a stub since it's not imported)
-        if (doom_last_draw_time > 0 && (sw - doom_last_draw_time) > 50) {
-            serial_outsl("DOOM: drawFrame watchdog triggered — game appears to have quit");
-            break;
-        }
-
         // Dump profiling stats every N frames (times in timer ticks, ~10ms each)
         // and yield every ~10 frames so the main loop can service keyboard
         // (TTY switching). Most multitasking is handled by the preemptive
