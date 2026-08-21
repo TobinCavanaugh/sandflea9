@@ -56,12 +56,18 @@ volatile u64 sw = 0;
 u0 timer_handler(const registers_t *reg) {
     PROFILE_SCOPE("timer_handler");
     sw += 10;
+    if (sw % 1000 == 0) heartbeat1 = heartbeat1 == 0 ? 1 : 0;
+    if (sw % 500 == 0)  heartbeat2 = heartbeat2 == 0 ? 1 : 0;
+    if (sw % 100 == 0)  heartbeat3 = heartbeat3 == 0 ? 1 : 0;
     apic_eoi(0xFFFFFFFF10000000);
     sched_run_next();
 }
 
 u0 delay(u64 ms) {
-    sched_sleep(ms);
+    volatile u64 start = sw;
+    while (sw - start < ms) {
+        asm volatile("hlt");
+    }
 }
 
 system_t system = {0};
@@ -70,27 +76,6 @@ char typingbuf[255] = {0};
 i64 heartbeat1 = 0;
 i64 heartbeat2 = 0;
 i64 heartbeat3 = 0;
-
-u0 shimmy3(u0 *arg) {
-    while (1) {
-        heartbeat3 = heartbeat3 == 0 ? 1 : 0;
-        delay(100);
-    }
-}
-
-u0 shimmy2(u0 *arg) {
-    while (1) {
-        heartbeat2 = heartbeat2 == 0 ? 1 : 0;
-        delay(500);
-    }
-}
-
-u0 shimmy(u0 *arg) {
-    while (1) {
-        heartbeat1 = heartbeat1 == 0 ? 1 : 0;
-        delay(1000);
-    }
-}
 
 
 u0 direct_fb_fill(u32 color) {
@@ -294,13 +279,6 @@ void kern_entry(void) {
     fs_init();
     serial_outsl("FS: FS initialized");
     PROFILE_INSTANT("boot:fs_done");
-
-    char buf[255];
-
-    sched_create_thread(shimmy, null);
-    sched_create_thread(shimmy2, null);
-    sched_create_thread(shimmy3, null);
-    serial_outsl("Threads: Heartbeat threads spawned");
 
     interrupt_register(32, timer_handler);
     // [PHASE 0 / PS/2 DISABLED] IRQ 33 (i8042 keyboard) handler is

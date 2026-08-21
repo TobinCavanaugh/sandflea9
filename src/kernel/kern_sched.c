@@ -293,28 +293,15 @@ u8 sched_kill_process(i32 pid) {
     return found;
 }
 
-u0 sched_sleep(u64 ms) {
-    if (!current_task) return;
-    if (ms == 0) {
-        sched_yield();
-        return;
-    }
-    extern volatile u64 sw;
-    u64 irq = save_irq_and_disable();
-    current_task->wake_at_tick = sw + ms;
-    current_task->state = TASK_STATE_SLEEPING;
-    restore_irq(irq);
-
-    sched_run_next();
-}
-
 u0 sched_run_next() {
     if (!current_task) return;
 
-    extern volatile u64 sw;
     u64 irq = save_irq_and_disable();
 
     // Save the original task — we need it to detect wrap-around.
+    // If we skip BLOCKED tasks and come back to ourselves, we must not
+    // context-switch because that would overwrite a BLOCKED task's saved
+    // RSP with the current ISR frame, corrupting its context on resume.
     kern_task_t *start = current_task;
     kern_task_t *prev = current_task;
     kern_task_t *next = current_task->next;
@@ -339,17 +326,8 @@ u0 sched_run_next() {
 
             next = prev->next;
             kfree(dead_task);
-        } else if (next->state == TASK_STATE_SLEEPING) {
-            if (sw >= next->wake_at_tick) {
-                // Wake-up time reached!
-                next->state = TASK_STATE_READY;
-                break;
-            }
-            // Still sleeping — skip immediately in O(1) without context switch
-            prev = next;
-            next = next->next;
-        } else if (next->state == TASK_STATE_BLOCKED) {
-            // Blocked on I/O or signal — skip
+        } else if (next->state > 1) {
+            // Skip BLOCKED tasks (or DEAD ones we can't reap yet)
             prev = next;
             next = next->next;
         } else {
@@ -358,14 +336,9 @@ u0 sched_run_next() {
         }
     }
 
-    // If we wrapped all the way around back to ourselves:
+    // If we wrapped all the way around back to ourselves, no other
+    // READY task exists — don't context-switch.
     if (next == start) {
-        if ((current_task->state == TASK_STATE_SLEEPING && sw < current_task->wake_at_tick) ||
-            current_task->state == TASK_STATE_BLOCKED) {
-            restore_irq(irq);
-            asm volatile("hlt");
-            return;
-        }
         restore_irq(irq);
         return;
     }
@@ -393,7 +366,7 @@ u0 sched_block_current(void) {
 u0 sched_unblock(kern_task_t *task) {
     if (!task) return;
     u64 irq = save_irq_and_disable();
-    if (task->state == TASK_STATE_BLOCKED || task->state == TASK_STATE_SLEEPING) {
+    if (task->state == TASK_STATE_BLOCKED) {
         task->state = TASK_STATE_READY;
     }
     restore_irq(irq);
