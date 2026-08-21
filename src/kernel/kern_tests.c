@@ -23,6 +23,7 @@
 #include "../include/kern_ide.h"
 #include "../include/kern_xhci.h"
 #include "../include/kern_ipc.h"
+#include "../include/kern_simd.h"
 
 // TODO Running kmalloc2 and then kmalloc causes early page fault? I think
 
@@ -357,14 +358,7 @@ m3ApiRawFunction(doom_drawFrame) {
                         u32 *src_row = src + y * src_pitch_px;
                         u32 *dst_row0 = dst + (dst_y_off + y * 2) * dst_pitch_px + dst_x_off;
                         u32 *dst_row1 = dst_row0 + dst_pitch_px;
-
-                        for (u32 x = 0; x < copy_w; x++) {
-                            u32 p = src_row[x];
-                            dst_row0[x * 2]     = p;
-                            dst_row0[x * 2 + 1] = p;
-                            dst_row1[x * 2]     = p;
-                            dst_row1[x * 2 + 1] = p;
-                        }
+                        simd_scale_row_2x(dst_row0, dst_row1, src_row, copy_w);
                     }
                 } else {
                     for (u32 y = 0; y < copy_h; y++) {
