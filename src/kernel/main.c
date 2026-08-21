@@ -54,6 +54,7 @@ extern u0 enable_sse(u0);
 volatile u64 sw = 0;
 
 u0 timer_handler(const registers_t *reg) {
+    PROFILE_SCOPE("timer_handler");
     sw += 10;
     apic_eoi(0xFFFFFFFF10000000);
     sched_run_next();
@@ -62,7 +63,7 @@ u0 timer_handler(const registers_t *reg) {
 u0 delay(u64 ms) {
     volatile u64 start = sw;
     while (sw - start < ms) {
-        asm volatile("hlt");
+        sched_yield();
     }
 }
 
@@ -94,6 +95,19 @@ u0 shimmy(u0 *arg) {
     }
 }
 
+
+u0 direct_fb_fill(u32 color) {
+    if (framebuffer_request.response && framebuffer_request.response->framebuffer_count > 0) {
+        struct limine_framebuffer *fb = framebuffer_request.response->framebuffers[0];
+        if (fb && fb->address) {
+            u32 *pixels = (u32 *)fb->address;
+            u64 count = (fb->pitch / 4) * fb->height;
+            for (u64 i = 0; i < count; i++) {
+                pixels[i] = color;
+            }
+        }
+    }
+}
 
 void kern_entry(void) {
     // Init all 3 serial channels — COM1 (PRIMARY), COM2 (TEST), COM3 (PROFILE)
@@ -170,8 +184,8 @@ void kern_entry(void) {
     pci_device_t *pci_uart = system.pci_list_head;
     while (pci_uart) {
         // Look specifically for the WCH CH382 (1C00:3253)
-        if (pci_uart->class_code == 0x7 && pci_uart->subclass == 0x0) {
-            serial_outsf("PCI: Found Serial Controller (Class 0x7, Sub 0x0) at %X:%X\n", pci_uart->vendor_id,
+        if (pci_uart->vendor_id == 0x1C00 && pci_uart->device_id == 0x3253) {
+            serial_outsf("PCI: Found WCH CH382 Serial Controller at %X:%X\n", pci_uart->vendor_id,
                          pci_uart->device_id);
             break;
         }
@@ -215,6 +229,12 @@ void kern_entry(void) {
                  display_main->surface.address, (int)display_main->surface.width, (int)display_main->surface.height);
     serial_outsf("Video: %d framebuffer(s) found. Primary: %dx%d %dbpp\n",
                  fb_count, display_main->surface.width, display_main->surface.height, display_main->surface.bpp);
+
+    // Early visual confirmation on bare-metal screen
+    if (display_main->surface.address) {
+        mem_set(display_main->surface.address, 0x1B, display_main->surface.pitch * display_main->surface.height);
+        screen_draw();
+    }
 
     u64 stack_ptr;
     asm volatile("mov %%rsp, %0" : "=r"(stack_ptr));
@@ -270,7 +290,7 @@ void kern_entry(void) {
     serial_outsl("FS: IDE Initialized");
     PROFILE_INSTANT("boot:ide_done");
 
-    ext2_init();
+    ext2_init(module_request.response);
     serial_outsl("FS: Ext2 driver initialized");
     PROFILE_INSTANT("boot:ext2_done");
 
@@ -291,6 +311,8 @@ void kern_entry(void) {
     // line below once the USB HID boot-protocol decoder is fully wired
     // up and ready to take over input.
     interrupt_register(33, (void (*)(const registers_t *)) keyboard_handle_keypress);
+    sti();
+    serial_outsl("Interrupts: Timer and keyboard handlers registered (sti)");
 
     // Initialize terminal sessions (cell buffers, ANSI parser state, etc.)
     term_init(width / font_width, (height - font_height * 2) / font_height);
@@ -328,6 +350,25 @@ void kern_entry(void) {
                 continue;
             }
 
+            // Global Ctrl+C: always intercepts and terminates the active session's foreground process
+            if (k == KEY_CTRL_C) {
+                if (active_session && active_session->foreground_proc != NULL) {
+                    kern_process_t *fp = (kern_process_t *) active_session->foreground_proc;
+                    i32 pid = fp->pid;
+                    screen_push_line("^C");
+                    serial_outsf("Killed Process %d with Ctrl+C\n", pid);
+                    sched_kill_process(pid);
+                    active_session->foreground_proc = NULL;
+                    active_session->owns_framebuffer = false;
+                    keyboard_fg_flush();
+                } else {
+                    typingbuf[0] = 0;
+                    screen_push_line("^C");
+                    serial_outsf("Ctrl+C (no foreground process)\n");
+                }
+                continue;
+            }
+
             i32 len = str_len(typingbuf);
 
             // If the active session has a foreground process, forward
@@ -343,10 +384,6 @@ void kern_entry(void) {
                 typingbuf[0] = 0;
             } else if (k == '\b') {
                 if (len > 0) typingbuf[len - 1] = '\0';
-            } else if (k == KEY_CTRL_C) {
-                typingbuf[0] = 0;
-                screen_push_line("^C");
-                serial_outsf("Ctrl+C (no foreground process)\n");
             } else if (k == KEY_DOWN) {
                 ++screen_text_scroll;
             } else if (k == KEY_UP) {

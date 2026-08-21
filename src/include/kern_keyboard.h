@@ -51,7 +51,10 @@ i32 screen_get_line_count();
 void kbd_inject_scancode_set1(u8 sc, bool is_extended, bool is_down);
 
 u8 keyboard_peek_key();
-u0 toggle_capslock();
+u0 set_keyboard_leds(u8 state);
+u0 toggle_capslock(void);
+u0 debug_delay_ms(u32 approx_ms);
+u0 debug_blink_code(u8 blinks);
 
 // Raw scancode state for game input (doom etc)
 extern bool scancode_pressed[128];

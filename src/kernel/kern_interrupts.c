@@ -162,7 +162,7 @@ u0 interrupts_init() {
     apic_init();
 
     asm volatile ("lidt %0" : : "m" (idtr));
-    sti();
+    // Keep interrupts disabled until timer and keyboard handlers are registered in main.c
 }
 
 

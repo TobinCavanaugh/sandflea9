@@ -40,34 +40,67 @@ u0 ext2_switch_drive(drive_t *d) {
     bgdt_cache  = d->bgdt_cache;
 }
 
+// ── Sector-level I/O abstraction ─────────────────────────────────────────
+
+static u0 drive_read_sectors(drive_t *d, u32 lba, u32 count, u8 *buffer) {
+    if (!d || !d->present || !buffer || count == 0) return;
+    if (d->backend == DRIVE_BACKEND_RAMDISK) {
+        u64 offset = (u64)lba * 512;
+        u64 bytes = (u64)count * 512;
+        if (offset + bytes <= d->ram_size && d->ram_base != null) {
+            mem_copy(buffer, d->ram_base + offset, bytes);
+        } else {
+            mem_set(buffer, 0, bytes);
+        }
+    } else if (d->backend == DRIVE_BACKEND_IDE) {
+        ide_read_sectors(d->ide_drive_sel, lba, (u8)count, buffer);
+    }
+}
+
+static u0 drive_write_sectors(drive_t *d, u32 lba, u32 count, u8 *buffer) {
+    if (!d || !d->present || !buffer || count == 0) return;
+    if (d->backend == DRIVE_BACKEND_RAMDISK) {
+        u64 offset = (u64)lba * 512;
+        u64 bytes = (u64)count * 512;
+        if (offset + bytes <= d->ram_size && d->ram_base != null) {
+            mem_copy(d->ram_base + offset, buffer, bytes);
+        }
+    } else if (d->backend == DRIVE_BACKEND_IDE) {
+        ide_write_sectors(d->ide_drive_sel, lba, (u8)count, buffer);
+    }
+}
+
 // ── Drive initialization ──────────────────────────────────────────────────
 
 u0 ext2_init_drive(drive_t *d) {
     if (!d || !d->present) return;
 
     u8 sb_buf[1024];
-    ide_read_sectors(d->ide_drive_sel, 2, 2, sb_buf);
+    drive_read_sectors(d, 2, 2, sb_buf);
     mem_copy((u8 *)&d->sb, sb_buf, sizeof(ext2_superblock_t));
 
     if (d->sb.magic_signature != EXT2_SIGNATURE) {
-        serial_outsf("EXT2: Drive '%s' — no valid ext2 signature, skipping\n", d->name);
+        serial_outsf("EXT2: Drive '%s' — no valid ext2 signature (0x%X), skipping\n",
+                     d->name, (u32)d->sb.magic_signature);
         d->present = false;
         return;
     }
 
     d->block_size = 1024 << d->sb.block_size;
 
-    // Cache BGDT — read directly with IDE (no ext2_read_block dependency)
+    // Cache BGDT — read directly with drive_read_sectors (no ext2_read_block dependency)
     u32 bgdt_block = (d->block_size == 1024) ? 2 : 1;
     u32 sectors_per_block = d->block_size / 512;
     u32 start_sector = bgdt_block * sectors_per_block;
     d->bgdt_cache = kmalloc(d->block_size);
     if (d->bgdt_cache) {
-        ide_read_sectors(d->ide_drive_sel, start_sector, sectors_per_block, d->bgdt_cache);
+        drive_read_sectors(d, start_sector, sectors_per_block, d->bgdt_cache);
     }
 
-    serial_outsf("EXT2: Drive '%s' — label '%.16s', %d bytes/block, BGDT cached\n",
-                 d->name, d->sb.volume_name, d->block_size);
+    serial_outsf("EXT2: Drive '%s' (%s) — label '%.16s', %d bytes/block, BGDT cached\n",
+                 d->name,
+                 (d->backend == DRIVE_BACKEND_RAMDISK) ? "RAMDISK" : "IDE",
+                 d->sb.volume_name, d->block_size);
 }
 
 // ============================================================================
@@ -281,13 +314,24 @@ void block_cache_stats(u32 *out_hits, u32 *out_misses, u32 *out_used, u32 *out_c
 
 u0 ext2_read_block(u32 block_id, u8 *buffer) {
     PROFILE_SCOPE("ext2:read_block");
-    if (!buffer || block_size == 0) return;
+    if (!buffer || block_size == 0 || !active_drive || !active_drive->present) return;
+
+    // Fast-path: RAM disk read is direct memory copy
+    if (active_drive->backend == DRIVE_BACKEND_RAMDISK) {
+        u64 offset = (u64)block_id * block_size;
+        if (offset + block_size <= active_drive->ram_size && active_drive->ram_base != null) {
+            mem_copy(buffer, active_drive->ram_base + offset, block_size);
+        } else {
+            mem_set(buffer, 0, block_size);
+        }
+        return;
+    }
 
     // Lazy-init cache on first read
     if (!g_bc) bc_init();
 
     // Check cache first
-    if (bc_lookup(active_drive->ide_drive_sel, block_id, buffer)) {
+    if (bc_lookup(active_drive->drive_id, block_id, buffer)) {
         return;  // cache hit — no IDE I/O
     }
 
@@ -297,13 +341,25 @@ u0 ext2_read_block(u32 block_id, u8 *buffer) {
     ide_read_sectors(active_drive->ide_drive_sel, start_sector, sectors_per_block, buffer);
 
     // Insert into cache for next time
-    bc_insert(active_drive->ide_drive_sel, block_id, buffer);
+    bc_insert(active_drive->drive_id, block_id, buffer);
 }
 
 u0 ext2_read_blocks(u32 start_block, u32 count, u8 *buffer) {
     PROFILE_SCOPE("ext2:read_blocks");
-    if (!buffer || block_size == 0 || count == 0) return;
+    if (!buffer || block_size == 0 || count == 0 || !active_drive || !active_drive->present) return;
     if (count == 1) { ext2_read_block(start_block, buffer); return; }
+
+    // Fast-path: RAM disk multi-block read is single direct memory copy
+    if (active_drive->backend == DRIVE_BACKEND_RAMDISK) {
+        u64 offset = (u64)start_block * block_size;
+        u64 bytes = (u64)count * block_size;
+        if (offset + bytes <= active_drive->ram_size && active_drive->ram_base != null) {
+            mem_copy(buffer, active_drive->ram_base + offset, bytes);
+        } else {
+            mem_set(buffer, 0, bytes);
+        }
+        return;
+    }
 
     // Lazy-init cache so multi-block reads also use it
     if (!g_bc) bc_init();
@@ -316,7 +372,7 @@ u0 ext2_read_blocks(u32 start_block, u32 count, u8 *buffer) {
     bool all_cached = (g_bc != NULL);
     if (all_cached) {
         for (u32 i = 0; i < count; i++) {
-            if (!bc_lookup(active_drive->ide_drive_sel, start_block + i,
+            if (!bc_lookup(active_drive->drive_id, start_block + i,
                            buffer + i * block_size)) {
                 all_cached = false;
                 break;   // first miss → fall through to IDE path
@@ -348,38 +404,79 @@ u0 ext2_read_blocks(u32 start_block, u32 count, u8 *buffer) {
     // evict the previous one, burning CPU for zero future benefit.
     if (g_bc && count <= g_bc_cap) {
         for (u32 i = 0; i < count; i++) {
-            bc_insert(active_drive->ide_drive_sel, start_block + i,
+            bc_insert(active_drive->drive_id, start_block + i,
                       buffer + i * block_size);
         }
     }
 }
 
 u0 ext2_write_block(u32 block_id, u8 *buffer) {
-    if (!buffer || block_size == 0) return;
+    if (!buffer || block_size == 0 || !active_drive || !active_drive->present) return;
+
+    if (active_drive->backend == DRIVE_BACKEND_RAMDISK) {
+        u64 offset = (u64)block_id * block_size;
+        if (offset + block_size <= active_drive->ram_size && active_drive->ram_base != null) {
+            mem_copy(active_drive->ram_base + offset, buffer, block_size);
+        }
+        return;
+    }
+
     u32 sectors_per_block = block_size / 512;
     u32 start_sector = block_id * sectors_per_block;
     ide_write_sectors(active_drive->ide_drive_sel, start_sector, sectors_per_block, buffer);
 
     // Keep cache coherent — update or insert the written data
     // (write-through with cache fill, so subsequent reads hit)
-    if (g_bc) bc_update(active_drive->ide_drive_sel, block_id, buffer);
+    if (g_bc) bc_update(active_drive->drive_id, block_id, buffer);
 }
 
-u0 ext2_init() {
+u0 ext2_init(struct limine_module_response *mod_resp) {
     // Probe and initialize all present drives
-    // Drive 0 (master) = "A" (boot drive, always present if detected)
+    // Drive 0 (master) = "A" (boot drive)
     drive_count = 0;
 
     drives[0].name[0] = 'A';
     drives[0].name[1] = '\0';
-    drives[0].ide_drive_sel = IDE_DRIVE_MASTER;
-    drives[0].present = true;
-    ext2_init_drive(&drives[0]);
+    drives[0].drive_id = 0;
+    drives[0].present = false;
+    drives[0].backend = DRIVE_BACKEND_NONE;
+
+    // 1. Try IDE Master first if hardware detected
+    if (ide_detect(IDE_DRIVE_MASTER)) {
+        drives[0].backend = DRIVE_BACKEND_IDE;
+        drives[0].ide_drive_sel = IDE_DRIVE_MASTER;
+        drives[0].drive_id = IDE_DRIVE_MASTER;
+        drives[0].present = true;
+        ext2_init_drive(&drives[0]);
+    }
+
+    // 2. If IDE Master was not detected or failed, fallback to Limine boot module (RAM disk)
+    if (!drives[0].present && mod_resp && mod_resp->module_count > 0) {
+        for (u64 i = 0; i < mod_resp->module_count; i++) {
+            struct limine_file *mod = mod_resp->modules[i];
+            if (!mod || !mod->address || mod->size == 0) continue;
+
+            drives[0].backend = DRIVE_BACKEND_RAMDISK;
+            drives[0].ram_base = (u8 *)mod->address;
+            drives[0].ram_size = mod->size;
+            drives[0].drive_id = (u8)(i + 1);
+            drives[0].present = true;
+            ext2_init_drive(&drives[0]);
+            if (drives[0].present) {
+                serial_outsf("EXT2: Mounted Limine boot module '%s' (%lld KiB) as RAMDISK drive 'A'\n",
+                             mod->path ? mod->path : "disk.img", (long long)(mod->size / 1024));
+                break;
+            }
+        }
+    }
+
     if (drives[0].present) drive_count++;
 
-    // Drive 1 (slave) = "B" (persistent data drive)
+    // Drive 1 = "B" (persistent data drive if IDE Slave is present)
     drives[1].name[0] = 'B';
     drives[1].name[1] = '\0';
+    drives[1].drive_id = IDE_DRIVE_SLAVE;
+    drives[1].backend = DRIVE_BACKEND_IDE;
     drives[1].ide_drive_sel = IDE_DRIVE_SLAVE;
     drives[1].present = ide_detect(IDE_DRIVE_SLAVE);
     if (drives[1].present) {
@@ -387,10 +484,14 @@ u0 ext2_init() {
         if (drives[1].present) drive_count++;
     }
 
-    // Activate drive 0 (A) by default
+    // Activate drive 0 (A) by default if present
     if (drives[0].present) {
         ext2_switch_drive(&drives[0]);
-        serial_outsl("EXT2: Active drive set to 'A'");
+        serial_outsf("EXT2: Active drive set to '%s' (%s)\n",
+                     drives[0].name,
+                     (drives[0].backend == DRIVE_BACKEND_RAMDISK) ? "RAMDISK" : "IDE");
+    } else {
+        serial_outsl("EXT2: WARNING - No root filesystem (drive 'A') found!");
     }
 }
 
@@ -539,7 +640,7 @@ void ext2_set_bmap(ext2_inode_t *inode, u32 logical_block, u32 phys_block) {
                     ext2_write_block((target), zbuf); kfree(zbuf); }     \
         else { u8 zsec[512]; mem_set(zsec, 0, 512);                      \
                for (u32 _s = 0; _s < block_size/512; _s++)               \
-                   ide_write_sectors(active_drive->ide_drive_sel,(target)*(block_size/512)+_s,1,zsec);} \
+                   drive_write_sectors(active_drive,(target)*(block_size/512)+_s,1,zsec);} \
         inode->blocks += block_size / 512;                               \
     } while(0)
 
@@ -802,6 +903,25 @@ bool ext2_explorer_next(ext2_explorer_t *explorer, ext2_explore_result_t *result
             // Skip . and ..
             if (entry_name_len == 1 && entry->name[0] == '.') continue;
             if (entry_name_len == 2 && entry->name[0] == '.' && entry->name[1] == '.') continue;
+
+            // Check for circular directory loops in the recursion stack
+            bool already_in_stack = false;
+            for (int s = 0; s <= explorer->stack_ptr; s++) {
+                if (explorer->stack[s].inode_no == entry_inode) {
+                    already_in_stack = true;
+                    break;
+                }
+            }
+            if (already_in_stack) continue;
+
+            // Fallback for ext2 filesystems without EXT2_FEATURE_INCOMPAT_FILETYPE
+            if (entry_type == 0) {
+                ext2_inode_t temp_ino;
+                if (ext2_get_inode(entry_inode, &temp_ino)) {
+                    if ((temp_ino.mode & 0xF000) == 0x4000) entry_type = 2; // Directory
+                    else if ((temp_ino.mode & 0xF000) == 0x8000) entry_type = 1; // Regular file
+                }
+            }
 
             mem_set(result->name, 0, 256);
             mem_copy((u8 *) result->name, (u8 *) entry->name, entry_name_len);

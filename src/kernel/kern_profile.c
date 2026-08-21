@@ -52,7 +52,11 @@ u0 profile_init(void) {
     u64 t0 = rdtsc();
     pit_perform_sleep();
     u64 t1 = rdtsc();
-    tsc_per_us = (t1 - t0) / 10000;     // 10 ms = 10 000 µs
+    u64 elapsed = (t1 > t0) ? (t1 - t0) : 0;
+    tsc_per_us = elapsed / 10000;     // 10 ms = 10 000 µs
+    if (tsc_per_us == 0) {
+        tsc_per_us = 2500;            // Fallback default: ~2.5 GHz
+    }
 
     if (!serial_channel_present(SERIAL_CH_PROFILE)) return;
 

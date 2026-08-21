@@ -22,6 +22,7 @@
 #include "wasm3-0.5.0/source/m3_api_libc.h"
 #include "../include/kern_ide.h"
 #include "../include/kern_xhci.h"
+#include "../include/kern_ipc.h"
 
 // TODO Running kmalloc2 and then kmalloc causes early page fault? I think
 
@@ -412,12 +413,12 @@ u0 wasm_doom_test(u0 *arg) {
     // (the user could press F2 and session_switch before we set the flag).
     term_session_t *doom_session = active_session;
     doom_session_ref = doom_session;
-    if (doom_session) doom_session->owns_framebuffer = true;
 
     // --- Boot-phase profiling: track elapsed time at each step ---
     // sw has ~10ms granularity; times in timer ticks (~10ms each)
     #define BOOT_LOG(step) serial_outsf("DOOM BOOT[%lld]: " step "\n", sw)
 
+    screen_push_linef("DOOM: Opening %s...", wasm_path);
     BOOT_LOG("Opening WASM file...");
     i32 fd = fs_open(wasm_path);
     if (fd < 0) {
@@ -426,6 +427,7 @@ u0 wasm_doom_test(u0 *arg) {
     }
 
     u32 size = fs_size(fd);
+    screen_push_linef("DOOM: Reading %s (%d KB)...", wasm_path, size / 1024);
     BOOT_LOG("Allocating WASM buffer...");
     wasm_data = kmalloc(size);
     if (!wasm_data) {
@@ -438,6 +440,7 @@ u0 wasm_doom_test(u0 *arg) {
     fs_close(fd);
     BOOT_LOG("WASM file loaded.");
 
+    screen_push_line("DOOM: Initializing Wasm3 runtime...");
     BOOT_LOG("Initializing environment...");
     env = m3_NewEnvironment();
     if (!env) {
@@ -453,6 +456,7 @@ u0 wasm_doom_test(u0 *arg) {
     }
 
     IM3Module module = NULL;
+    screen_push_line("DOOM: Parsing WASM module...");
     BOOT_LOG("Parsing module...");
     M3Result result = m3_ParseModule(env, &module, wasm_data, size);
     if (result) {
@@ -465,6 +469,7 @@ u0 wasm_doom_test(u0 *arg) {
         goto Label_Done;
     }
 
+    screen_push_line("DOOM: Loading module bytecode...");
     BOOT_LOG("Loading module...");
     result = m3_LoadModule(runtime, module);
     if (result) {
@@ -595,6 +600,7 @@ u0 wasm_doom_test(u0 *arg) {
 
     serial_outsl("WASM DOOM: Entering game loop...");
     screen_push_line("DOOM: Running! Press ESC to exit...");
+    if (doom_session) doom_session->owns_framebuffer = true;
 
     // Clear the real framebuffer to black (we draw directly, so backbuffer clear won't help)
     {
@@ -1037,11 +1043,12 @@ u0 handle_command() {
         // `ls //` — list drives (handled in-kernel)
         if (ls_path && ls_path[0] == '/' && ls_path[1] == '/' && ls_path[2] == '\0') {
             screen_push_line("DRIVES:");
-            screen_push_line("NAME  IDE       STATUS");
-            screen_push_line("----  ---       ------");
+            screen_push_line("NAME  TYPE      STATUS");
+            screen_push_line("----  ----      ------");
             for (u8 i = 0; i < MAX_DRIVES; i++) {
                 if (!drives[i].present) continue;
-                const char *sel_name = (drives[i].ide_drive_sel == IDE_DRIVE_MASTER) ? "MASTER" : "SLAVE";
+                const char *sel_name = (drives[i].backend == DRIVE_BACKEND_RAMDISK) ? "RAMDISK" :
+                                       (drives[i].ide_drive_sel == IDE_DRIVE_MASTER) ? "MASTER" : "SLAVE";
                 const char *active = (&drives[i] == active_drive) ? " < active" : "";
                 screen_push_linef("%-4s  %-8s  %s%s", drives[i].name, sel_name,
                                   drives[i].present ? "ok" : "--", active);
@@ -1259,6 +1266,65 @@ u0 handle_command() {
     if (cmd_word_eq(word, "usb")) {
         PROFILE_SCOPE("cmd:usb");
         xhci_list_devices();
+        goto Label_Free;
+    }
+
+    if (cmd_word_eq(word, "ipc")) {
+        PROFILE_SCOPE("cmd:ipc");
+        // Spawn sender + receiver, create shmem, wire them together.
+        // Type into the shell — sender reads stdin byte-by-byte, writes
+        // each byte to shared memory, signals receiver. Receiver prints
+        // to stdout. On EOF (Ctrl+D not available, use empty read or
+        // switch session to kill), sender sends TERM, both exit.
+
+        // 1. Spawn both WASM programs (fire-and-forget, not foreground).
+        wasm_spawn_opts_t s_opts = {
+            .path = "ipc_sender.wasm",
+            .foreground = false,
+            .wait = false,
+        };
+        i32 pid_s = wasm_spawn(&s_opts);
+        if (pid_s < 0) {
+            screen_push_line("ipc: failed to spawn sender");
+            goto Label_Free;
+        }
+
+        wasm_spawn_opts_t r_opts = {
+            .path = "ipc_receiver.wasm",
+            .foreground = false,
+            .wait = false,
+        };
+        i32 pid_r = wasm_spawn(&r_opts);
+        if (pid_r < 0) {
+            screen_push_line("ipc: failed to spawn receiver");
+            goto Label_Free;
+        }
+
+        // 2. Get process pointers.
+        kern_task_t *t_s = sched_get_by_pid(pid_s);
+        kern_task_t *t_r = sched_get_by_pid(pid_r);
+        if (!t_s || !t_r || !t_s->process || !t_r->process) {
+            screen_push_line("ipc: could not find spawned processes");
+            goto Label_Free;
+        }
+        kern_process_t *p_s = t_s->process;
+        kern_process_t *p_r = t_r->process;
+
+        // 3. Create shared memory.
+        u64 va_s = 0, va_r = 0;
+        kern_shmem_t *sh = shmem_create(p_s, p_r, PAGE_SIZE,
+                                        PAGE_RW | PAGE_USER, &va_s, &va_r);
+        if (!sh) {
+            screen_push_line("ipc: shmem_create failed");
+            goto Label_Free;
+        }
+
+        // 4. Hand off setup data to each child.
+        ipc_setup_send(pid_s, va_s, pid_r);
+        ipc_setup_send(pid_r, va_r, pid_s);
+
+        screen_push_linef("ipc: sender pid=%d, receiver pid=%d, shmem ready", pid_s, pid_r);
+        screen_push_line("ipc: type to send messages via IPC");
         goto Label_Free;
     }
 

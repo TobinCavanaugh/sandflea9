@@ -37,6 +37,14 @@ typedef struct kern_process {
     // generic reaper (e.g. a WASM m3 runtime + environment).
     u0 (*cleanup_fn)(u0 *);
     u0  *cleanup_ctx;
+
+    // IPC: pending signal bitmask (see kern_ipc.h for bit definitions).
+    u32 pending_signals;
+
+    // IPC setup: parent-to-child handoff (see kern_ipc.h::ipc_setup_send).
+    bool ipc_setup_ready;       // true after ipc_setup_send() delivers data
+    u64  ipc_setup_shmem_va;    // shared memory VA for this child
+    i32  ipc_setup_peer_pid;    // PID of the other child in the pair
 } kern_process_t;
 
 extern kern_process_t *foreground_proc;
@@ -47,7 +55,9 @@ typedef struct kern_task {
     i32 state; // 0 ready, 1 running, 2 blocked, 3 dead
     u0 *stack_base;
     kern_process_t *process;
-    struct kern_task * next;
+    struct kern_task * next;        // master list (all tasks, for PID lookup & reaping)
+    struct kern_task * next_ready;  // ready queue (READY/RUNNING only — O(1) dispatch)
+    u32 signal_wait_mask;  // IPC: signal mask this task is blocked on
 } kern_task_t;
 
 #define TASK_STATE_READY 0
@@ -59,6 +69,14 @@ u0 sched_init();
 u0 sched_yield();
 u0 sched_run_next();
 u0 sched_thread_exit();
+
+// Block the calling task (remove from ready queue, set BLOCKED, yield).
+// Caller must have interrupts enabled.
+u0 sched_block_current(void);
+
+// Unblock a task (insert into ready queue, set READY).
+// Safe to call from any context (does its own irq management).
+u0 sched_unblock(kern_task_t *task);
 
 kern_task_t * sched_create_thread(u0(*function)(u0*), u0* arg);
 kern_task_t * sched_create_process_thread(kern_process_t *proc, u0(*function)(u0*), u0* arg);

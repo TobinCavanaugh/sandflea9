@@ -14,6 +14,7 @@ extern kern_entry
 
 _start:
     cli
+    call enable_sse
     push rbp
     mov rbp, rsp
     call kern_entry

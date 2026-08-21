@@ -88,8 +88,9 @@ u0 init_pmm(struct limine_memmap_request memmap_request) {
 u64 pmm_alloc_page() {
     u64 irq = save_irq_and_disable();
     if (free_list_head == 0) {
-        serial_outs("OUT OF MEMORY. FAILING HARD\n");
-        for (;;);
+        serial_outs("OUT OF PHYSICAL MEMORY. pmm_alloc_page returning 0\n");
+        restore_irq(irq);
+        return 0;
     }
     u64 ret = free_list_head;
     u64 *virt_ptr = (u64 *) (ret + hhdm_offset);

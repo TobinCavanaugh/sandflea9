@@ -29,6 +29,7 @@ C_SOURCES=(
     "src/kernel/kern_ext2.c"
     "src/kernel/kern_fs.c"
     "src/kernel/kern_ide.c"
+    "src/kernel/kern_ipc.c"
     "src/kernel/kern_interrupts.c"
     "src/kernel/kern_keyboard.c"
     "src/kernel/kern_mem.c"

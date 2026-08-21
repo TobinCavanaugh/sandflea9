@@ -104,13 +104,23 @@ typedef struct {
 
 #define MAX_DRIVES 4
 
+typedef enum {
+    DRIVE_BACKEND_NONE = 0,
+    DRIVE_BACKEND_IDE,
+    DRIVE_BACKEND_RAMDISK
+} drive_backend_t;
+
 typedef struct {
-    char name[32];               // "A", "data", etc.
-    u8   ide_drive_sel;          // IDE_DRIVE_MASTER or IDE_DRIVE_SLAVE
-    bool present;                // true if drive was detected
-    ext2_superblock_t sb;        // per-drive superblock
-    u32  block_size;             // per-drive block size (1024 << sb.block_size)
-    u8  *bgdt_cache;             // per-drive block group descriptor table
+    char            name[32];               // "A", "data", etc.
+    drive_backend_t backend;                // DRIVE_BACKEND_IDE or DRIVE_BACKEND_RAMDISK
+    u8              ide_drive_sel;          // IDE_DRIVE_MASTER or IDE_DRIVE_SLAVE
+    u8              drive_id;               // Unique drive identifier for block cache
+    u8             *ram_base;               // Base pointer for RAM disk
+    u64             ram_size;               // Size in bytes for RAM disk
+    bool            present;                // true if drive was detected
+    ext2_superblock_t sb;                   // per-drive superblock
+    u32             block_size;             // per-drive block size (1024 << sb.block_size)
+    u8             *bgdt_cache;             // per-drive block group descriptor table
 } drive_t;
 
 extern drive_t drives[MAX_DRIVES];
@@ -122,7 +132,7 @@ extern drive_t *active_drive;
 extern char cwd[256];
 
 
-u0 ext2_init();
+u0 ext2_init(struct limine_module_response *mod_resp);
 u0 ext2_init_drive(drive_t *d);
 u0 ext2_switch_drive(drive_t *d);
 ext2_inode_t *find_file_in_root(char *target_name);

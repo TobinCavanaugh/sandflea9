@@ -39,12 +39,12 @@ qemu-system-x86_64.exe -cdrom sandfleaOS.iso ^
     -display sdl ^
     -vga std ^
     -cpu qemu64 ^
-    -drive file=disk.img,format=raw,index=0,media=disk ^
+    -drive file=iso_root\disk.img,format=raw,index=0,media=disk ^
     -drive file=data.img,format=raw,index=1,media=disk ^
     -serial file:serial_output.log ^
     -serial file:test_log.txt ^
     -serial file:profile.log ^
-    -accel tcg ^
+    -accel whpx ^
     -device qemu-xhci,id=xhci ^
     -vnc :0 ^
-    -qmp tcp:127.0.0.1:4444,server,nowait
+    -qmp tcp:127.0.0.1:4545,server,nowait

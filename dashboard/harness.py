@@ -3,14 +3,14 @@ dashboard/harness.py — sandfleaOS test harness.
 
 Sibling server to log_server.py. Serves the harness UI on :8080 by
 default, exposing a small set of routes that proxy to the running QEMU
-process via QEMU's QMP protocol (JSON-RPC over TCP :4444).
+process via QEMU's QMP protocol (JSON-RPC over TCP :4545).
 
 Architecture: see media/writings/dashboard_harness_plan.md.
 
 Run directly:
-    python harness.py                 # default port 8080, qmp at localhost:4444
+    python harness.py                 # default port 8080, qmp at localhost:4545
     python harness.py --port 9000     # custom port
-    python harness.py --qmp-host 192.168.1.10 --qmp-port 4444
+    python harness.py --qmp-host 192.168.1.10 --qmp-port 4545
 
 Open:
     http://localhost:8080/harness     # the harness UI
@@ -64,7 +64,7 @@ class QmpClient:
     """Lightweight synchronous QMP wrapper around an asyncio TCP loop.
 
     Usage:
-        q = QmpClient("127.0.0.1", 4444)
+        q = QmpClient("127.0.0.1", 4545)
         q.start()
         try:
             result = q.execute("query-status")
@@ -375,7 +375,7 @@ class HarnessState:
         if self._is_refused_connection(base.get("last_error")):
             base["setup_hint"] = (
                 "QEMU is missing the QMP flag. Run wr-harness.bat "
-                "(not wr.bat) so QEMU binds -qmp tcp:127.0.0.1:4444,server,nowait."
+                "(not wr.bat) so QEMU binds -qmp tcp:127.0.0.1:4545,server,nowait."
             )
         if extra:
             base.update(extra)
@@ -525,7 +525,7 @@ class HarnessHandler(BaseHTTPRequestHandler):
             if self.state._is_refused_connection(err):
                 base["setup_hint"] = (
                     "QEMU is missing the QMP flag. Run wr-harness.bat "
-                    "(not wr.bat) so QEMU binds -qmp tcp:127.0.0.1:4444,server,nowait."
+                    "(not wr.bat) so QEMU binds -qmp tcp:127.0.0.1:4545,server,nowait."
                 )
             self._write_json(200, base)
 
@@ -868,7 +868,7 @@ def main():
     parser.add_argument("--port", type=int, default=8080, help="HTTP port (default: 8080)")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Bind address")
     parser.add_argument("--qmp-host", type=str, default="127.0.0.1", help="QEMU QMP host")
-    parser.add_argument("--qmp-port", type=int, default=4444, help="QEMU QMP port")
+    parser.add_argument("--qmp-port", type=int, default=4545, help="QEMU QMP port")
     args = parser.parse_args()
 
     HarnessHandler.state = HarnessState(args.qmp_host, args.qmp_port)

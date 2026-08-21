@@ -104,12 +104,15 @@ u0 pci_enable_device_io(pci_device_t *dev) {
 
 u0 pci_serial_putc(const pci_device_t *dev, u8 c) {
     u32 port = dev->bars[0] & 0xFFFFFFFC;
+    if (port == 0) return;
 
-    while ((inb(port + 5) & 0x20) == 0) {
-        asm volatile("nop");
+    for (u32 timeout = 0; timeout < 100000; timeout++) {
+        if ((inb(port + 5) & 0x20) != 0) {
+            outb(port, c);
+            return;
+        }
+        asm volatile("pause");
     }
-
-    outb(port, c);
 }
 
 

@@ -3,11 +3,16 @@ obj/
 # Built kernel + bootloader that goes into iso_root/. iso_root itself
 # is NOT ignored: limine-uefi-cd.bin is committed as the ISO seed.
 iso_root/kernel.elf
-disk.img
+iso_root/disk.img
+iso_root/data.img
+iso_root/EFI/
+iso_root/limine-bios-cd.bin
+iso_root/limine-bios.sys
 data.img
 sandfleaOS.iso
 *.log
 log.txt
+test_log.txt
 src/external/wabt-1.0.41/
 dashboard/node_modules
 

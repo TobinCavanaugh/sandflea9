@@ -6,23 +6,57 @@
 
 #include "../include/kern_mem.h"
 
-u0 toggle_capslock() {
-    static u8 led_state = 0;
-    led_state = led_state ^ 0x07;
+static inline void ps2_wait_write(void) {
+    for (u32 timeout = 0; timeout < 50000; timeout++) {
+        if ((inb(0x64) & 2) == 0) return;
+        asm volatile("pause");
+    }
+}
 
-    // Timeout loop 1
-    u32 timeout = 100000;
-    while ((inb(0x64) & 2) != 0 && --timeout);
-    if (timeout == 0) return; // Controller stuck, abort
-
+u0 set_keyboard_leds(u8 state) {
+    ps2_wait_write();
     outb(0x60, 0xED);
 
-    // Timeout loop 2
-    timeout = 100000;
-    while ((inb(0x64) & 2) != 0 && --timeout);
-    if (timeout == 0) return;
+    for (volatile int d = 0; d < 10000; d++) asm volatile("pause");
 
-    outb(0x60, led_state);
+    ps2_wait_write();
+    outb(0x60, state & 0x07);
+}
+
+u0 toggle_capslock(void) {
+    static u8 led_state = 0;
+    led_state = (led_state == 0) ? 0x07 : 0x00;
+    set_keyboard_leds(led_state);
+}
+
+u0 debug_delay_ms(u32 approx_ms) {
+    u64 start = 0;
+    asm volatile("rdtsc" : "=A"(start));
+    u64 target_ticks = (u64)approx_ms * 2500000ULL;
+    while (1) {
+        u64 now = 0;
+        asm volatile("rdtsc" : "=A"(now));
+        if (now - start >= target_ticks) break;
+        asm volatile("pause");
+    }
+}
+
+extern u0 direct_fb_fill(u32 color);
+
+u0 debug_blink_code(u8 blinks) {
+    while (1) {
+        for (u8 i = 0; i < blinks; i++) {
+            set_keyboard_leds(0x07);   // All LEDs ON
+            direct_fb_fill(0x00FF00);   // Screen Bright Green
+            debug_delay_ms(500);
+
+            set_keyboard_leds(0x00);   // All LEDs OFF
+            direct_fb_fill(0x000000);   // Screen Black
+            debug_delay_ms(500);
+        }
+        direct_fb_fill(0x000055);       // Screen Dark Blue pause
+        debug_delay_ms(1500);
+    }
 }
 
 char get_ascii_from_scancode(u8 scancode) {

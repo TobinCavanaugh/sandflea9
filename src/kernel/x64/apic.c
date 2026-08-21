@@ -58,9 +58,14 @@ u0 apic_timer_init(u64 lapic_base, u8 vector, u32 ms) {
     pit_perform_sleep();
     lapic_write(lapic_base, LAPIC_TIMER_LVT, LAPIC_LVT_MASKED);
 
-    u32 ticks_in_10ms = 0xFFFFffff - *(volatile u32 *) (lapic_base + LAPIC_TIMER_CURR);
+    u32 curr = *(volatile u32 *) (lapic_base + LAPIC_TIMER_CURR);
+    u32 ticks_in_10ms = 0xFFFFffff - curr;
 
     u32 tpms = ticks_in_10ms / 10;
+    if (tpms == 0) {
+        // Fallback default (~100k ticks/ms) if PIT is not present/clocked
+        tpms = 100000;
+    }
     u32 total_ticks = tpms * ms;
 
     // Export calibration for the profiler
@@ -97,8 +102,12 @@ u0 pit_prepare_sleep(u16 ms) {
 
 u0 pit_perform_sleep() {
     u16 last_tick = 0xFFFF; // Start with the max possible value
+    u32 stuck_count = 0;
+    u32 iterations = 0;
 
-    while (1) {
+    while (iterations < 2000000) {
+        iterations++;
+
         // Send Latch Command to Channel 0 (0x00) to read the current count
         outb(0x43, 0x00);
 
@@ -107,19 +116,30 @@ u0 pit_perform_sleep() {
         u8 hi = inb(0x40);
         u16 current_tick = lo | (hi << 8);
 
+        // Floating bus / non-existent PIT detection
+        if (current_tick == 0xFFFF) {
+            stuck_count++;
+            if (stuck_count > 50) {
+                // PIT not ticking or not present on this hardware
+                break;
+            }
+        } else {
+            stuck_count = 0;
+        }
+
         // In Mode 0, the counter decrements.
-        // 1. If current_tick > last_tick, it wrapped around (reached 0 then 0xFFFF).
+        // 1. If current_tick > last_tick, it wrapped around (reached 0 then reloaded).
         if (current_tick > last_tick) {
             break;
         }
 
         // 2. If it reaches a very small number (close to 0), we are done.
-        // (Some emulators might stop at 0 instead of wrapping immediately)
         if (current_tick < 10) {
             break;
         }
 
         last_tick = current_tick;
+        asm volatile("pause");
     }
 }
 

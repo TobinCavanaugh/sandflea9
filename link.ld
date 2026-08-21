@@ -21,8 +21,17 @@ SECTIONS {
         KEEP(*(.data))   /* This is good, keep it */
     }
 
+    . = ALIGN(4096);
+    .limine_requests_start : {
+        KEEP(*(.limine_requests_start))
+    }
+
     .limine_requests : {
         KEEP(*(.limine_requests))
+    }
+
+    .limine_requests_end : {
+        KEEP(*(.limine_requests_end))
     }
 
     . = ALIGN(4096);

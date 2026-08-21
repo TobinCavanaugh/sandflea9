@@ -64,7 +64,7 @@ FS_STAMP="$OBJ_DIR/.filesystem_stamp"
 NEW_DISK_STAMP=$(disk_img_fingerprint)
 
 SHOULD_REBUILD_DISK=0
-[ ! -f disk.img ] && SHOULD_REBUILD_DISK=1
+[ ! -f "$ISO_DIR/disk.img" ] && SHOULD_REBUILD_DISK=1
 if [ -f "$FS_STAMP" ]; then
     OLD_DISK=$(sed -n '1p' "$FS_STAMP" 2>/dev/null)
     [ "$OLD_DISK" = "$NEW_DISK_STAMP" ] || SHOULD_REBUILD_DISK=1
@@ -81,11 +81,11 @@ else
     # truncate is faster than `dd if=/dev/zero` because the kernel
     # allocates sparse pages; only the ext2 metadata blocks need to be
     # zeroed, which mkfs.ext2 does anyway.
-    truncate -s 32M disk.img
-    mkfs.ext2 -F -L A disk.img
+    truncate -s 32M "$ISO_DIR/disk.img"
+    mkfs.ext2 -F -L A "$ISO_DIR/disk.img"
     ok "disk.img formatted"
 
-    debugfs -w disk.img <<EOF
+    debugfs -w "$ISO_DIR/disk.img" <<EOF
 write src/blob/testfile.txt testfile.txt
 write src/blob/a.txt a.txt
 write src/blob/b.txt b.txt
@@ -113,9 +113,9 @@ EOF
         if [ -f "obj/wasm/file_test.wasm" ]; then
             echo "write obj/wasm/file_test.wasm w"
         fi
-    } | debugfs -w disk.img
+    } | debugfs -w "$ISO_DIR/disk.img"
     log "Boot files written to disk.img"
-    ok "disk.img: $(stat -c%s disk.img) bytes"
+    ok "disk.img: $(stat -c%s "$ISO_DIR/disk.img") bytes"
 fi
 
 # ---- data.img (persistent volume) --------------------------------------

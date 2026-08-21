@@ -14,15 +14,32 @@ log "Packaging UEFI ISO"
 SHOULD_REBUILD=0
 [ ! -f sandfleaOS.iso ]                              && SHOULD_REBUILD=1
 [ "$ISO_DIR/kernel.elf"          -nt sandfleaOS.iso ] && SHOULD_REBUILD=1
+[ "$ISO_DIR/disk.img"            -nt sandfleaOS.iso ] && SHOULD_REBUILD=1
+[ "$ISO_DIR/limine.conf"          -nt sandfleaOS.iso ] && SHOULD_REBUILD=1
 [ "$LIMINE_DIR/limine-uefi-cd.bin" -nt sandfleaOS.iso ] && SHOULD_REBUILD=1
 
 if [ $SHOULD_REBUILD -eq 1 ]; then
-    log "Rebuilding ISO (kernel.elf or bootloader changed)"
+    log "Rebuilding ISO (inputs changed)"
+    mkdir -p "$ISO_DIR/EFI/BOOT"
     cp "$LIMINE_DIR/limine-uefi-cd.bin" "$ISO_DIR/"
-    xorriso -as mkisofs \
-        --efi-boot limine-uefi-cd.bin \
-        -efi-boot-part --efi-boot-image --protective-msdos-label \
-        -o sandfleaOS.iso "$ISO_DIR"
+    cp "$LIMINE_DIR/BOOTX64.EFI" "$ISO_DIR/EFI/BOOT/"
+    [ -f "$LIMINE_DIR/BOOTIA32.EFI" ] && cp "$LIMINE_DIR/BOOTIA32.EFI" "$ISO_DIR/EFI/BOOT/"
+    [ -f "$LIMINE_DIR/limine-bios-cd.bin" ] && cp "$LIMINE_DIR/limine-bios-cd.bin" "$ISO_DIR/"
+    [ -f "$LIMINE_DIR/limine-bios.sys" ] && cp "$LIMINE_DIR/limine-bios.sys" "$ISO_DIR/"
+
+    if [ -f "$ISO_DIR/limine-bios-cd.bin" ]; then
+        xorriso -as mkisofs \
+            -b limine-bios-cd.bin \
+            -no-emul-boot -boot-load-size 4 -boot-info-table \
+            --efi-boot limine-uefi-cd.bin \
+            -efi-boot-part --efi-boot-image --protective-msdos-label \
+            -o sandfleaOS.iso "$ISO_DIR"
+    else
+        xorriso -as mkisofs \
+            --efi-boot limine-uefi-cd.bin \
+            -efi-boot-part --efi-boot-image --protective-msdos-label \
+            -o sandfleaOS.iso "$ISO_DIR"
+    fi
 else
     log "sandfleaOS.iso: input unchanged, preserving mtime"
 fi

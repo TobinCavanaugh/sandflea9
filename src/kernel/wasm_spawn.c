@@ -20,6 +20,7 @@
 #include "../include/stbsupport.h"
 #include "../include/kern_ext2.h"
 #include "../include/kern_profile.h"
+#include "../include/kern_ipc.h"
 
 #include "wasm3-0.5.0/source/m3_env.h"
 #include "wasm3-0.5.0/source/m3_api_libc.h"
@@ -1504,6 +1505,13 @@ do_load:
         m3_LinkRawFunction(module, "env", "get_arg_count",   "i()",     &wasm_get_arg_count);
         m3_LinkRawFunction(module, "env", "get_arg",         "i(iii)",  &wasm_get_arg);
 
+        // 4b. IPC host functions (kern_ipc.c). Best-effort — modules that
+        //     don't import them will silently skip.
+        m3_LinkRawFunction(module, "env", "ipc_get_pid",     "i()",     &wasm_ipc_get_pid);
+        m3_LinkRawFunction(module, "env", "ipc_setup_wait",  "i(ii)",   &wasm_ipc_setup_wait);
+        m3_LinkRawFunction(module, "env", "ipc_signal_send", "i(ii)",   &wasm_ipc_signal_send);
+        m3_LinkRawFunction(module, "env", "ipc_signal_wait", "i(i)",    &wasm_ipc_signal_wait);
+
         // 5. Program-specific imports (doom-style). Best-effort: missing imports
         //    will surface as m3 errors during _start anyway.
         if (ra->link_extra) ra->link_extra(module, runtime, ra->link_user);
@@ -1686,7 +1694,6 @@ i32 wasm_spawn(const wasm_spawn_opts_t *opts) {
                     }
                     keyboard_fg_push(k);
                 }
-                screen_render_shell();
             }
             sched_yield();
         }
