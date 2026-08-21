@@ -53,6 +53,10 @@ extern u0 enable_sse(u0);
 
 volatile u64 sw = 0;
 
+i64 heartbeat1 = 0;
+i64 heartbeat2 = 0;
+i64 heartbeat3 = 0;
+
 u0 timer_handler(const registers_t *reg) {
     PROFILE_SCOPE("timer_handler");
     sw += 10;
@@ -72,10 +76,6 @@ u0 delay(u64 ms) {
 
 system_t system = {0};
 char typingbuf[255] = {0};
-
-i64 heartbeat1 = 0;
-i64 heartbeat2 = 0;
-i64 heartbeat3 = 0;
 
 
 u0 direct_fb_fill(u32 color) {
