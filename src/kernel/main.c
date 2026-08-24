@@ -40,6 +40,7 @@
 #include "../include/util_cmd.h"
 #include "../include/kern_terminal.h"
 #include "../include/kern_tests.h"
+#include "../include/kern_compositor.h"
 #include "../include/kern_ide.h"
 #include "../include/kern_fs.h"
 #include "../include/kern_profile.h"
@@ -142,6 +143,9 @@ void kern_entry(void) {
     sched_init();
     serial_outsl("Scheduler: Multi-threading support initialized");
     PROFILE_INSTANT("boot:sched_done");
+
+    compositor_init();
+    serial_outsl("Compositor: Initialized");
 
 
     system.pci_list_head = pci_init_system();
@@ -386,6 +390,14 @@ void kern_entry(void) {
 
             i32 len = str_len(typingbuf);
 
+            // If the compositor is active, route all input to it.
+            if (g_compositor_pid != -1) {
+                compositor_push_event(0, k, 0, 0);  // KEY_DOWN
+                // Also push KEY_UP so the compositor can do edge detection.
+                // (For raw text, the compositor tracks state itself.)
+                continue;
+            }
+
             // If the active session has a foreground process, forward
             // keyboard to the per-session foreground queue.
             if (active_session && active_session->foreground_proc != NULL) {
@@ -416,10 +428,12 @@ void kern_entry(void) {
             }
         }
 
-        // Render the active session (cell buffer, cursor, header bar, input prompt)
-        // If the session's foreground app takes over the framebuffer (doom),
-        // term_render() just draws the header bar and skips the cell buffer.
-        term_render();
+        // Render the active session (cell buffer, cursor, header bar, input prompt).
+        // Skip when the compositor owns the display — it handles all rendering
+        // via display.present() and we'd just overwrite its pixels.
+        if (g_compositor_pid == -1) {
+            term_render();
+        }
         asm volatile("hlt");
     }
 }

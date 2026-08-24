@@ -21,6 +21,7 @@
 #include "../include/kern_ext2.h"
 #include "../include/kern_profile.h"
 #include "../include/kern_ipc.h"
+#include "../include/kern_compositor.h"
 
 #include "wasm3-0.5.0/source/m3_env.h"
 #include "wasm3-0.5.0/source/m3_api_libc.h"
@@ -67,7 +68,7 @@ static u0 wasm_proc_cleanup(u0 *ctx) {
     wasm_run_args_t *ra = (wasm_run_args_t *) ctx;
     if (!ra) return;
     if (ra->runtime)         m3_FreeRuntime(ra->runtime);
-    // ra->env is always null — the shared g_wasm_cache_env lives forever.
+    if (ra->env)             m3_FreeEnvironment(ra->env);
     if (ra->wasm_data)       kfree(ra->wasm_data);
     if (ra->wasm_path_alloc) kfree(ra->wasm_path_alloc);
     kfree(ra);
@@ -887,7 +888,12 @@ m3ApiRawFunction(kern_wasi_fd_write) {
 
     u32 mem_size = 0;
     u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
-    if (!mem) m3ApiReturn(WESI_EINVAL);
+    serial_outsf("WASI fd_write: fd=%d iovs=0x%x len=%d nwritten=0x%x mem_sz=%u\n",
+                 fd, iovs_ptr, iovs_len, nwritten_ptr, mem_size);
+    if (!mem) {
+        serial_outsl("WASI fd_write: NULL memory — aborting");
+        m3ApiReturn(WESI_EINVAL);
+    }
 
     if (nwritten_ptr + 4 > mem_size) m3ApiReturn(WESI_EINVAL);
     if (iovs_ptr + iovs_len * 8 > mem_size) m3ApiReturn(WESI_EINVAL);
@@ -1362,6 +1368,7 @@ u0 wasm_thread_entry(u0 *arg) {
     ra->runtime   = null;
     ra->wasm_data = null;
     IM3Environment env       = null;
+    IM3Environment cache_env = null;   // long-lived env for m3_ParseModule
     IM3Runtime     runtime   = null;
     u8            *wasm_data = null;
     kern_process_t *proc = sched_get_current_process();
@@ -1392,24 +1399,43 @@ u0 wasm_thread_entry(u0 *arg) {
     }
 
     // 2. Allocate environment + runtime.
-    // Use a shared environment that lives as long as the parse cache so
-    // that cached modules' funcTypes pointers (which reference the env's
-    // linked list) remain valid across spawns.
+    //
+    // g_wasm_cache_env is a long-lived environment whose ONLY purpose is
+    // to keep parsed funcType pointers alive for cached master modules.
+    // It is NEVER passed to m3_NewRuntime — each runtime gets its own
+    // private environment so code pages (pagesReleased list) are not
+    // shared across concurrent WASM processes.  Sharing the page pool
+    // caused a data race in RemoveCodePageOfCapacity → code page
+    // corruption → #GP at consistent RIP.
+    //
+    // cache_env : long-lived, used by m3_ParseModule only.
+    // env        : per-runtime, used by m3_NewRuntime + clone environment field.
     {
         PROFILE_SCOPE("wasm:env_runtime");
         if (!g_wasm_cache_env) {
             g_wasm_cache_env = m3_NewEnvironment();
             if (!g_wasm_cache_env) {
-                screen_push_line("WASM: Could not create shared environment");
+                screen_push_line("WASM: Could not create shared parse environment");
                 goto Label_Done;
             }
         }
-        env = g_wasm_cache_env;
-        // ra->env stays null — the shared env is never freed per-spawn.
+        cache_env = g_wasm_cache_env;
+
+        // Per-runtime environment: owns this runtime's code page pool.
+        IM3Environment runtime_env = m3_NewEnvironment();
+        if (!runtime_env) {
+            screen_push_line("WASM: Could not create runtime environment");
+            goto Label_Done;
+        }
+        env = runtime_env;            // for clone / local use
+        ra->env = runtime_env;        // tracked so cleanup can free it
+
         u32 stack_bytes = ra->stack_kb * 1024u;
-        runtime = m3_NewRuntime(env, stack_bytes, null);
+        runtime = m3_NewRuntime(runtime_env, stack_bytes, null);
         if (!runtime) {
             screen_push_line("WASM: Could not create runtime");
+            m3_FreeEnvironment(runtime_env);
+            ra->env = null;
             goto Label_Done;
         }
         ra->runtime = runtime;
@@ -1450,7 +1476,7 @@ u0 wasm_thread_entry(u0 *arg) {
         // master stays unlinked.
         {
             PROFILE_SCOPE("wasm:parse");
-            result = m3_ParseModule(env, &module, wasm_data, wasm_size);
+            result = m3_ParseModule(cache_env, &module, wasm_data, wasm_size);
             if (result || !module) {
                 screen_push_linef("WASM: Parse error: %s", result ? result : "null module");
                 goto Label_Done;
@@ -1512,6 +1538,17 @@ do_load:
         m3_LinkRawFunction(module, "env", "ipc_signal_send", "i(ii)",   &wasm_ipc_signal_send);
         m3_LinkRawFunction(module, "env", "ipc_signal_wait", "i(i)",    &wasm_ipc_signal_wait);
 
+        // 4c. Compositor host functions (kern_compositor.c). Best-effort.
+        //     Non-compositor modules silently skip these.
+        m3_LinkRawFunction(module, "display", "claimCompositor", "i()",      &wasm_display_claim_compositor);
+        m3_LinkRawFunction(module, "display", "getResolution",   "i()",      &wasm_display_get_resolution);
+        m3_LinkRawFunction(module, "display", "present",         "i(i)",     &wasm_display_present);
+        m3_LinkRawFunction(module, "display", "claimBuffer",     "i()",      &wasm_display_claim_buffer);
+        m3_LinkRawFunction(module, "display", "blitFromPid",     "i(iiiiiii)", &wasm_display_blit_from_pid);
+        m3_LinkRawFunction(module, "input",   "pollEvents",      "i(ii)",    &wasm_input_poll_events);
+        m3_LinkRawFunction(module, "proc",    "spawn",           "i(iii)",   &wasm_compositor_proc_spawn);
+        m3_LinkRawFunction(module, "proc",    "signal",          "i(iii)",   &wasm_compositor_proc_signal);
+
         // 5. Program-specific imports (doom-style). Best-effort: missing imports
         //    will surface as m3 errors during _start anyway.
         if (ra->link_extra) ra->link_extra(module, runtime, ra->link_user);
@@ -1569,12 +1606,13 @@ do_load:
     serial_outsl("WASM: entering Label_Done");
 
 Label_Done:
-    // Free WASM-owned resources. After freeing, null the slot in `ra` so
-    // Cleanup — env is shared (g_wasm_cache_env), never freed per-spawn.
-    // Null everything so the cleanup hook is a no-op after normal exit.
-    if (runtime) { m3_FreeRuntime(runtime);   ra->runtime = null; }
+    // Free WASM-owned resources. Null each slot after freeing so the
+    // process cleanup hook (wasm_proc_cleanup) is a no-op after normal exit.
+    if (runtime) { m3_FreeRuntime(runtime);          ra->runtime = null; }
     serial_outsl("WASM: freed runtime");
-    if (wasm_data) { kfree(wasm_data);        ra->wasm_data = null; }
+    if (env)     { m3_FreeEnvironment(env);          ra->env = null; }
+    serial_outsl("WASM: freed environment");
+    if (wasm_data) { kfree(wasm_data);               ra->wasm_data = null; }
     if (ra->wasm_path_alloc) { kfree(ra->wasm_path_alloc); ra->wasm_path_alloc = null; }
     serial_outsl("WASM: Label_Done complete");
 }

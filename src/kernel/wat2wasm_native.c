@@ -739,16 +739,21 @@ int wat2wasm_compile(const char *wat, u32 wat_len, u8 **out_wasm, u32 *out_len) 
                     const char *sp = dt->start;
                     u32 remain = dt->len;
                     while (remain > 0) {
-                        if (*sp == '\\' && remain >= 4) {
-                            // Hex escape: \XX or \uXXXX (just pass through for now)
+                        if (*sp == '\\' && remain >= 2) {
+                            // Simple escapes: \n \t \" \\
                             if (sp[1] == 'n') { wb1(&db, '\n'); sp += 2; remain -= 2; continue; }
                             if (sp[1] == 't') { wb1(&db, '\t'); sp += 2; remain -= 2; continue; }
                             if (sp[1] == '"') { wb1(&db, '"');  sp += 2; remain -= 2; continue; }
                             if (sp[1] == '\\'){ wb1(&db, '\\'); sp += 2; remain -= 2; continue; }
-                            if (hex_v(sp[1]) >= 0 && hex_v(sp[2]) >= 0) {
+                            // Hex escape with \x prefix: \x10 → byte 0x10
+                            if (sp[1] == 'x' && remain >= 4 && hex_v(sp[2]) >= 0 && hex_v(sp[3]) >= 0) {
+                                wb1(&db, (u8)(hex_v(sp[2])*16+hex_v(sp[3]))); sp += 4; remain -= 4; continue;
+                            }
+                            // Hex escape without prefix: \10 → byte 0x10
+                            if (remain >= 3 && hex_v(sp[1]) >= 0 && hex_v(sp[2]) >= 0) {
                                 wb1(&db, (u8)(hex_v(sp[1])*16+hex_v(sp[2]))); sp += 3; remain -= 3; continue;
                             }
-                            // Unknown escape — pass through
+                            // Unknown escape — emit backslash literally, let next iteration handle the rest
                             wb1(&db, *sp); sp++; remain--;
                         } else {
                             wb1(&db, (u8)*sp); sp++; remain--;

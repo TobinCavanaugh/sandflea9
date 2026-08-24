@@ -11,6 +11,7 @@
 #include "../include/kern_terminal.h"
 #include "../include/kern_profile.h"
 #include "../include/kern_ipc.h"
+#include "../include/kern_compositor.h"
 
 extern u0 task_switch_asm(kern_task_t *current, kern_task_t *next);
 
@@ -126,6 +127,9 @@ u0 process_exit(kern_process_t *proc) {
     // IPC: clean up shared memory regions this process participates in.
     // Must run BEFORE mem_regions teardown so the PML4 is still valid.
     ipc_process_cleanup(proc);
+
+    // Compositor: clean up any display buffer tracking for this process.
+    compositor_child_cleanup(proc->pid);
 
     // Per-process cleanup hook. Runs while the process is still alive enough
     // for the hook to dereference `proc`; we invoke it BEFORE we start

@@ -26,6 +26,7 @@ err()  { printf "${_RED}[%s] ERR${_NC} %s\n" "$(basename "${BASH_SOURCE[1]:-lib}
 # script agrees on the same definitions.
 C_SOURCES=(
     "src/kernel/kern_asmstubs.c"
+    "src/kernel/kern_compositor.c"
     "src/kernel/kern_ext2.c"
     "src/kernel/kern_fs.c"
     "src/kernel/kern_ide.c"
@@ -91,7 +92,7 @@ CFLAGS="-m64 -c -O3 -ffreestanding -nostdlib -g -nostdinc -fno-pic -fno-pie \
         -mno-red-zone -mcmodel=kernel -I src/include -I src/external \
         -I$GCC_INCLUDE \
         -I src/kernel/wasm3-0.5.0/source -D d_m3FixedHeap=false \
-        -Dd_m3SkipMemoryBoundsCheck=1 -Dd_m3SkipStackCheck=1 -D d_m3HasWASI=1 \
+        -Dd_m3SkipStackCheck=1 -D d_m3HasWASI=1 \
         -Dd_m3VerboseErrorMessages=0 \
         -ffast-math -DNDEBUG"
 

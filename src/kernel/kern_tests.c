@@ -1358,10 +1358,11 @@ u0 handle_command() {
         // to stdout. On EOF (Ctrl+D not available, use empty read or
         // switch session to kill), sender sends TERM, both exit.
 
-        // 1. Spawn both WASM programs (fire-and-forget, not foreground).
+        // 1. Spawn sender as foreground (so keyboard input routes to it)
+        //    and receiver as background (it only writes to stdout).
         wasm_spawn_opts_t s_opts = {
             .path = "ipc_sender.wasm",
-            .foreground = false,
+            .foreground = true,
             .wait = false,
         };
         i32 pid_s = wasm_spawn(&s_opts);
@@ -1406,6 +1407,22 @@ u0 handle_command() {
 
         screen_push_linef("ipc: sender pid=%d, receiver pid=%d, shmem ready", pid_s, pid_r);
         screen_push_line("ipc: type to send messages via IPC");
+        goto Label_Free;
+    }
+
+    if (cmd_word_eq(word, "wm")) {
+        PROFILE_SCOPE("cmd:wm");
+        // Launch the compositor. It claims the display and takes over all input.
+        // Ctrl+C kills it and returns to shell.
+        wasm_spawn_opts_t opts = {
+            .path = "wm.wasm",
+            .foreground = true,
+            .wait = false,
+        };
+        i32 pid = wasm_spawn(&opts);
+        if (pid >= 0) {
+            screen_push_linef("wm: compositor PID %d launched", pid);
+        }
         goto Label_Free;
     }
 
