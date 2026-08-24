@@ -44,10 +44,21 @@ static term_session_t *doom_session_ref = NULL;
 // --- Doom profiling ---
 // NOTE: sw timer has 10ms granularity — short ops (<10ms) will report as 0
 #define PROFILE_EVERY_N 30  // dump stats every N frames
-static u64   prof_kbd_time    = 0;  // keyboard polling
-static u64   prof_tick_time   = 0;  // tickGame execution
-static u64   prof_blit_time   = 0;  // drawFrame (direct-to-fb blit)
-static u64   prof_loop_total  = 0;  // active CPU per iteration
+static u64   prof_kbd_time    = 0;  // keyboard polling (sw ticks)
+static u64   prof_tick_time   = 0;  // tickGame execution (sw ticks)
+static u64   prof_blit_time   = 0;  // drawFrame (sw ticks)
+static u64   prof_loop_total  = 0;  // wall time per iteration (sw ticks)
+static u64   prof_cpu_ticks   = 0;  // CPU actually granted to doom (run_ticks)
+static u64   prof_blit_us     = 0;  // blit wall time in µs (rdtsc)
+static u64   fps_cpu_ms       = 0;  // on-screen: CPU ms/frame (last 30-frame block)
+static u64   fps_blit_ms      = 0;  // on-screen: blit ms/frame (last 30-frame block)
+
+// --- Doom FPS counter (SSFN overlay, top-left) ---
+// sw is in milliseconds (timer increments by 10 per 10ms tick).
+#define FPS_UPDATE_MS 500   // recompute the FPS number this often
+static u64 fps_frame_count = 0;
+static u64 fps_last_time    = 0;
+static u32 fps_current      = 0;
 
 u0 test_lsr(char *path_arg) {
     char *path = path_arg ? path_arg : "/";
@@ -320,6 +331,7 @@ m3ApiRawFunction(doom_drawFrame) {
     // aspect-correct integer scaling for high-resolution displays.
     if (doom_frame_width > 0 && doom_frame_height > 0) {
         u64 t_blit_start = sw;
+        u64 t_blit_us_start = profile_now_us();
         u32 memory_size = 0;
         u8 *mem = m3_GetMemory(runtime, &memory_size, 0);
         if (mem) {
@@ -376,6 +388,41 @@ m3ApiRawFunction(doom_drawFrame) {
                 }
 
                 prof_blit_time += (sw - t_blit_start);
+                prof_blit_us += profile_now_us() - t_blit_us_start;
+
+                // --- FPS counter overlay (top-left, SSFN) ---
+                // Every drawFrame wipes the whole screen (full-frame blit),
+                // so redraw the counter every frame; only recompute the
+                // number every FPS_UPDATE_MS.
+                fps_frame_count++;
+                if (fps_last_time == 0) fps_last_time = sw;
+                if (sw - fps_last_time >= FPS_UPDATE_MS) {
+                    fps_current = (u32)((fps_frame_count * 1000) / (sw - fps_last_time));
+                    fps_frame_count = 0;
+                    fps_last_time = sw;
+                }
+
+                // Temporarily point SSFN at the real framebuffer (Doom owns
+                // it directly), draw the counter, then restore the terminal's
+                // backbuffer destination.
+                ssfn_buf_t saved_dst = ssfn_dst;
+                ssfn_dst.ptr = (u8 *)disp->trueAddress;
+                ssfn_dst.w   = (i16)disp->surface.width;
+                ssfn_dst.h   = (i16)disp->surface.height;
+                ssfn_dst.p   = (u16)disp->surface.pitch;
+                ssfn_dst.x   = 4;   // small margin from the top-left corner
+                ssfn_dst.y   = 4;
+                ssfn_dst.fg  = 0xFFFFFFFF;  // white text
+                ssfn_dst.bg  = COLOR_BLACK; // solid box behind each glyph
+                // C = CPU ms/frame actually granted by the scheduler,
+                // B = blit ms/frame. If C is ~half of 1000/fps, the
+                // round-robin is wasting CPU on the halting idle thread.
+                char fps_buf[32];
+                stbsp_snprintf(fps_buf, sizeof(fps_buf), "FPS:%u C:%llu B:%llu",
+                               fps_current, fps_cpu_ms, fps_blit_ms);
+                ssfn_puts(fps_buf);
+                ssfn_dst = saved_dst;
+
                 // No screen_draw() needed — we wrote directly to trueAddress
             }
         }
@@ -633,6 +680,12 @@ u0 wasm_doom_test(u0 *arg) {
         }
     }
 
+    // CPU accounting: snapshot our task's run_ticks so we can measure how
+    // much CPU the scheduler actually grants us vs. wall time (a round-robin
+    // that alternates with a halting idle thread gives us only ~50%).
+    kern_task_t *doom_task = sched_get_current_task();
+    u64 last_cpu_ticks = doom_task ? doom_task->run_ticks : 0;
+
     while (true) {
         u64 t_loop_start = sw;
 
@@ -678,6 +731,13 @@ u0 wasm_doom_test(u0 *arg) {
 
         prof_loop_total += (sw - t_loop_start);
 
+        // CPU accounting: how much CPU the scheduler granted us this frame.
+        if (doom_task) {
+            u64 now_ticks = doom_task->run_ticks;
+            prof_cpu_ticks += now_ticks - last_cpu_ticks;
+            last_cpu_ticks = now_ticks;
+        }
+
         // Dump profiling stats every N frames (times in timer ticks, ~10ms each)
         // and yield every ~10 frames so the main loop can service keyboard
         // (TTY switching). Most multitasking is handled by the preemptive
@@ -687,14 +747,20 @@ u0 wasm_doom_test(u0 *arg) {
             prof_frame_count++;
             if (prof_frame_count % PROFILE_EVERY_N == 0) {
                 serial_outsf(
-                    "PROFILE[%d frames, ~%dms per tick]: kbd=%-4lld tick=%-5lld blit=%-4lld active=%-5lld\n",
-                    PROFILE_EVERY_N, 10,
-                    prof_kbd_time, prof_tick_time, prof_blit_time, prof_loop_total
+                    "PROFILE[%d frames]: wall=%-4lldms cpu=%-4lldms blit=%-4lldms\n",
+                    PROFILE_EVERY_N,
+                    prof_loop_total,           // wall time (all ticks, whoever ran)
+                    prof_cpu_ticks * 10,       // CPU actually granted to doom
+                    prof_blit_us / 1000        // blit wall time
                 );
+                fps_cpu_ms  = (prof_cpu_ticks * 10) / PROFILE_EVERY_N;
+                fps_blit_ms = (prof_blit_us / 1000) / PROFILE_EVERY_N;
                 prof_kbd_time = 0;
                 prof_tick_time = 0;
                 prof_blit_time = 0;
                 prof_loop_total = 0;
+                prof_cpu_ticks = 0;
+                prof_blit_us = 0;
             }
             if (prof_frame_count % 10 == 0) {
                 sched_yield();

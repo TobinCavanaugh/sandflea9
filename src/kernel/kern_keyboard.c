@@ -3,7 +3,7 @@
 //
 
 #include "../include/kern_keyboard.h"
-
+#include "../include/kern_sched.h"
 #include "../include/kern_mem.h"
 
 static inline void ps2_wait_write(void) {
@@ -332,6 +332,11 @@ u0 keyboard_handle_keypress(registers_t *t) {
 // feed set-1 make/break events through this function.
 void kbd_inject_scancode_set1(u8 sc, bool is_extended, bool is_down) {
     if (sc >= 128) return;
+
+    // The idle (boot/shell) thread is skipped by the round-robin while
+    // other threads run; wake it so it can service this input (TTY
+    // switching, Ctrl+C, shell typing). Safe from ISR context.
+    sched_idle_wake();
 
     if (is_down) {
         // Track raw scancode state for doom & game input

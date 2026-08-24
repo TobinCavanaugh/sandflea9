@@ -37,9 +37,13 @@
 #include "kern_serial.h"
 
 // ── Compile-time toggle ─────────────────────────────────────────────────────
-// Define PROFILE_ENABLED=0 to strip all profiling at compile time.
+// Profiling emits serial events to COM3. It is OFF by default because the
+// timer-ISR scope alone costs ~29% of all CPU time in QEMU (serial writes
+// busy-wait ~260us/char at 38400 baud, 2 lines per 10ms tick).
+// Enable explicitly with a profiling build:
+//   PROFILE=1 bash build/build.sh   (or `set PROFILE=1` then wb.bat)
 #ifndef PROFILE_ENABLED
-# define PROFILE_ENABLED 1
+# define PROFILE_ENABLED 0
 #endif
 
 // ── Time type ───────────────────────────────────────────────────────────────
@@ -53,6 +57,9 @@ u0 profile_init(void);
 // Return µs-precision timestamp (available even when PROFILE_ENABLED == 0;
 // useful for ad-hoc timing in application code).
 profile_time_t profile_now_us(void);
+
+// Return the calibrated invariant-TSC frequency in MHz (0 until calibrated).
+u64 profile_tsc_mhz(void);
 
 // ── Core macros ─────────────────────────────────────────────────────────────
 
@@ -109,6 +116,8 @@ static u0 profile_scope_cleanup(profile_scope_t *s) {
 #define PROFILE_END(name)         ((void)0)
 #define PROFILE_INSTANT(...)      ((void)0)
 #define PROFILE_SCOPE(name)       ((void)0)
+#define PROFILE_AUTO_BEGIN        ((void)0)
+#define PROFILE_AUTO_END          ((void)0)
 
 #endif // PROFILE_ENABLED
 

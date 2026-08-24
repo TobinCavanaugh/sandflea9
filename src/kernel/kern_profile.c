@@ -41,13 +41,18 @@ profile_time_t profile_now_us(void) {
     return rdtsc() / tsc_per_us;
 }
 
+u64 profile_tsc_mhz(void) {
+    return tsc_per_us;                  // TSC ticks per µs == MHz
+}
+
 // ── profile_init ────────────────────────────────────────────────────────────
 
 u0 profile_init(void) {
-#if PROFILE_ENABLED
     // Calibrate TSC against the PIT (8254 channel 0, one-shot mode).
     // The PIT runs at 1.193182 MHz; 10 ms = 11930 counts, independent
     // of the APIC timer or any virtualisation speed scaling.
+    // Calibrated unconditionally (cheap, one-time) so profile_now_us() and
+    // profile_tsc_mhz() stay useful even when PROFILE_ENABLED == 0.
     pit_prepare_sleep(10);
     u64 t0 = rdtsc();
     pit_perform_sleep();
@@ -58,6 +63,7 @@ u0 profile_init(void) {
         tsc_per_us = 2500;            // Fallback default: ~2.5 GHz
     }
 
+#if PROFILE_ENABLED
     if (!serial_channel_present(SERIAL_CH_PROFILE)) return;
 
     // Emit a metadata header so post-processors can identify the stream.

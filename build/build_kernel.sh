@@ -148,6 +148,7 @@ log "  parallel jobs: $PARALLEL_MAX"
 # build; in-flight workers become orphaned briefly but that's fine —
 # the build is failing anyway. No shared .o files = no corruption.
 PIDS=()
+SRCS=()
 
 for src in "${C_SOURCES[@]}"; do
     # Flatten nested path for object name (e.g. src_kernel_kern_ext2.o).
@@ -172,12 +173,15 @@ for src in "${C_SOURCES[@]}"; do
         # hit the cap, so #PIDS stays <= PARALLEL_MAX throughout.
         gcc $CFLAGS "$src" -o "$obj_path" &
         PIDS+=($!)
+        SRCS+=("$src")
         if [ "${#PIDS[@]}" -ge "$PARALLEL_MAX" ]; then
             reap_pid="${PIDS[0]}"
+            reap_src="${SRCS[0]}"
             if wait "$reap_pid"; then
                 PIDS=("${PIDS[@]:1}")
+                SRCS=("${SRCS[@]:1}")
             else
-                err "gcc failed (pid $reap_pid processing $src) -- aborting"
+                err "gcc failed (pid $reap_pid processing $reap_src) -- aborting"
                 exit 1
             fi
         fi
@@ -185,9 +189,9 @@ for src in "${C_SOURCES[@]}"; do
 done
 
 # Drain remaining workers.
-for pid in "${PIDS[@]}"; do
-    if ! wait "$pid"; then
-        err "gcc failed (pid $pid) -- aborting"
+for i in "${!PIDS[@]}"; do
+    if ! wait "${PIDS[$i]}"; then
+        err "gcc failed (pid ${PIDS[$i]} processing ${SRCS[$i]}) -- aborting"
         exit 1
     fi
 done

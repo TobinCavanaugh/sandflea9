@@ -58,6 +58,8 @@ typedef struct kern_task {
     struct kern_task * next;        // master list (all tasks, for PID lookup & reaping)
     struct kern_task * next_ready;  // ready queue (READY/RUNNING only — O(1) dispatch)
     u32 signal_wait_mask;  // IPC: signal mask this task is blocked on
+    u64 run_ticks;         // CPU accounting: 10ms quanta actually granted
+                           // to this task (credited in the timer ISR).
 } kern_task_t;
 
 #define TASK_STATE_READY 0
@@ -80,6 +82,14 @@ u0 sched_unblock(kern_task_t *task);
 
 kern_task_t * sched_create_thread(u0(*function)(u0*), u0* arg);
 kern_task_t * sched_create_process_thread(kern_process_t *proc, u0(*function)(u0*), u0* arg);
+
+// Idle-thread wakeup: the boot/shell thread (tid 0) is skipped by the
+// round-robin while other threads are READY, so compute threads (e.g. the
+// Doom WASM loop) get the full CPU instead of alternating with a halting
+// idle thread. The keyboard ISR calls sched_idle_wake() when input arrives;
+// the main loop calls sched_idle_clear() after draining it.
+u0 sched_idle_wake(void);
+u0 sched_idle_clear(void);
 kern_process_t * process_create();
 u0 process_exit(kern_process_t *proc);
 

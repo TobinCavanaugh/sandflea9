@@ -82,10 +82,24 @@ ASM_SOURCES=(
 )
 
 # -I src/include MUST come first.
+# `-nostdinc` strips ALL standard include dirs — including GCC's private
+# one that ships compiler builtin headers (emmintrin.h, arm_neon.h, ...)
+# which src/include/kern_simd.h needs. Re-add only that private dir;
+# the kernel's own -I dirs still take precedence over it.
+GCC_INCLUDE="$(gcc -print-file-name=include)"
 CFLAGS="-m64 -c -O3 -ffreestanding -nostdlib -g -nostdinc -fno-pic -fno-pie \
         -mno-red-zone -mcmodel=kernel -I src/include -I src/external \
+        -I$GCC_INCLUDE \
         -I src/kernel/wasm3-0.5.0/source -D d_m3FixedHeap=false \
         -Dd_m3SkipMemoryBoundsCheck=1 -Dd_m3SkipStackCheck=1 -D d_m3HasWASI=1 \
+        -Dd_m3VerboseErrorMessages=0 \
         -ffast-math -DNDEBUG"
+
+# Runtime profiling (COM3 serial trace events) is opt-in — it costs ~29% of
+# CPU when the timer-ISR scope is active. Enable with:
+#   PROFILE=1 bash build/build.sh   (or: set PROFILE=1  then wb.bat)
+if [ -n "$PROFILE" ]; then
+    CFLAGS="$CFLAGS -DPROFILE_ENABLED=1"
+fi
 ASMFLAGS="-f elf64 -g"
 LDFLAGS="-m elf_x86_64 -T link.ld -build-id=none -z max-page-size=0x1000"

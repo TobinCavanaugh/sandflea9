@@ -58,12 +58,19 @@ i64 heartbeat2 = 0;
 i64 heartbeat3 = 0;
 
 u0 timer_handler(const registers_t *reg) {
+    // PROFILE_SCOPE here is gated by PROFILE_ENABLED (default OFF, see
+    // kern_profile.h). When enabled it emits 2 serial lines per 10ms tick
+    // and busy-waits ~260us/char at 38400 baud — ~29% of all CPU time in
+    // QEMU — so only enable it in profiling builds (PROFILE=1).
     PROFILE_SCOPE("timer_handler");
     sw += 10;
     if (sw % 1000 == 0) heartbeat1 = heartbeat1 == 0 ? 1 : 0;
     if (sw % 500 == 0)  heartbeat2 = heartbeat2 == 0 ? 1 : 0;
     if (sw % 100 == 0)  heartbeat3 = heartbeat3 == 0 ? 1 : 0;
     apic_eoi(0xFFFFFFFF10000000);
+    // CPU accounting: credit the task that ran the previous quantum.
+    kern_task_t *cur_task = sched_get_current_task();
+    if (cur_task) cur_task->run_ticks++;
     sched_run_next();
 }
 
@@ -289,6 +296,34 @@ void kern_entry(void) {
     sti();
     serial_outsl("Interrupts: Timer and keyboard handlers registered (sti)");
 
+    // CPU clock sanity probe: on bare metal without P-state/boost init the
+    // core can sit far below its rated speed, which makes every workload
+    // (including the WASM interpreter) look ~2x slower than in WSL/QEMU.
+    // MPERF/APERF (MSR 0xE7/0xE8) report actual-vs-nominal cycle counts;
+    // gate on CPUID.06H:ECX[0] since some emulated CPUs lack them.
+    {
+        u32 eax, ebx, ecx, edx;
+        asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(6));
+        if (ecx & 1) {
+            extern u64 rdmsr(u32 msr);
+            u64 m0 = rdmsr(0xE7); // IA32_MPERF — max-possible cycles
+            u64 a0 = rdmsr(0xE8); // IA32_APERF — actual cycles
+            delay(100);
+            u64 m1 = rdmsr(0xE7);
+            u64 a1 = rdmsr(0xE8);
+            u64 mdiff = m1 - m0;
+            u64 ratio = mdiff ? ((a1 - a0) * 100) / mdiff : 0;
+            serial_outsf("CPU: clock ratio %llu%% of nominal (MPERF/APERF), TSC ~%llu MHz\n",
+                         ratio, profile_tsc_mhz());
+            if (ratio && ratio < 75) {
+                serial_outsf("CPU: WARNING — core is running at only %llu%% of nominal speed; "
+                             "init P-states/boost (IA32_PERF_CTL / EIST) to fix\n", ratio);
+            }
+        } else {
+            serial_outsf("CPU: MPERF/APERF not present; TSC ~%llu MHz\n", profile_tsc_mhz());
+        }
+    }
+
     // Initialize terminal sessions (cell buffers, ANSI parser state, etc.)
     term_init(width / font_width, (height - font_height * 2) / font_height);
     serial_outsl("Terminal: Sessions initialized");
@@ -297,6 +332,11 @@ void kern_entry(void) {
     serial_outsl("--- Initialization Complete. Entering Main Loop ---");
 
     for (;;) {
+        // We are the idle (boot/shell) thread: the scheduler skips us while
+        // other threads are ready unless the keyboard ISR woke us with
+        // pending input. Clear that wakeup now that we're running.
+        sched_idle_clear();
+
         // USB HID polling shelved — input is via PS/2 i8042.
         // Uncomment below when xHCI control-transfer DMA is fixed.
 #if 0

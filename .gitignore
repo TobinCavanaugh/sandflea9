@@ -21,5 +21,5 @@ src/kernel/musl-1.2.6
 src/blob/doom-v0.1.0.wasm
 
 
-tools/
+tools/SSFN_tools/
 src/kenney_cursor-pack.zip

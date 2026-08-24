@@ -19,6 +19,13 @@ kern_task_t *task_list_head = null;
 kern_process_t *kernel_process = null;
 kern_process_t *foreground_proc = null;
 
+// Set by the keyboard ISR when the idle (boot/shell) thread has pending
+// input; lets the scheduler give it CPU even while other threads are ready.
+static volatile u8 sched_idle_needs_run = 0;
+
+u0 sched_idle_wake(void)  { sched_idle_needs_run = 1; }
+u0 sched_idle_clear(void) { sched_idle_needs_run = 0; }
+
 u64 read_cr3();
 
 u0 sched_init() {
@@ -305,6 +312,7 @@ u0 sched_run_next() {
     kern_task_t *start = current_task;
     kern_task_t *prev = current_task;
     kern_task_t *next = current_task->next;
+    kern_task_t *idle_task = NULL;
 
     while (next != current_task) {
         if (next->state == TASK_STATE_DEAD && next->tid != 0) {
@@ -330,15 +338,30 @@ u0 sched_run_next() {
             // Skip BLOCKED tasks (or DEAD ones we can't reap yet)
             prev = next;
             next = next->next;
+        } else if (next->tid == 0 && !sched_idle_needs_run && next != start) {
+            // The idle (boot/shell) thread is READY but has no pending
+            // work (it will just hlt). Defer it so compute threads keep
+            // the full CPU instead of alternating with a halting quantum.
+            idle_task = next;
+            prev = next;
+            next = next->next;
         } else {
             // Found a READY or RUNNING task
             break;
         }
     }
 
-    // If we wrapped all the way around back to ourselves, no other
-    // READY task exists — don't context-switch.
     if (next == start) {
+        // Wrapped all the way around: nothing else wanted the CPU.
+        // If the current task is dead/exiting and we deferred the idle
+        // thread, hand the CPU to idle so the system keeps running.
+        // Otherwise stay put (we are still runnable).
+        if (idle_task && idle_task != start && start->state == TASK_STATE_DEAD) {
+            current_task = idle_task;
+            task_switch_asm(start, idle_task);
+            restore_irq(irq);
+            return;
+        }
         restore_irq(irq);
         return;
     }
