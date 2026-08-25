@@ -273,10 +273,14 @@ static IM3Module wasm_clone_module(IM3Module src, u8 *src_bytes, IM3Environment 
             // Function_Release frees non-aliased entries via m3_Free.
             for (u32 n = 0; n < sf->numNames; n++) {
                 if (sf->names[n]) {
-                    u32 l = str_len(sf->names[n]) + 1;
-                    char *copy = (char *) kmalloc(l);
-                    mem_copy((u8 *) copy, (const u8 *) sf->names[n], l);
-                    df->names[n] = copy;
+                    if (sf->names[n] == sf->import.fieldUtf8) {
+                        df->names[n] = df->import.fieldUtf8;
+                    } else {
+                        u32 l = str_len(sf->names[n]) + 1;
+                        char *copy = (char *) kmalloc(l);
+                        mem_copy((u8 *) copy, (const u8 *) sf->names[n], l);
+                        df->names[n] = copy;
+                    }
                 } else {
                     df->names[n] = NULL;
                 }
@@ -324,12 +328,6 @@ static IM3Module wasm_clone_module(IM3Module src, u8 *src_bytes, IM3Environment 
             d->import.moduleUtf8 = NULL;
             d->import.fieldUtf8  = NULL;
 
-            if (s->name) {
-                u32 l = str_len(s->name) + 1;
-                char *copy = (char *) kmalloc(l);
-                mem_copy((u8 *) copy, (const u8 *) s->name, l);
-                d->name = copy;
-            }
             if (s->import.moduleUtf8) {
                 u32 l = str_len(s->import.moduleUtf8) + 1;
                 char *copy = (char *) kmalloc(l);
@@ -341,6 +339,16 @@ static IM3Module wasm_clone_module(IM3Module src, u8 *src_bytes, IM3Environment 
                 char *copy = (char *) kmalloc(l);
                 mem_copy((u8 *) copy, (const u8 *) s->import.fieldUtf8, l);
                 d->import.fieldUtf8 = copy;
+            }
+            if (s->name) {
+                if (s->name == s->import.fieldUtf8) {
+                    d->name = d->import.fieldUtf8;
+                } else {
+                    u32 l = str_len(s->name) + 1;
+                    char *copy = (char *) kmalloc(l);
+                    mem_copy((u8 *) copy, (const u8 *) s->name, l);
+                    d->name = copy;
+                }
             }
         }
         dst->numGlobals = src->numGlobals;
@@ -414,6 +422,9 @@ m3ApiRawFunction(wasm_fd_read) {
             while (read_bytes < count) {
                 u8 k = keyboard_fg_eat();
                 if (k != 0) {
+                    if (k == 4) { // Ctrl+D -> EOF
+                        m3ApiReturn((i32) 0);
+                    }
                     if (k == '\r') k = '\n';
                     if (k == '\b') {
                         if (read_bytes > 0) read_bytes--;
@@ -702,13 +713,17 @@ m3ApiRawFunction(kern_wasi_args_sizes_get) {
     if (argc_ptr + 4 > mem_size || argv_buf_size_ptr + 4 > mem_size)
         m3ApiReturn(WESI_EINVAL);
 
-    *(i32*)(mem + argc_ptr) = (i32)s_wasi_ctx.argc;
+    kern_process_t *proc = sched_get_current_process();
+    u32 argc = (proc && proc->argc > 0) ? (u32)proc->argc : 0;
+    char **argv = proc ? proc->argv : null;
+
+    *(i32*)(mem + argc_ptr) = (i32)argc;
 
     // Calculate total buffer size: sum of strlen(arg[i]) + 1 for each arg
     u32 buf_size = 0;
-    for (u32 i = 0; i < s_wasi_ctx.argc && i < 16; i++) {
-        if (s_wasi_ctx.argv[i])
-            buf_size += str_len(s_wasi_ctx.argv[i]) + 1;
+    for (u32 i = 0; i < argc && i < 16; i++) {
+        if (argv && argv[i])
+            buf_size += str_len(argv[i]) + 1;
     }
     *(i32*)(mem + argv_buf_size_ptr) = (i32)buf_size;
 
@@ -730,16 +745,20 @@ m3ApiRawFunction(kern_wasi_args_get) {
     u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
     if (!mem) m3ApiReturn(WESI_EINVAL);
 
+    kern_process_t *proc = sched_get_current_process();
+    u32 argc = (proc && proc->argc > 0) ? (u32)proc->argc : 0;
+    char **argv = proc ? proc->argv : null;
+
     u32 str_off = argv_buf_ptr;
-    for (u32 i = 0; i < s_wasi_ctx.argc && i < 16; i++) {
-        if (!s_wasi_ctx.argv[i]) break;
+    for (u32 i = 0; i < argc && i < 16; i++) {
+        if (!argv || !argv[i]) break;
 
         // Write pointer to argv table
         if (argv_ptr + i * 4 + 4 > mem_size) m3ApiReturn(WESI_EINVAL);
         *(u32*)(mem + argv_ptr + i * 4) = str_off;
 
         // Write string
-        const char *s = s_wasi_ctx.argv[i];
+        const char *s = argv[i];
         u32 len = str_len(s) + 1;
         if (str_off + len > mem_size) m3ApiReturn(WESI_EINVAL);
         mem_copy(mem + str_off, (const u8*)s, len);
@@ -1533,16 +1552,21 @@ do_load:
 
         // 4b. IPC host functions (kern_ipc.c). Best-effort — modules that
         //     don't import them will silently skip.
-        m3_LinkRawFunction(module, "env", "ipc_get_pid",     "i()",     &wasm_ipc_get_pid);
-        m3_LinkRawFunction(module, "env", "ipc_setup_wait",  "i(ii)",   &wasm_ipc_setup_wait);
-        m3_LinkRawFunction(module, "env", "ipc_signal_send", "i(ii)",   &wasm_ipc_signal_send);
-        m3_LinkRawFunction(module, "env", "ipc_signal_wait", "i(i)",    &wasm_ipc_signal_wait);
+        m3_LinkRawFunction(module, "env", "ipc_get_pid",          "i()",     &wasm_ipc_get_pid);
+        m3_LinkRawFunction(module, "env", "ipc_setup_wait",       "i(ii)",   &wasm_ipc_setup_wait);
+        m3_LinkRawFunction(module, "env", "ipc_signal_send",      "i(ii)",   &wasm_ipc_signal_send);
+        m3_LinkRawFunction(module, "env", "ipc_signal_wait",      "i(i)",    &wasm_ipc_signal_wait);
+        m3_LinkRawFunction(module, "env", "ipc_shmem_read_byte",  "i(i)",    &wasm_ipc_shmem_read_byte);
+        m3_LinkRawFunction(module, "env", "ipc_shmem_write_byte", "i(ii)",   &wasm_ipc_shmem_write_byte);
+        m3_LinkRawFunction(module, "env", "ipc_shmem_read",       "i(iii)",  &wasm_ipc_shmem_read);
+        m3_LinkRawFunction(module, "env", "ipc_shmem_write",      "i(iii)",  &wasm_ipc_shmem_write);
 
         // 4c. Compositor host functions (kern_compositor.c). Best-effort.
         //     Non-compositor modules silently skip these.
         m3_LinkRawFunction(module, "display", "claimCompositor", "i()",      &wasm_display_claim_compositor);
         m3_LinkRawFunction(module, "display", "getResolution",   "i()",      &wasm_display_get_resolution);
         m3_LinkRawFunction(module, "display", "present",         "i(i)",     &wasm_display_present);
+        m3_LinkRawFunction(module, "display", "presentRect",     "i(iiiii)", &wasm_display_present_rect);
         m3_LinkRawFunction(module, "display", "claimBuffer",     "i()",      &wasm_display_claim_buffer);
         m3_LinkRawFunction(module, "display", "blitFromPid",     "i(iiiiiii)", &wasm_display_blit_from_pid);
         m3_LinkRawFunction(module, "input",   "pollEvents",      "i(ii)",    &wasm_input_poll_events);

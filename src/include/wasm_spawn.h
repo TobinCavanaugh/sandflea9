@@ -53,6 +53,10 @@ extern const void * wasm_ipc_get_pid(IM3Runtime runtime, IM3ImportContext _ctx, 
 extern const void * wasm_ipc_setup_wait(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
 extern const void * wasm_ipc_signal_send(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
 extern const void * wasm_ipc_signal_wait(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
+extern const void * wasm_ipc_shmem_read_byte(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
+extern const void * wasm_ipc_shmem_write_byte(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
+extern const void * wasm_ipc_shmem_read(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
+extern const void * wasm_ipc_shmem_write(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
 
 // Native WAT→WASM compiler (freestanding C, no external dependencies).
 // Compiles WAT text input into WASM binary output.

@@ -889,6 +889,94 @@ u0 handle_command() {
         goto Label_Free;
     }
 
+    if (cmd_word_eq(word, "cpu")) {
+        PROFILE_SCOPE("cmd:cpu");
+        extern u64 rdmsr(u32 msr);
+        extern u0 delay(u64 ms);
+
+        u32 eax, ebx, ecx, edx;
+        asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(6));
+
+        screen_push_line("=== CPU CLOCK & POWER DIAGNOSTICS ===");
+        screen_push_linef("Base TSC Estimate: ~%llu MHz", profile_tsc_mhz());
+
+        // Check HWP (Intel Speed Shift)
+        if (eax & (1 << 7)) {
+            u64 pm_en = rdmsr(0x770);
+            u64 hwp_req = rdmsr(0x774);
+            u64 hwp_cap = rdmsr(0x771);
+
+            u8 highest = hwp_cap & 0xFF;
+            u8 guaranteed = (hwp_cap >> 8) & 0xFF;
+            u8 lowest = (hwp_cap >> 24) & 0xFF;
+
+            u8 min_perf = hwp_req & 0xFF;
+            u8 max_perf = (hwp_req >> 8) & 0xFF;
+            u8 epp = (hwp_req >> 24) & 0xFF;
+
+            screen_push_linef("Intel HWP: ENABLED (PM_EN=%d)", (int)(pm_en & 1));
+            screen_push_linef("HWP Caps: Max=%dx (%dMHz), Base=%dx (%dMHz), Min=%dx (%dMHz)",
+                              highest, highest * 100, guaranteed, guaranteed * 100, lowest, lowest * 100);
+            screen_push_linef("HWP Req:  Min=%d, Max=%d, EPP=%d (%s)",
+                              min_perf, max_perf, epp,
+                              epp == 0 ? "Performance" : (epp == 128 ? "Balanced" : "PowerSave"));
+        } else {
+            screen_push_line("Intel HWP (Speed Shift): Not Supported / Disabled");
+        }
+
+        // Current multiplier from IA32_PERF_STATUS (0x198)
+        u64 perf_stat = rdmsr(0x198);
+        u8 cur_mult = (perf_stat >> 8) & 0xFF;
+        screen_push_linef("IA32_PERF_STATUS: multiplier %dx (~%d MHz)", cur_mult, cur_mult * 100);
+
+        // Platform limits from MSR_PLATFORM_INFO (0xCE)
+        u64 plat_info = rdmsr(0xCE);
+        u8 max_non_turbo = (plat_info >> 8) & 0xFF;
+        u8 min_lfm = (plat_info >> 48) & 0xFF;
+        screen_push_linef("Platform Info: Max Non-Turbo=%dx (%dMHz), Min LFM=%dx (%dMHz)",
+                          max_non_turbo, max_non_turbo * 100, min_lfm, min_lfm * 100);
+
+        // Thermal / Throttle status from IA32_THERM_STATUS (0x19C) & IA32_PACKAGE_THERM_STATUS (0x1B1)
+        u64 therm_core = rdmsr(0x19C);
+        u64 therm_pkg  = rdmsr(0x1B1);
+        u64 pwr_ctl    = rdmsr(0x1FC);
+
+        bool prochot_core = (therm_core & 1) != 0;
+        bool pwr_limit_core = ((therm_core >> 10) & 1) != 0;
+        bool prochot_pkg = (therm_pkg & 1) != 0;
+        bool pwr_limit_pkg = ((therm_pkg >> 10) & 1) != 0;
+        bool bd_prochot = (pwr_ctl & 1) != 0;
+
+        screen_push_linef("Throttling: PROCHOT=%d, PowerLimit=%d (Pkg: PROCHOT=%d, PwrLim=%d)",
+                          prochot_core, pwr_limit_core, prochot_pkg, pwr_limit_pkg);
+        screen_push_linef("MSR_POWER_CTL (0x1FC): %016llx (BD_PROCHOT=%d)", pwr_ctl, bd_prochot);
+
+        // Stress test under active compute load to trigger HWP dynamic turbo ramp
+        if (ecx & 1) {
+            u64 m0 = rdmsr(0xE7);
+            u64 a0 = rdmsr(0xE8);
+
+            // 50 million iterations of integer arithmetic
+            volatile u64 dummy = 0;
+            for (u64 i = 0; i < 50000000ULL; i++) {
+                dummy += i;
+            }
+
+            u64 m1 = rdmsr(0xE7);
+            u64 a1 = rdmsr(0xE8);
+            u64 stat_loaded = rdmsr(0x198);
+            u8 loaded_mult = (stat_loaded >> 8) & 0xFF;
+
+            u64 mdiff = m1 - m0;
+            u64 ratio = mdiff ? ((a1 - a0) * 100) / mdiff : 0;
+            u64 eff_mhz = (profile_tsc_mhz() * ratio) / 100;
+            screen_push_linef("Under Load (50M ops): Mult=%dx (%dMHz), Ratio=%llu%% (~%llu MHz)",
+                              loaded_mult, loaded_mult * 100, ratio, eff_mhz);
+        }
+
+        goto Label_Free;
+    }
+
     if (cmd_word_eq(word, "doom")) {
         PROFILE_BEGIN("cmd:doom");
         // Doom has a custom game loop (initGame + tickGame) that doesn't fit

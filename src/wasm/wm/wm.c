@@ -2,7 +2,7 @@
 //
 // Imports linked by wasm_spawn via host function table:
 //   display.claimCompositor, display.getResolution, display.claimBuffer,
-//   display.present, input.pollEvents, proc.spawn, proc.signal
+//   display.present, display.presentRect, input.pollEvents, proc.spawn, proc.signal
 
 // ── WASM imports ──────────────────────────────────────────────────────────
 
@@ -17,6 +17,9 @@ extern int claimBuffer(void);
 
 __attribute__((import_module("display"), import_name("present")))
 extern int present(int offset);
+
+__attribute__((import_module("display"), import_name("presentRect")))
+extern int presentRect(int offset, int x, int y, int w, int h);
 
 __attribute__((import_module("display"), import_name("blitFromPid")))
 extern int blitFromPid(int pid, int sx, int sy, int dx, int dy, int w, int h);
@@ -57,11 +60,13 @@ typedef struct {
 // ── Globals ───────────────────────────────────────────────────────────────
 
 static int   screen_w, screen_h;
-static int   fb_offset;
+static int   fb_offset;                             // active frontbuffer with cursor
+static int   clean_fb_offset;                       // clean backbuffer without cursor
 static window_t windows[MAX_WINDOWS];
 static int   window_count;
 static int   focused_idx = -1;
 static int   cursor_x, cursor_y;                    // mouse cursor position
+static int   prev_cursor_x, prev_cursor_y;          // previous cursor position for dirty damage
 static int   event_buf[EVENT_BUF_SZ * 4];
 
 // ── Tiny utilities ────────────────────────────────────────────────────────
@@ -77,14 +82,14 @@ static void wm_memcpy(char *dst, const char *src, int n) {
 // WASM32 linear memory is flat from address 0.
 #define WASM_U8(off)  ((unsigned char*)((unsigned long long)(off)))
 
-// ── Drawing ───────────────────────────────────────────────────────────────
+// ── Drawing (to clean backbuffer) ─────────────────────────────────────────
 
 static void fill_rect(int x, int y, int w, int h, unsigned int color) {
     int x1 = x + w; if (x1 > screen_w) x1 = screen_w;
     int y1 = y + h; if (y1 > screen_h) y1 = screen_h;
     if (x < 0) x = 0; if (y < 0) y = 0;
     if (x1 <= x || y1 <= y) return;
-    unsigned int *fb = (unsigned int*)WASM_U8(fb_offset);
+    unsigned int *fb = (unsigned int*)WASM_U8(clean_fb_offset);
     int span = x1 - x;
     for (int py = y; py < y1; py++) {
         unsigned int *row = &fb[py * screen_w + x];
@@ -125,7 +130,7 @@ static const unsigned char font6x8[26][8] = {
 
 static void fb_write(int x, int y, unsigned int color) {
     if (x < 0 || y < 0 || x >= screen_w || y >= screen_h) return;
-    unsigned int *fb = (unsigned int*)WASM_U8(fb_offset);
+    unsigned int *fb = (unsigned int*)WASM_U8(clean_fb_offset);
     fb[y * screen_w + x] = color;
 }
 
@@ -218,7 +223,6 @@ static void tile_all(void) {
 static void enqueue_spawn(void) {
     if (window_count >= MAX_WINDOWS) return;
 
-    // Place path string in a static buffer (.bss, past code/data)
     static char path_buf[64];
     const char *name = "hello.wasm";
     int plen = 0;
@@ -226,21 +230,14 @@ static void enqueue_spawn(void) {
     wm_memcpy(path_buf, name, plen);
     path_buf[plen] = 0;
 
-    // Enqueue the spawn request — proc.spawn just stores it.
-    // The actual spawn happens in dequeue_pending_spawns() below.
-    int ok = proc_spawn((int)(unsigned long)path_buf, 0, 0);
-    if (ok != 0) return;
+    proc_spawn((int)(unsigned long)path_buf, 0, 0);
 }
 
 // Call once per event loop iteration to drain spawn completions.
-// proc.dequeueSpawn() returns the new PID, or -1 if nothing pending.
-static void dequeue_pending_spawns(void) {
-    for (;;) {
-        if (window_count >= MAX_WINDOWS) {
-            int pid = proc_dequeue_spawn();
-            if (pid < 0) break;
-            continue;
-        }
+// Returns number of newly spawned windows.
+static int dequeue_pending_spawns(void) {
+    int spawned = 0;
+    while (window_count < MAX_WINDOWS) {
         int pid = proc_dequeue_spawn();
         if (pid < 0) break;
 
@@ -258,15 +255,47 @@ static void dequeue_pending_spawns(void) {
         window_count++;
         focus_window(idx);
         tile_all();
+        spawned++;
+    }
+    return spawned;
+}
+
+// ── Composite & Cursor ────────────────────────────────────────────────────
+
+static void draw_cursor(int cx, int cy) {
+    unsigned int *fb = (unsigned int*)WASM_U8(fb_offset);
+    for (int dy = -2; dy <= 2; dy++) {
+        int py = cy + dy;
+        if (py < 0 || py >= screen_h) continue;
+        for (int dx = -2; dx <= 2; dx++) {
+            int px = cx + dx;
+            if (px < 0 || px >= screen_w) continue;
+            unsigned int col = (dx == 0 && dy == 0) ? 0xFF000000 : 0xFFFFFFFF;
+            fb[py * screen_w + px] = col;
+        }
     }
 }
 
-// ── Composite ─────────────────────────────────────────────────────────────
+// Restores clean pixels from clean_fb_offset back into active fb_offset
+static void restore_cursor(int cx, int cy) {
+    unsigned int *fb = (unsigned int*)WASM_U8(fb_offset);
+    unsigned int *clean = (unsigned int*)WASM_U8(clean_fb_offset);
+    for (int dy = -2; dy <= 2; dy++) {
+        int py = cy + dy;
+        if (py < 0 || py >= screen_h) continue;
+        for (int dx = -2; dx <= 2; dx++) {
+            int px = cx + dx;
+            if (px < 0 || px >= screen_w) continue;
+            int idx = py * screen_w + px;
+            fb[idx] = clean[idx];
+        }
+    }
+}
 
 static void composite_frame(void) {
     fill_rect(0, 0, screen_w, screen_h, 0xFF1A1A2E);
 
-    // Draw unfocused windows first
+    // Draw unfocused windows first into clean backbuffer
     for (int i = 0; i < window_count; i++) {
         if (i == focused_idx) continue;
         window_t *w = &windows[i];
@@ -279,7 +308,7 @@ static void composite_frame(void) {
         draw_window_borders(w);
     }
 
-    // Draw focused window last (on top)
+    // Draw focused window last (on top) into clean backbuffer
     if (focused_idx >= 0 && focused_idx < window_count) {
         window_t *w = &windows[focused_idx];
         int cx = w->canvas_x + BORDER_W;
@@ -291,18 +320,15 @@ static void composite_frame(void) {
         draw_window_borders(w);
     }
 
-    // Draw mouse cursor (4x4 white dot with black outline, hot at center)
-    for (int dy = -2; dy <= 2; dy++) {
-        for (int dx = -2; dx <= 2; dx++) {
-            int px = cursor_x + dx;
-            int py = cursor_y + dy;
-            if (px < 0 || py < 0 || px >= screen_w || py >= screen_h) continue;
-            unsigned int *fb = (unsigned int*)WASM_U8(fb_offset);
-            unsigned int col = (dx == 0 && dy == 0) ? 0xFF000000 : 0xFFFFFFFF;
-            fb[py * screen_w + px] = col;
-        }
+    // Copy clean backbuffer to frontbuffer
+    unsigned int *dst = (unsigned int*)WASM_U8(fb_offset);
+    unsigned int *src = (unsigned int*)WASM_U8(clean_fb_offset);
+    int total_pixels = screen_w * screen_h;
+    for (int i = 0; i < total_pixels; i++) {
+        dst[i] = src[i];
     }
 
+    draw_cursor(cursor_x, cursor_y);
     present(fb_offset);
 }
 
@@ -333,17 +359,21 @@ void _start(void) {
     fb_offset = claimBuffer();
     if (fb_offset < 0) return;
 
+    clean_fb_offset = claimBuffer();
+    if (clean_fb_offset < 0) return;
+
     cursor_x = screen_w / 2;
     cursor_y = screen_h / 2;
+    prev_cursor_x = cursor_x;
+    prev_cursor_y = cursor_y;
     composite_frame();
 
     for (;;) {
-        // Drain spawn completions first — this is the safe point
-        // (minimal wasm3 recursion depth) for wasm_spawn calls.
-        dequeue_pending_spawns();
+        int spawned = dequeue_pending_spawns();
+        int full_redraw = (spawned > 0);
+        int mouse_moved = 0;
 
         int n = pollEvents((int)(unsigned long)event_buf, EVENT_BUF_SZ);
-        int redraw = 0;
 
         for (int i = 0; i < n; i++) {
             int type = event_buf[i * 4 + 0];
@@ -354,45 +384,72 @@ void _start(void) {
                 char k = (char)d0;
 
                 if (k == '\r' || k == '\n') {
-                    enqueue_spawn();
-                    redraw = 1;
+                    if (window_count < MAX_WINDOWS) {
+                        enqueue_spawn();
+                        dequeue_pending_spawns();
+                        full_redraw = 1;
+                    }
                 } else if (k == '\t') {
                     if (window_count > 0) {
                         focus_window((focused_idx + 1) % window_count);
-                        redraw = 1;
+                        full_redraw = 1;
                     }
                 } else if (k == 'q' || k == 'Q') {
                     if (focused_idx >= 0) {
                         close_window(focused_idx);
-                        redraw = 1;
+                        tile_all();
+                        full_redraw = 1;
                     }
                 } else if (k == '\x1B') {
                     return;
                 }
             }
             else if (type == 1) {  // MOUSE_MOVE
-                cursor_x += (int)d0;  // sign-extended dx
-                cursor_y += (int)d1;  // sign-extended dy
+                cursor_x += (int)d0;
+                cursor_y += (int)d1;
                 if (cursor_x < 0) cursor_x = 0;
                 if (cursor_y < 0) cursor_y = 0;
                 if (cursor_x >= screen_w) cursor_x = screen_w - 1;
                 if (cursor_y >= screen_h) cursor_y = screen_h - 1;
-                redraw = 1;
+                mouse_moved = 1;
             }
             else if (type == 2) {  // MOUSE_BTN
-                int btn = (int)d0;  // 1=left, 2=right, 3=middle
+                int btn = (int)d0;
                 int down = (int)d1;
                 if (btn == 1 && down) {
-                    // Left click: hit-test title bars to focus
                     int hit = hit_test(cursor_x, cursor_y);
-                    if (hit >= 0) {
+                    if (hit >= 0 && hit != focused_idx) {
                         focus_window(hit);
-                        redraw = 1;
+                        full_redraw = 1;
                     }
                 }
             }
         }
 
-        if (redraw) composite_frame();
+        if (full_redraw) {
+            composite_frame();
+            prev_cursor_x = cursor_x;
+            prev_cursor_y = cursor_y;
+        } else if (mouse_moved && (cursor_x != prev_cursor_x || cursor_y != prev_cursor_y)) {
+            // Restore exact clean pixels under previous cursor from clean backbuffer
+            restore_cursor(prev_cursor_x, prev_cursor_y);
+            // Draw cursor sprite onto active frontbuffer
+            draw_cursor(cursor_x, cursor_y);
+
+            // Compute bounding box covering both old and new cursor positions
+            int min_x = (prev_cursor_x < cursor_x ? prev_cursor_x : cursor_x) - 2;
+            int min_y = (prev_cursor_y < cursor_y ? prev_cursor_y : cursor_y) - 2;
+            int max_x = (prev_cursor_x > cursor_x ? prev_cursor_x : cursor_x) + 3;
+            int max_y = (prev_cursor_y > cursor_y ? prev_cursor_y : cursor_y) + 3;
+
+            if (min_x < 0) min_x = 0;
+            if (min_y < 0) min_y = 0;
+            if (max_x > screen_w) max_x = screen_w;
+            if (max_y > screen_h) max_y = screen_h;
+
+            presentRect(fb_offset, min_x, min_y, max_x - min_x, max_y - min_y);
+            prev_cursor_x = cursor_x;
+            prev_cursor_y = cursor_y;
+        }
     }
 }

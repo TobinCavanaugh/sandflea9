@@ -7,15 +7,19 @@
 (module
   (import "env" "fd_write" (func $fd_write (param i32 i32 i32 i32) (result i32)))
   (import "env" "ipc_setup_wait"  (func $ipc_setup_wait  (param i32 i32) (result i32)))
+  (import "env" "ipc_shmem_read_byte" (func $ipc_shmem_read_byte (param i32) (result i32)))
   (import "env" "ipc_signal_wait" (func $ipc_signal_wait (param i32) (result i32)))
 
   (memory 1)
 
+  (data (i32.const 100) "[ipc_recv] ")
+  (data (i32.const 120) "\n")
+
   ;; Offset 0:    shmem VA (u64, 8 bytes)
   ;; Offset 8:    peer PID  (i32, 4 bytes)
   ;; Offset 16:   byte from shmem (u8)
-  ;; Offset 32:   __wasi_ciovec_t for stdout {buf, len}
-  ;; Offset 40:   nwritten (i32)
+  ;; Offset 32:   __wasi_ciovec_t[3] for stdout {buf, len}
+  ;; Offset 64:   nwritten (i32)
 
   (func (export "_start")
     (local $shmem_va i64)
@@ -29,6 +33,17 @@
     (local.set $shmem_va (i64.load (i32.const 0)))
     (local.set $peer_pid  (i32.load (i32.const 8)))
 
+    ;; Setup iovs array:
+    ;; iov 0: "[ipc_recv] " (offset 100, len 11)
+    (i32.store (i32.const 32) (i32.const 100))
+    (i32.store (i32.const 36) (i32.const 11))
+    ;; iov 1: byte (offset 16, len 1)
+    (i32.store (i32.const 40) (i32.const 16))
+    (i32.store (i32.const 44) (i32.const 1))
+    ;; iov 2: "\n" (offset 120, len 1)
+    (i32.store (i32.const 48) (i32.const 120))
+    (i32.store (i32.const 52) (i32.const 1))
+
     ;; 2. Receive loop: wait for DATA_READY(1) | TERM(2)
     (block $done
       (loop $again
@@ -36,26 +51,45 @@
         (call $ipc_signal_wait (i32.const 3))  ;; 1|2 = DATA_READY|TERM
         local.set $sig
 
-        ;; Check TERM
-        (i32.and (local.get $sig) (i32.const 2))  ;; IPC_SIG_TERM
+        ;; Check TERM (bit 1 = 2)
+        (i32.and (local.get $sig) (i32.const 2))
         (if (then (br $done)))
 
-        ;; Read byte from shared memory
-        (i32.load8_u (i32.wrap_i64 (local.get $shmem_va)))
+        ;; Read byte from shared memory offset 0
+        (call $ipc_shmem_read_byte (i32.const 0))
         local.set $byte
 
-        ;; Write to stdout via fd_write(1, iovs→offset 32, 1, nwritten→offset 40)
-        (i32.store (i32.const 32) (i32.const 16))   ;; iov.buf = offset 16
-        (i32.store (i32.const 36) (i32.const 1))     ;; iov.len = 1
-        (i32.store8 (i32.const 16) (local.get $byte)) ;; store byte at offset 16
+        ;; Check sentinel 0xFF (255)
+        (i32.eq (local.get $byte) (i32.const 255))
+        (if (then (br $done)))
 
-        (call $fd_write
-          (i32.const 1)     ;; fd = stdout
-          (i32.const 32)    ;; iovs
-          (i32.const 1)     ;; iovs_len
-          (i32.const 40)    ;; nwritten
+        ;; Store byte at offset 16
+        (i32.store8 (i32.const 16) (local.get $byte))
+
+        ;; Write to stdout via fd_write
+        (i32.eq (local.get $byte) (i32.const 10))
+        (if
+          (then
+            ;; Byte is newline: write prefix + newline (iovs_len = 2)
+            (call $fd_write
+              (i32.const 1)     ;; fd = stdout
+              (i32.const 32)    ;; iovs
+              (i32.const 2)     ;; iovs_len
+              (i32.const 64)    ;; nwritten
+            )
+            drop
+          )
+          (else
+            ;; Other char: write prefix + char + newline (iovs_len = 3)
+            (call $fd_write
+              (i32.const 1)     ;; fd = stdout
+              (i32.const 32)    ;; iovs
+              (i32.const 3)     ;; iovs_len
+              (i32.const 64)    ;; nwritten
+            )
+            drop
+          )
         )
-        drop
 
         (br $again)
       )

@@ -137,8 +137,18 @@ void ipc_process_cleanup(kern_process_t *proc) {
         u64 va = is_a ? cur->va_a : cur->va_b;
         vmm_unmap_page_in_pml4(proc->cr3, va);
 
-        if (is_a) cur->a_alive = false;
-        if (is_b) cur->b_alive = false;
+        if (is_a) {
+            cur->a_alive = false;
+            if (cur->b_alive && cur->proc_b) {
+                ipc_signal_send(cur->proc_b->pid, IPC_SIG_TERM);
+            }
+        }
+        if (is_b) {
+            cur->b_alive = false;
+            if (cur->a_alive && cur->proc_a) {
+                ipc_signal_send(cur->proc_a->pid, IPC_SIG_TERM);
+            }
+        }
 
         if (!cur->a_alive && !cur->b_alive) {
             // Both sides dead — free phys page and the handle.
@@ -267,6 +277,19 @@ m3ApiRawFunction(wasm_ipc_get_pid) {
     m3ApiReturn(proc ? proc->pid : -1);
 }
 
+static kern_shmem_t *get_shmem_for_proc(kern_process_t *proc) {
+    if (!proc) return NULL;
+    kern_shmem_t *cur = g_shmem_head;
+    while (cur) {
+        if ((cur->proc_a == proc && cur->a_alive) ||
+            (cur->proc_b == proc && cur->b_alive)) {
+            return cur;
+        }
+        cur = cur->next;
+    }
+    return NULL;
+}
+
 m3ApiRawFunction(wasm_ipc_setup_wait) {
     m3ApiReturnType(i32)
     m3ApiGetArg(u32, shmem_va_ptr)    // out: shmem VA (u64 written here)
@@ -283,17 +306,12 @@ m3ApiRawFunction(wasm_ipc_setup_wait) {
     if (!proc || !task) { m3ApiReturn(-1); }
 
     u64 irq = save_irq_and_disable();
-    if (!proc->ipc_setup_ready) {
+    while (!proc->ipc_setup_ready) {
         // Block until parent calls ipc_setup_send().
         restore_irq(irq);
         sched_block_current();
         // Woken up — re-check.
         irq = save_irq_and_disable();
-    }
-
-    if (!proc->ipc_setup_ready) {
-        restore_irq(irq);
-        m3ApiReturn(-1);
     }
 
     *(u64*)(mem + shmem_va_ptr) = proc->ipc_setup_shmem_va;
@@ -315,4 +333,97 @@ m3ApiRawFunction(wasm_ipc_signal_wait) {
     m3ApiGetArg(i32, mask)
     u32 got = ipc_signal_wait((u32)mask);
     m3ApiReturn((i32)got);
+}
+
+m3ApiRawFunction(wasm_ipc_shmem_read_byte) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(u32, offset)
+
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc || offset >= PAGE_SIZE) m3ApiReturn(-1);
+
+    u64 irq = save_irq_and_disable();
+    kern_shmem_t *sh = get_shmem_for_proc(proc);
+    if (!sh) {
+        restore_irq(irq);
+        m3ApiReturn(-1);
+    }
+    u8 *shmem_ptr = (u8 *)(sh->phys_base + vmm_get_hhdm());
+    u8 val = shmem_ptr[offset];
+    restore_irq(irq);
+    m3ApiReturn((i32)val);
+}
+
+m3ApiRawFunction(wasm_ipc_shmem_write_byte) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(u32, offset)
+    m3ApiGetArg(i32, val)
+
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc || offset >= PAGE_SIZE) m3ApiReturn(-1);
+
+    u64 irq = save_irq_and_disable();
+    kern_shmem_t *sh = get_shmem_for_proc(proc);
+    if (!sh) {
+        restore_irq(irq);
+        m3ApiReturn(-1);
+    }
+    u8 *shmem_ptr = (u8 *)(sh->phys_base + vmm_get_hhdm());
+    shmem_ptr[offset] = (u8)val;
+    restore_irq(irq);
+    m3ApiReturn(0);
+}
+
+m3ApiRawFunction(wasm_ipc_shmem_read) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(u32, shmem_offset)
+    m3ApiGetArg(u32, buf_offset)
+    m3ApiGetArg(u32, len)
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem || buf_offset + len > mem_size || shmem_offset + len > PAGE_SIZE) {
+        m3ApiReturn(-1);
+    }
+
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc) m3ApiReturn(-1);
+
+    u64 irq = save_irq_and_disable();
+    kern_shmem_t *sh = get_shmem_for_proc(proc);
+    if (!sh) {
+        restore_irq(irq);
+        m3ApiReturn(-1);
+    }
+    u8 *shmem_ptr = (u8 *)(sh->phys_base + vmm_get_hhdm());
+    mem_copy(mem + buf_offset, shmem_ptr + shmem_offset, len);
+    restore_irq(irq);
+    m3ApiReturn((i32)len);
+}
+
+m3ApiRawFunction(wasm_ipc_shmem_write) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(u32, shmem_offset)
+    m3ApiGetArg(u32, buf_offset)
+    m3ApiGetArg(u32, len)
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem || buf_offset + len > mem_size || shmem_offset + len > PAGE_SIZE) {
+        m3ApiReturn(-1);
+    }
+
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc) m3ApiReturn(-1);
+
+    u64 irq = save_irq_and_disable();
+    kern_shmem_t *sh = get_shmem_for_proc(proc);
+    if (!sh) {
+        restore_irq(irq);
+        m3ApiReturn(-1);
+    }
+    u8 *shmem_ptr = (u8 *)(sh->phys_base + vmm_get_hhdm());
+    mem_copy(shmem_ptr + shmem_offset, mem + buf_offset, len);
+    restore_irq(irq);
+    m3ApiReturn((i32)len);
 }

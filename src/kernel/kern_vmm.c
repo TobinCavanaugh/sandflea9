@@ -474,6 +474,10 @@ u0 kfree(void *ptr) {
 
     heap_header_t *curr = heap_ptr;
     while (curr != null && curr->next != null) {
+        if ((u64) curr->next < KHEAP_START_ADDR || (u64) curr->next >= heap_end_addr) {
+            curr->next = null;
+            break;
+        }
         if (curr->is_free && curr->next->is_free) {
             if ((u64) curr + sizeof(heap_header_t) + curr->size == (u64) curr->next) {
                 curr->size += sizeof(heap_header_t) + curr->next->size;

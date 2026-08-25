@@ -39,7 +39,9 @@ disk_img_fingerprint() {
             "src/wasm/wat/cat.wat:cat.wat" \
             "src/wasm/wat/lsr.wat:lsr.wat" \
             "src/wasm/wat/file_test.wat:file_test.wat" \
-            "src/wasm/wat/crashme.wat:crashme.wat"
+            "src/wasm/wat/crashme.wat:crashme.wat" \
+            "src/wasm/wat/ipc_receiver.wat:ipc_receiver.wat" \
+            "src/wasm/wat/ipc_sender.wat:ipc_sender.wat"
         do
             src_path="${pair%%:*}"
             dst_path="${pair#*:}"
@@ -101,6 +103,8 @@ write src/wasm/wat/cat.wat cat.wat
 write src/wasm/wat/lsr.wat lsr.wat
 write src/wasm/wat/file_test.wat file_test.wat
 write src/wasm/wat/crashme.wat crashme.wat
+write src/wasm/wat/ipc_receiver.wat ipc_receiver.wat
+write src/wasm/wat/ipc_sender.wat ipc_sender.wat
 EOF
 
     # Auto-include all user-app .wasm files compiled by wb.bat. Filter

@@ -12,6 +12,7 @@
 #include "../include/kern_asmstubs.h"
 #include "../include/kern_ipc.h"
 #include "../include/kern_keyboard.h"
+#include "../include/kern_mouse.h"
 #include "../include/wasm_spawn.h"
 
 #include "wasm3-0.5.0/source/m3_env.h"
@@ -179,10 +180,82 @@ m3ApiRawFunction(wasm_display_present) {
     u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
     if (!mem) { m3ApiReturn(-3); }
 
-    u32 screen_bytes = (u32)(disp->surface.pitch * disp->surface.height);
-    if (offset > mem_size || mem_size - offset < screen_bytes) { m3ApiReturn(-4); }
+    u32 screen_w = (u32)disp->surface.width;
+    u32 screen_h = (u32)disp->surface.height;
+    u32 pitch    = (u32)disp->surface.pitch;
+    u32 row_bytes = screen_w * 4;
 
-    mem_copy(disp->trueAddress, mem + offset, screen_bytes);
+    u8 *dst_base = (u8 *)disp->trueAddress;
+    u8 *src_base = mem + offset;
+
+    if (pitch == row_bytes) {
+        u32 screen_bytes = pitch * screen_h;
+        if (offset > mem_size || mem_size - offset < screen_bytes) { m3ApiReturn(-4); }
+        mem_copy(dst_base, src_base, screen_bytes);
+    } else {
+        for (u32 r = 0; r < screen_h; r++) {
+            u32 dst_off = r * pitch;
+            u32 src_off = r * row_bytes;
+            if (offset + src_off + row_bytes <= mem_size) {
+                mem_copy(dst_base + dst_off, src_base + src_off, row_bytes);
+            }
+        }
+    }
+
+    m3ApiReturn(0);
+}
+
+// ── display.presentRect ────────────────────────────────────────────────────
+
+m3ApiRawFunction(wasm_display_present_rect) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(u32, offset)
+    m3ApiGetArg(i32, x)
+    m3ApiGetArg(i32, y)
+    m3ApiGetArg(i32, w)
+    m3ApiGetArg(i32, h)
+
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc) { m3ApiReturn(-1); }
+
+    u64 irq = save_irq_and_disable();
+    i32 comp_pid = g_compositor_pid;
+    restore_irq(irq);
+
+    if (comp_pid != -1 && proc->pid != comp_pid) {
+        m3ApiReturn(0);
+    }
+
+    display_t *disp = screen_current_display();
+    if (!disp || !disp->trueAddress) { m3ApiReturn(-2); }
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem) { m3ApiReturn(-3); }
+
+    u32 screen_w = (u32)disp->surface.width;
+    u32 screen_h = (u32)disp->surface.height;
+    u32 pitch    = (u32)disp->surface.pitch;
+
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > (i32)screen_w) w = (i32)screen_w - x;
+    if (y + h > (i32)screen_h) h = (i32)screen_h - y;
+    if (w <= 0 || h <= 0) { m3ApiReturn(0); }
+
+    u32 row_bytes = (u32)w * 4;
+    u8 *dst_base = (u8 *)disp->trueAddress;
+    u8 *src_base = mem + offset;
+
+    for (i32 r = 0; r < h; r++) {
+        u32 row_y = (u32)(y + r);
+        u32 dst_off = row_y * pitch + (u32)x * 4;
+        u32 src_off = row_y * (screen_w * 4) + (u32)x * 4;
+        if (offset + src_off + row_bytes <= mem_size) {
+            mem_copy(dst_base + dst_off, src_base + src_off, row_bytes);
+        }
+    }
+
     m3ApiReturn(0);
 }
 
@@ -315,6 +388,20 @@ m3ApiRawFunction(wasm_input_poll_events) {
     kern_process_t *proc = sched_get_current_process();
     if (!proc || proc->pid != g_compositor_pid) { m3ApiReturn(-1); }
 
+    // Direct drain from hardware driver queues into compositor event ring buffer:
+    // This eliminates latency from waiting for the idle thread on 10ms timer ticks.
+    {
+        mouse_event_t mev;
+        while (mouse_eat_event(&mev)) {
+            compositor_push_event(mev.type, (u32)(i32)mev.dx, (u32)(i32)mev.dy, 0);
+        }
+
+        u8 k = 0;
+        while ((k = keyboard_eat_key())) {
+            compositor_push_event(0, k, 0, 0);  // KEY_DOWN
+        }
+    }
+
     u32 mem_size = 0;
     u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
     if (!mem) { m3ApiReturn(0); }
@@ -338,6 +425,11 @@ m3ApiRawFunction(wasm_input_poll_events) {
     }
 
     restore_irq(irq);
+
+    if (events_copied == 0) {
+        sched_yield();
+    }
+
     m3ApiReturn((i32)events_copied);
 }
 
@@ -355,6 +447,10 @@ m3ApiRawFunction(wasm_compositor_proc_spawn) {
 
     kern_process_t *proc = sched_get_current_process();
     if (!proc || proc->pid != g_compositor_pid) { m3ApiReturn(-1); }
+
+    if (g_child_count >= MAX_COMPOSITOR_WINDOWS) {
+        m3ApiReturn(-4); // max child limit reached
+    }
 
     // Bounds-check: read path string from WASM linear memory.
     u32 mem_size = 0;

@@ -95,7 +95,8 @@ kern_process_t *process_create() {
     proc->cr3 = pml4_phys;
 
     u64 *new_pml4 = (u64 *) (pml4_phys + vmm_get_hhdm());
-    u64 *old_pml4 = (u64 *) (read_cr3() + vmm_get_hhdm());
+    u64 master_cr3 = (kernel_process && kernel_process->cr3) ? kernel_process->cr3 : read_cr3();
+    u64 *old_pml4 = (u64 *) (master_cr3 + vmm_get_hhdm());
 
     // Copy kernel mapping (top 256 entries of PML4 for 64-bit)
     for (int i = 256; i < 512; i++) {
@@ -306,6 +307,16 @@ u8 sched_kill_process(i32 pid) {
     return found;
 }
 
+static inline u0 sched_sync_kernel_pml4(kern_task_t *task) {
+    if (task && task->process && kernel_process && task->process->cr3 && task->process->cr3 != kernel_process->cr3) {
+        u64 *target_pml4 = (u64 *)(task->process->cr3 + vmm_get_hhdm());
+        u64 *master_pml4 = (u64 *)(kernel_process->cr3 + vmm_get_hhdm());
+        for (int i = 256; i < 512; i++) {
+            target_pml4[i] = master_pml4[i];
+        }
+    }
+}
+
 u0 sched_run_next() {
     if (!current_task) return;
 
@@ -326,7 +337,7 @@ u0 sched_run_next() {
             prev->next = next->next;
 
             if (dead_task == task_list_head) {
-                task_list_head = prev;
+                task_list_head = (prev->state != TASK_STATE_DEAD) ? prev : next->next;
             }
 
             dead_task->process->thread_count--;
@@ -359,14 +370,19 @@ u0 sched_run_next() {
 
     if (next == start) {
         // Wrapped all the way around: nothing else wanted the CPU.
-        // If the current task is dead/exiting and we deferred the idle
-        // thread, hand the CPU to idle so the system keeps running.
-        // Otherwise stay put (we are still runnable).
-        if (idle_task && idle_task != start && start->state == TASK_STATE_DEAD) {
-            current_task = idle_task;
-            task_switch_asm(start, idle_task);
-            restore_irq(irq);
-            return;
+        // If current task is dead, we MUST switch away to any runnable task.
+        if (start->state == TASK_STATE_DEAD) {
+            kern_task_t *fallback = (idle_task && idle_task != start) ? idle_task : start->next;
+            while (fallback->state == TASK_STATE_DEAD && fallback != start) {
+                fallback = fallback->next;
+            }
+            if (fallback != start) {
+                current_task = fallback;
+                sched_sync_kernel_pml4(current_task);
+                task_switch_asm(start, fallback);
+                restore_irq(irq);
+                return;
+            }
         }
         restore_irq(irq);
         return;
@@ -374,6 +390,7 @@ u0 sched_run_next() {
 
     current_task = next;
 
+    sched_sync_kernel_pml4(current_task);
     task_switch_asm(start, current_task);
     restore_irq(irq);
 }

@@ -312,12 +312,45 @@ void kern_entry(void) {
 
         // Check for HWP (Intel Speed Shift) base support (CPUID.06H:EAX[bit 7])
         if (eax & (1 << 7)) {
+            // Enable EIST in IA32_MISC_ENABLE (MSR 0x1A0)
+            u64 misc = rdmsr(0x1A0);
+            wrmsr(0x1A0, misc | (1ULL << 16));
+
             // Enable HWP autonomous management via IA32_PM_ENABLE (MSR 0x770)
             wrmsr(0x770, 1);
-            // Request Maximum Performance (EPP=0, Min=0, Max=0xFF, Desired=0 autonomous)
-            // IA32_HWP_REQUEST (MSR 0x774): bits 31:24=EPP(0=performance), bits 15:8=Max(0xFF)
-            wrmsr(0x774, 0x0000FF00ULL);
-            serial_outsl("CPU: Intel HWP (Speed Shift) enabled at maximum performance");
+
+            // Read hardware capability limits from IA32_HWP_CAPABILITIES (MSR 0x771)
+            u64 hwp_cap = rdmsr(0x771);
+            u8 highest = hwp_cap & 0xFF;         // Max Turbo (e.g. 42 = 4.2GHz)
+            u8 guaranteed = (hwp_cap >> 8) & 0xFF; // Base Clock (e.g. 24 = 2.4GHz)
+            if (highest == 0) highest = 42;
+            if (guaranteed == 0) guaranteed = 24;
+
+            // Configure IA32_HWP_REQUEST (MSR 0x774):
+            // - Bits 7:0   = Minimum performance (guaranteed base clock)
+            // - Bits 15:8  = Maximum performance (max turbo)
+            // - Bits 23:16 = Desired performance (explicitly request max turbo)
+            // - Bits 31:24 = Energy Performance Preference (0 = Max Performance)
+            u64 hwp_req = ((u64)0 << 24) | ((u64)highest << 16) | ((u64)highest << 8) | (u64)guaranteed;
+            wrmsr(0x774, hwp_req);
+
+            // Also configure package-level HWP request (MSR 0x772) if supported (CPUID.06H:EAX[bit 11])
+            if (eax & (1 << 11)) {
+                wrmsr(0x772, hwp_req);
+            }
+
+            // Set IA32_ENERGY_PERF_BIAS (MSR 0x1B0) to 0 (Performance)
+            wrmsr(0x1B0, 0);
+
+            // Clear BD_PROCHOT in MSR_POWER_CTL (0x1FC) to prevent EC from clamping clock to 400MHz
+            u64 pwr_ctl = rdmsr(0x1FC);
+            wrmsr(0x1FC, pwr_ctl & ~1ULL);
+
+            // Also set IA32_PERF_CTL (MSR 0x199) ratio
+            wrmsr(0x199, (u64)highest << 8);
+
+            serial_outsf("CPU: Intel HWP set Min=%dx (%dMHz), Desired/Max=%dx (%dMHz), EPP=0, BD_PROCHOT cleared\n",
+                         guaranteed, guaranteed * 100, highest, highest * 100);
         }
 
         if (ecx & 1) {
