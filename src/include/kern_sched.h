@@ -41,10 +41,10 @@ typedef struct kern_process {
     // IPC: pending signal bitmask (see kern_ipc.h for bit definitions).
     u32 pending_signals;
 
-    // IPC setup: parent-to-child handoff (see kern_ipc.h::ipc_setup_send).
-    bool ipc_setup_ready;       // true after ipc_setup_send() delivers data
-    u64  ipc_setup_shmem_va;    // shared memory VA for this child
-    i32  ipc_setup_peer_pid;    // PID of the other child in the pair
+    // Dynamic IPC Shared Memory Handle Table (unbounded, O(1) indexed)
+    struct proc_shmem_entry *shmem_table;
+    u32                      shmem_capacity;
+    u32                      shmem_count;
 } kern_process_t;
 
 extern kern_process_t *foreground_proc;

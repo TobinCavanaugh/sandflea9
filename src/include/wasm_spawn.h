@@ -50,13 +50,15 @@ extern const void * wasm_fd_write(IM3Runtime runtime, IM3ImportContext _ctx, uin
 
 // IPC host functions (defined in kern_ipc.c).
 extern const void * wasm_ipc_get_pid(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
-extern const void * wasm_ipc_setup_wait(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
+extern const void * wasm_ipc_shm_create(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
+extern const void * wasm_ipc_shm_attach(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
+extern const void * wasm_ipc_shm_detach(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
+extern const void * wasm_ipc_shm_read_byte(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
+extern const void * wasm_ipc_shm_write_byte(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
+extern const void * wasm_ipc_shm_read(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
+extern const void * wasm_ipc_shm_write(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
 extern const void * wasm_ipc_signal_send(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
 extern const void * wasm_ipc_signal_wait(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
-extern const void * wasm_ipc_shmem_read_byte(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
-extern const void * wasm_ipc_shmem_write_byte(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
-extern const void * wasm_ipc_shmem_read(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
-extern const void * wasm_ipc_shmem_write(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
 
 // Native WAT→WASM compiler (freestanding C, no external dependencies).
 // Compiles WAT text input into WASM binary output.

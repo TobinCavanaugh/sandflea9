@@ -814,8 +814,8 @@ u0 handle_command() {
         }
 
         screen_push_line("PROCESSES:");
-        screen_push_line("PID  CR3               HEAP_VPTR     MEM (KB)  THREADS");
-        screen_push_line("---  ---               ---------     ---       -------");
+        screen_push_line("PID  CR3               HEAP_VPTR     MEM (KB)  SHM  THREADS");
+        screen_push_line("---  ---               ---------     ---       ---  -------");
 
         kern_task_t *curr = head;
         kern_process_t *visited[256] = {0};
@@ -849,8 +849,9 @@ u0 handle_command() {
                         region = region->next;
                     }
 
-                    screen_push_linef("%-3d  %016llx  %012llx  %-8lld  %d",
-                                      proc->pid, proc->cr3, proc->heap_vptr, total_mem / 1024, thread_count);
+                    screen_push_linef("%-3d  %016llx  %012llx  %-8lld  %-3u  %d",
+                                      proc->pid, proc->cr3, proc->heap_vptr,
+                                      total_mem / 1024, proc->shmem_count, thread_count);
                 }
             }
             curr = curr->next;
@@ -1451,27 +1452,22 @@ u0 handle_command() {
 
     if (cmd_word_eq(word, "ipc")) {
         PROFILE_SCOPE("cmd:ipc");
-        // Spawn sender + receiver, create shmem, wire them together.
-        // Type into the shell — sender reads stdin byte-by-byte, writes
-        // each byte to shared memory, signals receiver. Receiver prints
-        // to stdout. On EOF (Ctrl+D not available, use empty read or
-        // switch session to kill), sender sends TERM, both exit.
-
-        // 1. Spawn sender as foreground (so keyboard input routes to it)
-        //    and receiver as background (it only writes to stdout).
-        wasm_spawn_opts_t s_opts = {
-            .path = "ipc_sender.wasm",
-            .foreground = true,
-            .wait = false,
-        };
-        i32 pid_s = wasm_spawn(&s_opts);
-        if (pid_s < 0) {
-            screen_push_line("ipc: failed to spawn sender");
+        // 1. Create global shared memory region (1 page = 4096 bytes).
+        i32 shm_id = shmem_create_region(1, PAGE_RW | PAGE_USER);
+        if (shm_id < 0) {
+            screen_push_line("ipc: failed to create shared memory region");
             goto Label_Free;
         }
 
+        char shm_str[16];
+        stbsp_snprintf(shm_str, sizeof(shm_str), "%d", shm_id);
+
+        // 2. Spawn receiver in background with shm_id as argv[1].
+        char *r_argv[2] = { "ipc_receiver.wasm", shm_str };
         wasm_spawn_opts_t r_opts = {
             .path = "ipc_receiver.wasm",
+            .argc = 2,
+            .argv = (char *const *) r_argv,
             .foreground = false,
             .wait = false,
         };
@@ -1481,31 +1477,26 @@ u0 handle_command() {
             goto Label_Free;
         }
 
-        // 2. Get process pointers.
-        kern_task_t *t_s = sched_get_by_pid(pid_s);
-        kern_task_t *t_r = sched_get_by_pid(pid_r);
-        if (!t_s || !t_r || !t_s->process || !t_r->process) {
-            screen_push_line("ipc: could not find spawned processes");
+        char r_pid_str[16];
+        stbsp_snprintf(r_pid_str, sizeof(r_pid_str), "%d", pid_r);
+
+        // 3. Spawn sender in foreground with shm_id as argv[1] and receiver PID as argv[2].
+        char *s_argv[3] = { "ipc_sender.wasm", shm_str, r_pid_str };
+        wasm_spawn_opts_t s_opts = {
+            .path = "ipc_sender.wasm",
+            .argc = 3,
+            .argv = (char *const *) s_argv,
+            .foreground = true,
+            .wait = false,
+        };
+        i32 pid_s = wasm_spawn(&s_opts);
+        if (pid_s < 0) {
+            screen_push_line("ipc: failed to spawn sender");
             goto Label_Free;
         }
-        kern_process_t *p_s = t_s->process;
-        kern_process_t *p_r = t_r->process;
 
-        // 3. Create shared memory.
-        u64 va_s = 0, va_r = 0;
-        kern_shmem_t *sh = shmem_create(p_s, p_r, PAGE_SIZE,
-                                        PAGE_RW | PAGE_USER, &va_s, &va_r);
-        if (!sh) {
-            screen_push_line("ipc: shmem_create failed");
-            goto Label_Free;
-        }
-
-        // 4. Hand off setup data to each child.
-        ipc_setup_send(pid_s, va_s, pid_r);
-        ipc_setup_send(pid_r, va_r, pid_s);
-
-        screen_push_linef("ipc: sender pid=%d, receiver pid=%d, shmem ready", pid_s, pid_r);
-        screen_push_line("ipc: type to send messages via IPC");
+        screen_push_linef("ipc: sender pid=%d, receiver pid=%d, shm_id=%d ready", pid_s, pid_r, shm_id);
+        screen_push_line("ipc: type to send messages (Ctrl+C to quit)");
         goto Label_Free;
     }
 

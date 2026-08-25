@@ -631,6 +631,27 @@ m3ApiRawFunction(wasm_get_arg) {
     }
 }
 
+m3ApiRawFunction(wasm_get_arg_i32) {
+    m3ApiReturnType (i32)
+    m3ApiGetArg     (i32, index)
+
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc || index < 0 || index >= proc->argc || !proc->argv[index]) {
+        m3ApiReturn(-1);
+    }
+
+    const char *s = proc->argv[index];
+    i32 val = 0;
+    bool neg = false;
+    if (*s == '-') { neg = true; s++; }
+    while (*s >= '0' && *s <= '9') {
+        val = val * 10 + (*s - '0');
+        s++;
+    }
+    if (neg) val = -val;
+    m3ApiReturn(val);
+}
+
 // ============================================================================
 // Kernel-native WASI implementation
 // Maps wasi_snapshot_preview1 host functions to sandfleaOS kernel APIs.
@@ -1549,17 +1570,20 @@ do_load:
         m3_LinkRawFunction(module, "env", "ls",              "i(i)",    &wasm_ls);
         m3_LinkRawFunction(module, "env", "get_arg_count",   "i()",     &wasm_get_arg_count);
         m3_LinkRawFunction(module, "env", "get_arg",         "i(iii)",  &wasm_get_arg);
+        m3_LinkRawFunction(module, "env", "get_arg_i32",     "i(i)",    &wasm_get_arg_i32);
 
         // 4b. IPC host functions (kern_ipc.c). Best-effort — modules that
         //     don't import them will silently skip.
         m3_LinkRawFunction(module, "env", "ipc_get_pid",          "i()",     &wasm_ipc_get_pid);
-        m3_LinkRawFunction(module, "env", "ipc_setup_wait",       "i(ii)",   &wasm_ipc_setup_wait);
+        m3_LinkRawFunction(module, "env", "ipc_shm_create",       "i(i)",    &wasm_ipc_shm_create);
+        m3_LinkRawFunction(module, "env", "ipc_shm_attach",       "i(i)",    &wasm_ipc_shm_attach);
+        m3_LinkRawFunction(module, "env", "ipc_shm_detach",       "i(i)",    &wasm_ipc_shm_detach);
+        m3_LinkRawFunction(module, "env", "ipc_shm_read_byte",    "i(ii)",   &wasm_ipc_shm_read_byte);
+        m3_LinkRawFunction(module, "env", "ipc_shm_write_byte",   "i(iii)",  &wasm_ipc_shm_write_byte);
+        m3_LinkRawFunction(module, "env", "ipc_shm_read",         "i(iiii)", &wasm_ipc_shm_read);
+        m3_LinkRawFunction(module, "env", "ipc_shm_write",        "i(iiii)", &wasm_ipc_shm_write);
         m3_LinkRawFunction(module, "env", "ipc_signal_send",      "i(ii)",   &wasm_ipc_signal_send);
         m3_LinkRawFunction(module, "env", "ipc_signal_wait",      "i(i)",    &wasm_ipc_signal_wait);
-        m3_LinkRawFunction(module, "env", "ipc_shmem_read_byte",  "i(i)",    &wasm_ipc_shmem_read_byte);
-        m3_LinkRawFunction(module, "env", "ipc_shmem_write_byte", "i(ii)",   &wasm_ipc_shmem_write_byte);
-        m3_LinkRawFunction(module, "env", "ipc_shmem_read",       "i(iii)",  &wasm_ipc_shmem_read);
-        m3_LinkRawFunction(module, "env", "ipc_shmem_write",      "i(iii)",  &wasm_ipc_shmem_write);
 
         // 4c. Compositor host functions (kern_compositor.c). Best-effort.
         //     Non-compositor modules silently skip these.

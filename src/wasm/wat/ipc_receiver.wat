@@ -1,13 +1,15 @@
 ;; ipc_receiver.wat — waits for signals from sender, reads shared memory byte,
 ;; writes to stdout. On TERM signal, exits.
 ;;
-;; Setup: same as sender — parent spawns both, creates shmem, calls
-;; ipc_setup_send on each. Receiver calls ipc_setup_wait to get (shmem_va, peer_pid).
+;; Setup: reads shm_id from argv[1] via get_arg_i32(1), attaches to shm_id
+;; via ipc_shm_attach(shm_id) -> gets local handle.
 
 (module
   (import "env" "fd_write" (func $fd_write (param i32 i32 i32 i32) (result i32)))
-  (import "env" "ipc_setup_wait"  (func $ipc_setup_wait  (param i32 i32) (result i32)))
-  (import "env" "ipc_shmem_read_byte" (func $ipc_shmem_read_byte (param i32) (result i32)))
+  (import "env" "get_arg_i32" (func $get_arg_i32 (param i32) (result i32)))
+  (import "env" "ipc_shm_attach" (func $ipc_shm_attach (param i32) (result i32)))
+  (import "env" "ipc_shm_detach" (func $ipc_shm_detach (param i32) (result i32)))
+  (import "env" "ipc_shm_read_byte" (func $ipc_shm_read_byte (param i32 i32) (result i32)))
   (import "env" "ipc_signal_wait" (func $ipc_signal_wait (param i32) (result i32)))
 
   (memory 1)
@@ -15,23 +17,23 @@
   (data (i32.const 100) "[ipc_recv] ")
   (data (i32.const 120) "\n")
 
-  ;; Offset 0:    shmem VA (u64, 8 bytes)
-  ;; Offset 8:    peer PID  (i32, 4 bytes)
   ;; Offset 16:   byte from shmem (u8)
   ;; Offset 32:   __wasi_ciovec_t[3] for stdout {buf, len}
   ;; Offset 64:   nwritten (i32)
 
   (func (export "_start")
-    (local $shmem_va i64)
-    (local $peer_pid i32)
-    (local $byte     i32)
-    (local $sig      i32)
+    (local $shm_id     i32)
+    (local $handle     i32)
+    (local $byte       i32)
+    (local $sig        i32)
 
-    ;; 1. Wait for parent setup
-    (call $ipc_setup_wait (i32.const 0) (i32.const 8))
-    drop
-    (local.set $shmem_va (i64.load (i32.const 0)))
-    (local.set $peer_pid  (i32.load (i32.const 8)))
+    ;; 1. Get shm_id from argv[1]
+    (call $get_arg_i32 (i32.const 1))
+    local.set $shm_id
+
+    ;; 2. Attach to shared memory region
+    (call $ipc_shm_attach (local.get $shm_id))
+    local.set $handle
 
     ;; Setup iovs array:
     ;; iov 0: "[ipc_recv] " (offset 100, len 11)
@@ -44,7 +46,7 @@
     (i32.store (i32.const 48) (i32.const 120))
     (i32.store (i32.const 52) (i32.const 1))
 
-    ;; 2. Receive loop: wait for DATA_READY(1) | TERM(2)
+    ;; 3. Receive loop: wait for DATA_READY(1) | TERM(2)
     (block $done
       (loop $again
         ;; Block until signal arrives
@@ -55,8 +57,8 @@
         (i32.and (local.get $sig) (i32.const 2))
         (if (then (br $done)))
 
-        ;; Read byte from shared memory offset 0
-        (call $ipc_shmem_read_byte (i32.const 0))
+        ;; Read byte from shared memory handle at offset 0
+        (call $ipc_shm_read_byte (local.get $handle) (i32.const 0))
         local.set $byte
 
         ;; Check sentinel 0xFF (255)
@@ -94,5 +96,9 @@
         (br $again)
       )
     )
+
+    ;; 4. Clean detach
+    (call $ipc_shm_detach (local.get $handle))
+    drop
   )
 )

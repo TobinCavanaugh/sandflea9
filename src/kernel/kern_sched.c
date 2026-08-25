@@ -78,9 +78,9 @@ kern_process_t *process_create() {
     proc->cleanup_fn  = null;
     proc->cleanup_ctx = null;
     proc->pending_signals = 0;
-    proc->ipc_setup_ready = false;
-    proc->ipc_setup_shmem_va = 0;
-    proc->ipc_setup_peer_pid = 0;
+    proc->shmem_table     = null;
+    proc->shmem_capacity  = 0;
+    proc->shmem_count     = 0;
     // Associate with the terminal session that was active when the
     // process was created, so screen_push_line routes output to the
     // correct TTY even after the user switches sessions.

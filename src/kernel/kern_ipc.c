@@ -1,11 +1,4 @@
-// kern_ipc.c — shared memory + signal IPC implementation.
-//
-// Shared memory: maps the same physical page into two process PML4s
-// via vmm_map_page_in_pml4().  Physical pages are owned by the kernel;
-// process_exit calls ipc_process_cleanup() to unmap dying-process VAs.
-//
-// Signals: per-process bitmask.  ipc_signal_send() wakes a BLOCKED
-// task if its wait mask overlaps with the sent signal.
+// kern_ipc.c — N:N reference-counted shared memory and handle table IPC.
 
 #include "../include/kern_ipc.h"
 #include "../include/kern_vmm.h"
@@ -14,164 +7,233 @@
 #include "../include/kern_asmstubs.h"
 #include "wasm3-0.5.0/source/m3_env.h"
 
-// ── Global shared-memory region list ─────────────────────────────────────────
-// Protected by irq save/restore (single-core assumption).
+// ── Global Shared Memory Registry ───────────────────────────────────────────
+static kern_shmem_t *g_shmem_head  = NULL;
+static u32           g_next_shm_id = 1;
 
-static kern_shmem_t *g_shmem_head = NULL;
+static kern_shmem_t *shmem_find_global(u32 shm_id) {
+    kern_shmem_t *cur = g_shmem_head;
+    while (cur) {
+        if (cur->shm_id == shm_id) return cur;
+        cur = cur->next;
+    }
+    return NULL;
+}
 
-// ── Shared memory: create ────────────────────────────────────────────────────
+// ── Region Creation ─────────────────────────────────────────────────────────
 
-kern_shmem_t *shmem_create(kern_process_t *a, kern_process_t *b,
-                           u32 size, u32 flags,
-                           u64 *out_va_a, u64 *out_va_b) {
-    if (!a || !b || size == 0 || size > PAGE_SIZE) return NULL;
+i32 shmem_create_region(u32 page_count, u32 flags) {
+    if (page_count == 0) page_count = 1;
 
-    // Allocate one physical page.
     u64 phys = pmm_alloc_page();
-    if (!phys) return NULL;
+    if (!phys) return -1;
 
-    // Pick virtual addresses: bump each process's heap pointer.
-    u64 irq = save_irq_and_disable();
-    u64 va_a = a->heap_vptr;
-    a->heap_vptr += PAGE_SIZE;
-    u64 va_b = b->heap_vptr;
-    b->heap_vptr += PAGE_SIZE;
-    restore_irq(irq);
-
-    // Map into both PML4s.
-    u32 map_flags = (flags & (PAGE_RW | PAGE_USER)) | PAGE_USER;
-    vmm_map_page_in_pml4(a->cr3, phys, va_a, map_flags);
-    vmm_map_page_in_pml4(b->cr3, phys, va_b, map_flags);
-
-    // Allocate handle.
     kern_shmem_t *sh = (kern_shmem_t *)kmalloc(sizeof(kern_shmem_t));
     if (!sh) {
-        // Unmap and free phys — OOM rollback.
-        vmm_unmap_page_in_pml4(a->cr3, va_a);
-        vmm_unmap_page_in_pml4(b->cr3, va_b);
         pmm_free(phys);
-        return NULL;
+        return -1;
     }
 
-    sh->phys_base  = phys;
-    sh->page_count = 1;
-    sh->flags      = flags;
-    sh->va_a       = va_a;
-    sh->va_b       = va_b;
-    sh->proc_a     = a;
-    sh->proc_b     = b;
-    sh->a_alive    = true;
-    sh->b_alive    = true;
-
-    // Prepend to global list.
-    irq = save_irq_and_disable();
-    sh->next = g_shmem_head;
-    g_shmem_head = sh;
-    restore_irq(irq);
-
-    *out_va_a = va_a;
-    *out_va_b = va_b;
-
-    serial_outsf("IPC: shmem created — 1 page at 0x%llx (pid %d) / 0x%llx (pid %d)\n",
-                 va_a, a->pid, va_b, b->pid);
-    return sh;
-}
-
-// ── Shared memory: destroy ───────────────────────────────────────────────────
-
-void shmem_destroy(kern_shmem_t *sh) {
-    if (!sh) return;
-
-    // Unmap from proc A + free the phys page (once — it's shared).
-    if (sh->a_alive && sh->proc_a) {
-        u64 phys = vmm_get_phys_in_pml4(sh->proc_a->cr3, sh->va_a);
-        vmm_unmap_page_in_pml4(sh->proc_a->cr3, sh->va_a);
-        if (phys) pmm_free(phys);
-    }
-
-    // Unmap from proc B (no double-free — phys already freed above).
-    if (sh->b_alive && sh->proc_b) {
-        vmm_unmap_page_in_pml4(sh->proc_b->cr3, sh->va_b);
-    }
-
-    // Remove from global list.
     u64 irq = save_irq_and_disable();
-    if (g_shmem_head == sh) {
-        g_shmem_head = sh->next;
-    } else {
-        kern_shmem_t *cur = g_shmem_head;
-        while (cur && cur->next != sh) cur = cur->next;
-        if (cur) cur->next = sh->next;
-    }
+    u32 shm_id = g_next_shm_id++;
+    if (g_next_shm_id == 0) g_next_shm_id = 1;
+
+    sh->shm_id     = shm_id;
+    sh->phys_base  = phys;
+    sh->page_count = page_count;
+    sh->flags      = flags;
+    sh->ref_count  = 0;
+    sh->next       = g_shmem_head;
+    g_shmem_head   = sh;
     restore_irq(irq);
 
-    kfree(sh);
+    serial_outsf("IPC: shm_id %u created (%u page(s) at phys 0x%llx)\n",
+                 shm_id, page_count, phys);
+    return (i32)shm_id;
 }
 
-// ── Process cleanup hook ─────────────────────────────────────────────────────
-// Called from process_exit() BEFORE the process's cr3/mem_regions are freed.
-// For each shared region the dying process participates in:
-//   - unmap its VA from its PML4
-//   - mark that side dead
-//   - if both sides dead, free phys page + the handle
+// ── Process Attachment Handle Table ─────────────────────────────────────────
+
+static i32 proc_alloc_shmem_slot(kern_process_t *proc) {
+    if (!proc) return -1;
+
+    // 1. Recycle any inactive slot
+    if (proc->shmem_table) {
+        for (u32 i = 0; i < proc->shmem_capacity; i++) {
+            if (!proc->shmem_table[i].active) return (i32)i;
+        }
+    }
+
+    // 2. Expand capacity dynamically (4 -> 8 -> 16 -> 32 ...)
+    u32 new_cap = (proc->shmem_capacity == 0) ? 4 : proc->shmem_capacity * 2;
+    u64 old_size = (u64)proc->shmem_capacity * sizeof(proc_shmem_entry_t);
+    u64 new_size = (u64)new_cap * sizeof(proc_shmem_entry_t);
+
+    proc_shmem_entry_t *new_table = (proc_shmem_entry_t *)kmalloc(new_size);
+    if (!new_table) return -1;
+
+    mem_set((u8 *)new_table, 0, new_size);
+    if (proc->shmem_table) {
+        mem_copy((u8 *)new_table, (const u8 *)proc->shmem_table, old_size);
+        kfree(proc->shmem_table);
+    }
+
+    i32 slot = (i32)proc->shmem_capacity;
+    proc->shmem_table = new_table;
+    proc->shmem_capacity = new_cap;
+    return slot;
+}
+
+i32 shmem_attach_proc(kern_process_t *proc, u32 shm_id) {
+    if (!proc || shm_id == 0) return -1;
+
+    u64 irq = save_irq_and_disable();
+    kern_shmem_t *sh = shmem_find_global(shm_id);
+    if (!sh) {
+        restore_irq(irq);
+        return -1;
+    }
+
+    i32 slot = proc_alloc_shmem_slot(proc);
+    if (slot < 0) {
+        restore_irq(irq);
+        return -1;
+    }
+
+    // Bump process heap vptr for virtual mapping
+    u64 va = proc->heap_vptr;
+    proc->heap_vptr += sh->page_count * PAGE_SIZE;
+
+    // Map physical pages into process PML4
+    u32 map_flags = (sh->flags & (PAGE_RW | PAGE_USER)) | PAGE_USER;
+    for (u64 p = 0; p < sh->page_count; p++) {
+        vmm_map_page_in_pml4(proc->cr3, sh->phys_base + p * PAGE_SIZE,
+                             va + p * PAGE_SIZE, map_flags);
+    }
+
+    proc->shmem_table[slot].active     = true;
+    proc->shmem_table[slot].shm_id     = shm_id;
+    proc->shmem_table[slot].virt_addr  = va;
+    proc->shmem_table[slot].page_count = sh->page_count;
+    proc->shmem_count++;
+
+    sh->ref_count++;
+    restore_irq(irq);
+
+    serial_outsf("IPC: PID %d attached to shm_id %u -> handle %d (VA 0x%llx, refs=%u)\n",
+                 proc->pid, shm_id, slot, va, sh->ref_count);
+    return slot;
+}
+
+bool shmem_detach_proc(kern_process_t *proc, i32 handle) {
+    if (!proc || handle < 0 || (u32)handle >= proc->shmem_capacity) return false;
+    if (!proc->shmem_table || !proc->shmem_table[handle].active) return false;
+
+    u64 irq = save_irq_and_disable();
+    proc_shmem_entry_t *entry = &proc->shmem_table[handle];
+    u32 shm_id = entry->shm_id;
+    u64 va = entry->virt_addr;
+    u64 page_count = entry->page_count;
+
+    // Unmap from PML4
+    for (u64 p = 0; p < page_count; p++) {
+        vmm_unmap_page_in_pml4(proc->cr3, va + p * PAGE_SIZE);
+    }
+
+    entry->active = false;
+    entry->shm_id = 0;
+    entry->virt_addr = 0;
+    entry->page_count = 0;
+    if (proc->shmem_count > 0) proc->shmem_count--;
+
+    // Update global shmem reference count
+    kern_shmem_t *prev = NULL;
+    kern_shmem_t *cur = g_shmem_head;
+    while (cur && cur->shm_id != shm_id) {
+        prev = cur;
+        cur = cur->next;
+    }
+
+    if (cur) {
+        if (cur->ref_count > 0) cur->ref_count--;
+        if (cur->ref_count == 0) {
+            serial_outsf("IPC: shm_id %u ref_count reached 0; freeing physical memory\n", shm_id);
+            for (u64 p = 0; p < cur->page_count; p++) {
+                pmm_free(cur->phys_base + p * PAGE_SIZE);
+            }
+            if (prev) prev->next = cur->next;
+            else      g_shmem_head = cur->next;
+            kfree(cur);
+        }
+    }
+
+    restore_irq(irq);
+    return true;
+}
 
 void ipc_process_cleanup(kern_process_t *proc) {
     if (!proc) return;
 
     u64 irq = save_irq_and_disable();
-    kern_shmem_t *prev = NULL;
-    kern_shmem_t *cur  = g_shmem_head;
-
-    while (cur) {
-        bool is_a = (cur->proc_a == proc);
-        bool is_b = (cur->proc_b == proc);
-        kern_shmem_t *next = cur->next;
-
-        if (!is_a && !is_b) {
-            prev = cur;
-            cur  = next;
-            continue;
-        }
-
-        // Unmap this process's VA (don't free phys — other side may still use it).
-        u64 va = is_a ? cur->va_a : cur->va_b;
-        vmm_unmap_page_in_pml4(proc->cr3, va);
-
-        if (is_a) {
-            cur->a_alive = false;
-            if (cur->b_alive && cur->proc_b) {
-                ipc_signal_send(cur->proc_b->pid, IPC_SIG_TERM);
+    if (proc->shmem_table) {
+        for (u32 i = 0; i < proc->shmem_capacity; i++) {
+            if (proc->shmem_table[i].active) {
+                shmem_detach_proc(proc, (i32)i);
             }
         }
-        if (is_b) {
-            cur->b_alive = false;
-            if (cur->a_alive && cur->proc_a) {
-                ipc_signal_send(cur->proc_a->pid, IPC_SIG_TERM);
-            }
-        }
-
-        if (!cur->a_alive && !cur->b_alive) {
-            // Both sides dead — free phys page and the handle.
-            pmm_free(cur->phys_base);
-
-            // Unlink from global list.
-            if (prev) prev->next = next;
-            else      g_shmem_head = next;
-
-            kfree(cur);
-            // prev stays unchanged (we removed cur, next is already captured).
-        } else {
-            prev = cur;
-        }
-
-        cur = next;
+        kfree(proc->shmem_table);
+        proc->shmem_table = NULL;
+        proc->shmem_capacity = 0;
+        proc->shmem_count = 0;
     }
     restore_irq(irq);
 }
 
+// ── Direct Read / Write Byte Operations ──────────────────────────────────────
+
+i32 shmem_read_bytes(kern_process_t *proc, i32 handle, u32 offset, void *dst, u32 len) {
+    if (!proc || !dst || len == 0) return -1;
+    if (handle < 0 || (u32)handle >= proc->shmem_capacity) return -1;
+    if (!proc->shmem_table || !proc->shmem_table[handle].active) return -1;
+
+    proc_shmem_entry_t *entry = &proc->shmem_table[handle];
+    if (offset + len > entry->page_count * PAGE_SIZE) return -1;
+
+    u64 irq = save_irq_and_disable();
+    kern_shmem_t *sh = shmem_find_global(entry->shm_id);
+    if (!sh) {
+        restore_irq(irq);
+        return -1;
+    }
+
+    u8 *src_ptr = (u8 *)(sh->phys_base + vmm_get_hhdm()) + offset;
+    mem_copy((u8 *)dst, src_ptr, len);
+    restore_irq(irq);
+    return (i32)len;
+}
+
+i32 shmem_write_bytes(kern_process_t *proc, i32 handle, u32 offset, const void *src, u32 len) {
+    if (!proc || !src || len == 0) return -1;
+    if (handle < 0 || (u32)handle >= proc->shmem_capacity) return -1;
+    if (!proc->shmem_table || !proc->shmem_table[handle].active) return -1;
+
+    proc_shmem_entry_t *entry = &proc->shmem_table[handle];
+    if (offset + len > entry->page_count * PAGE_SIZE) return -1;
+
+    u64 irq = save_irq_and_disable();
+    kern_shmem_t *sh = shmem_find_global(entry->shm_id);
+    if (!sh) {
+        restore_irq(irq);
+        return -1;
+    }
+
+    u8 *dst_ptr = (u8 *)(sh->phys_base + vmm_get_hhdm()) + offset;
+    mem_copy(dst_ptr, (const u8 *)src, len);
+    restore_irq(irq);
+    return (i32)len;
+}
+
 // ── Signals ──────────────────────────────────────────────────────────────────
-// Lightweight per-process notification bits.  No signal handlers — just a
-// pending bitmask and a blocking-wait mechanism integrated with the scheduler.
 
 bool ipc_signal_send(i32 target_pid, u32 signal_mask) {
     if (target_pid < 0 || signal_mask == 0) return false;
@@ -188,7 +250,6 @@ bool ipc_signal_send(i32 target_pid, u32 signal_mask) {
     proc->pending_signals |= signal_mask;
 
     // Wake any BLOCKED task whose wait mask overlaps.
-    // Walk the master list (not the ready queue — BLOCKED tasks aren't there).
     kern_task_t *head = sched_get_task_list_head();
     bool woken = false;
     if (head) {
@@ -229,7 +290,7 @@ u32 ipc_signal_wait(u32 mask) {
     task->signal_wait_mask = mask;
     restore_irq(irq);
 
-    sched_block_current();  // removes us from ready queue, sets BLOCKED, yields
+    sched_block_current();
 
     // We're back — consume pending signals.
     irq = save_irq_and_disable();
@@ -251,24 +312,6 @@ u32 ipc_signal_poll(u32 mask) {
     return pending;
 }
 
-// ── Parent-to-child setup handoff ────────────────────────────────────────────
-
-void ipc_setup_send(i32 child_pid, u64 shmem_va, i32 peer_pid) {
-    u64 irq = save_irq_and_disable();
-    kern_task_t *task = sched_get_by_pid(child_pid);
-    if (!task || !task->process) { restore_irq(irq); return; }
-
-    kern_process_t *proc = task->process;
-    proc->ipc_setup_shmem_va = shmem_va;
-    proc->ipc_setup_peer_pid = peer_pid;
-    proc->ipc_setup_ready     = true;
-
-    // Wake the child if it's BLOCKED in ipc_setup_wait.
-    if (task->state == TASK_STATE_BLOCKED)
-        sched_unblock(task);
-    restore_irq(irq);
-}
-
 // ── WASM host functions (linked under "env") ─────────────────────────────────
 
 m3ApiRawFunction(wasm_ipc_get_pid) {
@@ -277,47 +320,99 @@ m3ApiRawFunction(wasm_ipc_get_pid) {
     m3ApiReturn(proc ? proc->pid : -1);
 }
 
-static kern_shmem_t *get_shmem_for_proc(kern_process_t *proc) {
-    if (!proc) return NULL;
-    kern_shmem_t *cur = g_shmem_head;
-    while (cur) {
-        if ((cur->proc_a == proc && cur->a_alive) ||
-            (cur->proc_b == proc && cur->b_alive)) {
-            return cur;
-        }
-        cur = cur->next;
-    }
-    return NULL;
+m3ApiRawFunction(wasm_ipc_shm_create) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(u32, page_count)
+    if (page_count == 0) page_count = 1;
+
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc) m3ApiReturn(-1);
+
+    i32 shm_id = shmem_create_region(page_count, PAGE_RW | PAGE_USER);
+    if (shm_id < 0) m3ApiReturn(-1);
+
+    i32 handle = shmem_attach_proc(proc, (u32)shm_id);
+    if (handle < 0) m3ApiReturn(-1);
+
+    // Returns global shm_id (local handle in caller is `handle`)
+    m3ApiReturn(shm_id);
 }
 
-m3ApiRawFunction(wasm_ipc_setup_wait) {
+m3ApiRawFunction(wasm_ipc_shm_attach) {
     m3ApiReturnType(i32)
-    m3ApiGetArg(u32, shmem_va_ptr)    // out: shmem VA (u64 written here)
-    m3ApiGetArg(u32, peer_pid_ptr)    // out: peer PID  (i32 written here)
+    m3ApiGetArg(u32, shm_id)
+
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc) m3ApiReturn(-1);
+
+    i32 handle = shmem_attach_proc(proc, shm_id);
+    m3ApiReturn(handle);
+}
+
+m3ApiRawFunction(wasm_ipc_shm_detach) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, handle)
+
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc) m3ApiReturn(-1);
+
+    bool ok = shmem_detach_proc(proc, handle);
+    m3ApiReturn(ok ? 0 : -1);
+}
+
+m3ApiRawFunction(wasm_ipc_shm_read_byte) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, handle)
+    m3ApiGetArg(u32, offset)
+
+    kern_process_t *proc = sched_get_current_process();
+    u8 b = 0;
+    i32 res = shmem_read_bytes(proc, handle, offset, &b, 1);
+    m3ApiReturn(res == 1 ? (i32)b : -1);
+}
+
+m3ApiRawFunction(wasm_ipc_shm_write_byte) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, handle)
+    m3ApiGetArg(u32, offset)
+    m3ApiGetArg(i32, val)
+
+    kern_process_t *proc = sched_get_current_process();
+    u8 b = (u8)val;
+    i32 res = shmem_write_bytes(proc, handle, offset, &b, 1);
+    m3ApiReturn(res == 1 ? 0 : -1);
+}
+
+m3ApiRawFunction(wasm_ipc_shm_read) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, handle)
+    m3ApiGetArg(u32, shm_offset)
+    m3ApiGetArg(u32, wasm_buf_off)
+    m3ApiGetArg(u32, len)
 
     u32 mem_size = 0;
     u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
-    if (!mem || shmem_va_ptr + 8 > mem_size || peer_pid_ptr + 4 > mem_size) {
-        m3ApiReturn(-1);
-    }
+    if (!mem || wasm_buf_off + len > mem_size) m3ApiReturn(-1);
 
     kern_process_t *proc = sched_get_current_process();
-    kern_task_t    *task = sched_get_current_task();
-    if (!proc || !task) { m3ApiReturn(-1); }
+    i32 res = shmem_read_bytes(proc, handle, shm_offset, mem + wasm_buf_off, len);
+    m3ApiReturn(res);
+}
 
-    u64 irq = save_irq_and_disable();
-    while (!proc->ipc_setup_ready) {
-        // Block until parent calls ipc_setup_send().
-        restore_irq(irq);
-        sched_block_current();
-        // Woken up — re-check.
-        irq = save_irq_and_disable();
-    }
+m3ApiRawFunction(wasm_ipc_shm_write) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, handle)
+    m3ApiGetArg(u32, shm_offset)
+    m3ApiGetArg(u32, wasm_buf_off)
+    m3ApiGetArg(u32, len)
 
-    *(u64*)(mem + shmem_va_ptr) = proc->ipc_setup_shmem_va;
-    *(i32*)(mem + peer_pid_ptr) = proc->ipc_setup_peer_pid;
-    restore_irq(irq);
-    m3ApiReturn(0);
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem || wasm_buf_off + len > mem_size) m3ApiReturn(-1);
+
+    kern_process_t *proc = sched_get_current_process();
+    i32 res = shmem_write_bytes(proc, handle, shm_offset, mem + wasm_buf_off, len);
+    m3ApiReturn(res);
 }
 
 m3ApiRawFunction(wasm_ipc_signal_send) {
@@ -333,97 +428,4 @@ m3ApiRawFunction(wasm_ipc_signal_wait) {
     m3ApiGetArg(i32, mask)
     u32 got = ipc_signal_wait((u32)mask);
     m3ApiReturn((i32)got);
-}
-
-m3ApiRawFunction(wasm_ipc_shmem_read_byte) {
-    m3ApiReturnType(i32)
-    m3ApiGetArg(u32, offset)
-
-    kern_process_t *proc = sched_get_current_process();
-    if (!proc || offset >= PAGE_SIZE) m3ApiReturn(-1);
-
-    u64 irq = save_irq_and_disable();
-    kern_shmem_t *sh = get_shmem_for_proc(proc);
-    if (!sh) {
-        restore_irq(irq);
-        m3ApiReturn(-1);
-    }
-    u8 *shmem_ptr = (u8 *)(sh->phys_base + vmm_get_hhdm());
-    u8 val = shmem_ptr[offset];
-    restore_irq(irq);
-    m3ApiReturn((i32)val);
-}
-
-m3ApiRawFunction(wasm_ipc_shmem_write_byte) {
-    m3ApiReturnType(i32)
-    m3ApiGetArg(u32, offset)
-    m3ApiGetArg(i32, val)
-
-    kern_process_t *proc = sched_get_current_process();
-    if (!proc || offset >= PAGE_SIZE) m3ApiReturn(-1);
-
-    u64 irq = save_irq_and_disable();
-    kern_shmem_t *sh = get_shmem_for_proc(proc);
-    if (!sh) {
-        restore_irq(irq);
-        m3ApiReturn(-1);
-    }
-    u8 *shmem_ptr = (u8 *)(sh->phys_base + vmm_get_hhdm());
-    shmem_ptr[offset] = (u8)val;
-    restore_irq(irq);
-    m3ApiReturn(0);
-}
-
-m3ApiRawFunction(wasm_ipc_shmem_read) {
-    m3ApiReturnType(i32)
-    m3ApiGetArg(u32, shmem_offset)
-    m3ApiGetArg(u32, buf_offset)
-    m3ApiGetArg(u32, len)
-
-    u32 mem_size = 0;
-    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
-    if (!mem || buf_offset + len > mem_size || shmem_offset + len > PAGE_SIZE) {
-        m3ApiReturn(-1);
-    }
-
-    kern_process_t *proc = sched_get_current_process();
-    if (!proc) m3ApiReturn(-1);
-
-    u64 irq = save_irq_and_disable();
-    kern_shmem_t *sh = get_shmem_for_proc(proc);
-    if (!sh) {
-        restore_irq(irq);
-        m3ApiReturn(-1);
-    }
-    u8 *shmem_ptr = (u8 *)(sh->phys_base + vmm_get_hhdm());
-    mem_copy(mem + buf_offset, shmem_ptr + shmem_offset, len);
-    restore_irq(irq);
-    m3ApiReturn((i32)len);
-}
-
-m3ApiRawFunction(wasm_ipc_shmem_write) {
-    m3ApiReturnType(i32)
-    m3ApiGetArg(u32, shmem_offset)
-    m3ApiGetArg(u32, buf_offset)
-    m3ApiGetArg(u32, len)
-
-    u32 mem_size = 0;
-    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
-    if (!mem || buf_offset + len > mem_size || shmem_offset + len > PAGE_SIZE) {
-        m3ApiReturn(-1);
-    }
-
-    kern_process_t *proc = sched_get_current_process();
-    if (!proc) m3ApiReturn(-1);
-
-    u64 irq = save_irq_and_disable();
-    kern_shmem_t *sh = get_shmem_for_proc(proc);
-    if (!sh) {
-        restore_irq(irq);
-        m3ApiReturn(-1);
-    }
-    u8 *shmem_ptr = (u8 *)(sh->phys_base + vmm_get_hhdm());
-    mem_copy(shmem_ptr + shmem_offset, mem + buf_offset, len);
-    restore_irq(irq);
-    m3ApiReturn((i32)len);
 }
