@@ -7,6 +7,7 @@
 
 #include "../include/kern_compositor.h"
 #include "../include/kern_screen.h"
+#include "../include/kern_terminal.h"
 #include "../include/kern_mem.h"
 #include "../include/kern_serial.h"
 #include "../include/kern_asmstubs.h"
@@ -20,6 +21,13 @@
 // ── Module-level state ─────────────────────────────────────────────────────
 
 i32 g_compositor_pid = -1;
+u32 g_compositor_session_id = 0;
+
+bool compositor_is_active(void) {
+    if (g_compositor_pid == -1) return false;
+    if (!active_session) return true;
+    return (active_session->id == g_compositor_session_id);
+}
 
 // Compositor runtime — set by claimCompositor, used by present/blitFromPid.
 static IM3Runtime g_compositor_runtime = NULL;
@@ -41,6 +49,7 @@ static u32 g_compositor_buffer_offset = 0;
 
 typedef struct {
     char path[128];
+    i32  arg0;         // first argv entry, passed as a raw int (e.g. shm_id)
     i32  result_pid;   // set by dequeueSpawn before signaling
 } spawn_request_t;
 
@@ -78,6 +87,7 @@ static i32 compositor_find_child(i32 pid) {
 
 void compositor_init(void) {
     g_compositor_pid = -1;
+    g_compositor_session_id = 0;
     g_compositor_runtime = NULL;
     g_compositor_buffer_offset = 0;
     g_child_count = 0;
@@ -105,6 +115,7 @@ void compositor_child_cleanup(i32 pid) {
     // If the compositor itself is dying, reset global state.
     if (pid == g_compositor_pid) {
         g_compositor_pid = -1;
+        g_compositor_session_id = 0;
         g_compositor_runtime = NULL;
         g_compositor_buffer_offset = 0;
         g_event_read = g_event_write;  // drain events
@@ -134,6 +145,7 @@ m3ApiRawFunction(wasm_display_claim_compositor) {
         m3ApiReturn(-1);
     }
     g_compositor_pid = proc->pid;
+    g_compositor_session_id = proc->terminal_session ? ((term_session_t*)proc->terminal_session)->id : (active_session ? active_session->id : 0);
     g_compositor_runtime = runtime;
     restore_irq(irq);
 
@@ -172,7 +184,12 @@ m3ApiRawFunction(wasm_display_present) {
         m3ApiReturn(0);
     }
 
-    // No compositor OR caller IS the compositor: blit to hardware.
+    // If caller IS the compositor, but compositor is NOT on the active session:
+    if (comp_pid != -1 && proc->pid == comp_pid && !compositor_is_active()) {
+        m3ApiReturn(0);
+    }
+
+    // No compositor OR caller IS active compositor: blit to hardware.
     display_t *disp = screen_current_display();
     if (!disp || !disp->trueAddress) { m3ApiReturn(-2); }
 
@@ -223,6 +240,10 @@ m3ApiRawFunction(wasm_display_present_rect) {
     restore_irq(irq);
 
     if (comp_pid != -1 && proc->pid != comp_pid) {
+        m3ApiReturn(0);
+    }
+
+    if (comp_pid != -1 && proc->pid == comp_pid && !compositor_is_active()) {
         m3ApiReturn(0);
     }
 
@@ -389,8 +410,8 @@ m3ApiRawFunction(wasm_input_poll_events) {
     if (!proc || proc->pid != g_compositor_pid) { m3ApiReturn(-1); }
 
     // Direct drain from hardware driver queues into compositor event ring buffer:
-    // This eliminates latency from waiting for the idle thread on 10ms timer ticks.
-    {
+    // Only drain if the compositor's session is currently active.
+    if (compositor_is_active()) {
         mouse_event_t mev;
         while (mouse_eat_event(&mev)) {
             compositor_push_event(mev.type, (u32)(i32)mev.dx, (u32)(i32)mev.dy, 0);
@@ -398,6 +419,18 @@ m3ApiRawFunction(wasm_input_poll_events) {
 
         u8 k = 0;
         while ((k = keyboard_eat_key())) {
+            // F1-F4: switch virtual terminal sessions
+            if (k >= KEY_F1 && k <= KEY_F4) {
+                u32 target = k - KEY_F1;  // F1=0, F2=1, F3=2, F4=3
+                if (target < MAX_SESSIONS && (!active_session || target != active_session->id)) {
+                    serial_outsf("VT switch: %s -> %s\n",
+                                 active_session ? active_session->name : "?",
+                                 sessions[target].name);
+                    session_switch(target);
+                    sched_idle_wake();
+                }
+                continue;
+            }
             compositor_push_event(0, k, 0, 0);  // KEY_DOWN
         }
     }
@@ -427,6 +460,7 @@ m3ApiRawFunction(wasm_input_poll_events) {
     restore_irq(irq);
 
     if (events_copied == 0) {
+        sched_idle_wake();
         sched_yield();
     }
 
@@ -443,10 +477,22 @@ m3ApiRawFunction(wasm_compositor_proc_spawn) {
     m3ApiGetArg(i32, argc)
     m3ApiGetArg(u32, argv_offset)
 
-    (void)argc; (void)argv_offset;   // ignored for now; WM spawns hello.wasm
-
     kern_process_t *proc = sched_get_current_process();
     if (!proc || proc->pid != g_compositor_pid) { m3ApiReturn(-1); }
+
+    // argv is an array of `argc` raw u32 integers in the caller's linear
+    // memory (the WM passes a shm_id for the child's input ring). Only the
+    // first entry is captured; negative/absent args become 0.
+    i32 arg0 = 0;
+    if (argc > 0 && argv_offset != 0) {
+        u32 mem_size = 0;
+        u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+        if (mem && argv_offset + 4 <= mem_size) {
+            u32 raw = 0;
+            mem_copy((u8*)&raw, mem + argv_offset, 4);
+            arg0 = (i32)raw;
+        }
+    }
 
     if (g_child_count >= MAX_COMPOSITOR_WINDOWS) {
         m3ApiReturn(-4); // max child limit reached
@@ -472,6 +518,7 @@ m3ApiRawFunction(wasm_compositor_proc_spawn) {
     for (u32 i = 0; i < path_len; i++)
         req->path[i] = (char)mem[path_offset + i];
     req->path[path_len] = '\0';
+    req->arg0 = arg0;
     req->result_pid = -1;
     g_spawn_head = next;
     restore_irq(irq);
@@ -504,6 +551,22 @@ m3ApiRawFunction(wasm_compositor_proc_dequeue_spawn) {
     opts.path = req->path;
     opts.wasi_argv = false;
     opts.foreground = false;
+
+    // Format arg0 as a decimal string so the child can read it with
+    // env.get_arg_i32(0). The buffer only needs to live through
+    // wasm_spawn() (it deep-copies argv).
+    char argbuf[16];
+    char *argv[1] = { argbuf };
+    if (req->arg0 > 0) {
+        int v = req->arg0, n = 0;
+        while (v > 0) { argbuf[n++] = '0' + (v % 10); v /= 10; }
+        for (int i = 0, j = n - 1; i < j; i++, j--) {
+            char t = argbuf[i]; argbuf[i] = argbuf[j]; argbuf[j] = t;
+        }
+        argbuf[n] = 0;
+        opts.argc = 1;
+        opts.argv = argv;
+    }
     i32 pid = wasm_spawn(&opts);
     req->result_pid = pid;
     m3ApiReturn(pid);

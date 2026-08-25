@@ -433,8 +433,8 @@ void kern_entry(void) {
 
             i32 len = str_len(typingbuf);
 
-            // If the compositor is active, route all input to it.
-            if (g_compositor_pid != -1) {
+            // If the compositor is active on the current session, route all input to it.
+            if (compositor_is_active()) {
                 compositor_push_event(0, k, 0, 0);  // KEY_DOWN
                 continue;
             }
@@ -469,20 +469,20 @@ void kern_entry(void) {
             }
         }
 
-        // Mouse events — route to compositor when it's active.
+        // Mouse events — route to compositor when it's active on current session.
         {
             mouse_event_t mev;
             while (mouse_eat_event(&mev)) {
-                if (g_compositor_pid != -1) {
+                if (compositor_is_active()) {
                     compositor_push_event(mev.type, (u32)(i32)mev.dx, (u32)(i32)mev.dy, 0);
                 }
             }
         }
 
         // Render the active session (cell buffer, cursor, header bar, input prompt).
-        // Skip when the compositor owns the display — it handles all rendering
-        // via display.present() and we'd just overwrite its pixels.
-        if (g_compositor_pid == -1) {
+        // Skip when the compositor owns the display on the active session — it handles
+        // all rendering via display.present() and we'd just overwrite its pixels.
+        if (!compositor_is_active()) {
             term_render();
         }
         asm volatile("hlt");

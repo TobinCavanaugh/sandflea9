@@ -60,4 +60,9 @@ void compositor_child_cleanup(i32 pid);
 // Initialize compositor subsystem at boot.
 void compositor_init(void);
 
+// Returns true if the compositor is running AND its owning session is currently active.
+bool compositor_is_active(void);
+
+extern u32 g_compositor_session_id;
+
 #endif // SANDFLEA9_KERN_COMPOSITOR_H

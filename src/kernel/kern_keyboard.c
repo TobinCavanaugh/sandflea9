@@ -225,6 +225,7 @@ u8 shift_down = false;
 // holding left AND right Ctrl simultaneously (and releasing them in any
 // order) doesn't desync the modifier state.
 #define IS_CTRL_DOWN() (scancode_pressed[0x1D])
+#define IS_ALT_DOWN()  (scancode_pressed[0x38])
 
 // ─── PS/2 (i8042) keyboard state ────────────────────────────────────────────
 // Phase 0 of media/writings/usb_basic_implementation_plan.md:
@@ -357,6 +358,10 @@ void kbd_inject_scancode_set1(u8 sc, bool is_extended, bool is_down) {
             // is already true here, so simultaneous left+right Ctrl is fine.
             if (IS_CTRL_DOWN() && ascii >= 'a' && ascii <= 'z') {
                 ascii = ascii & 0x1F;
+            }
+            // Alt+Space → 0x1B (WM spawns a new terminal)
+            if (IS_ALT_DOWN() && ascii == ' ') {
+                ascii = 0x1B;
             }
         } else {
             switch (sc) {

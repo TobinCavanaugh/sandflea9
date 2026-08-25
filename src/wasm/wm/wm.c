@@ -2,7 +2,7 @@
 //
 // Imports linked by wasm_spawn via host function table:
 //   display.claimCompositor, display.getResolution, display.claimBuffer,
-//   display.present, display.presentRect, input.pollEvents, proc.spawn, proc.signal
+//   display.present, display.blitFromPid, input.pollEvents, proc.spawn, proc.signal
 
 // ── WASM imports ──────────────────────────────────────────────────────────
 
@@ -30,6 +30,15 @@ extern int pollEvents(int buf, int max);
 __attribute__((import_module("proc"), import_name("spawn")))
 extern int proc_spawn(int path_ptr, int argc, int argv_ptr);
 
+__attribute__((import_module("env"), import_name("ipc_shm_create")))
+extern int ipc_shm_create(int pages);
+
+__attribute__((import_module("env"), import_name("ipc_shm_attach")))
+extern int ipc_shm_attach(int shm_id);
+
+__attribute__((import_module("env"), import_name("ipc_shm_write_byte")))
+extern int ipc_shm_write_byte(int handle, int offset, int val);
+
 __attribute__((import_module("proc"), import_name("dequeueSpawn")))
 extern int proc_dequeue_spawn(void);
 
@@ -45,7 +54,8 @@ extern int proc_signal(int pid, int event, int data);
 
 #define SIG_FOCUS_GAINED  1
 #define SIG_FOCUS_LOST    2
-#define SIG_CLOSE         3
+#define SIG_CLOSE         4
+#define SIG_KEY           8
 
 // ── Window struct ─────────────────────────────────────────────────────────
 
@@ -54,6 +64,9 @@ typedef struct {
     int   canvas_x, canvas_y;
     int   w, h;
     int   focused;
+    int   shm_id;      // shared-memory input ring id (shared with child)
+    int   shm_handle;  // WM's local handle to the ring
+    int   shm_tail;    // ring producer counter (mod 256)
     char  title[64];
 } window_t;
 
@@ -68,6 +81,10 @@ static int   focused_idx = -1;
 static int   cursor_x, cursor_y;                    // mouse cursor position
 static int   prev_cursor_x, prev_cursor_y;          // previous cursor position for dirty damage
 static int   event_buf[EVENT_BUF_SZ * 4];
+
+// Pending shm ring created in enqueue_spawn, claimed by dequeue_pending_spawns.
+static int   pending_shm_id = -1;
+static int   pending_shm_handle = -1;
 
 // ── Tiny utilities ────────────────────────────────────────────────────────
 
@@ -201,6 +218,21 @@ static void close_window(int idx) {
     }
 }
 
+// ── Input forwarding ───────────────────────────────────────────────────────
+
+// Writes one key byte into the focused window's shared-memory ring and
+// wakes the child. The child drains the ring on SIG_KEY, so bursts of
+// keystrokes are not lost to signal coalescing.
+static void send_key_to_focused(int ch) {
+    if (focused_idx < 0 || focused_idx >= window_count) return;
+    window_t *win = &windows[focused_idx];
+    if (win->shm_handle < 0) return;
+    ipc_shm_write_byte(win->shm_handle, 2 + (win->shm_tail % 256), ch);
+    win->shm_tail = (win->shm_tail + 1) & 0xFF;
+    ipc_shm_write_byte(win->shm_handle, 1, win->shm_tail);  // publish tail
+    proc_signal(win->pid, SIG_KEY, 0);
+}
+
 // ── Tiling ────────────────────────────────────────────────────────────────
 
 static void tile_all(void) {
@@ -224,13 +256,32 @@ static void enqueue_spawn(void) {
     if (window_count >= MAX_WINDOWS) return;
 
     static char path_buf[64];
-    const char *name = "hello.wasm";
+    const char *name = "term_stub.wasm";
     int plen = 0;
     while (name[plen]) plen++;
     wm_memcpy(path_buf, name, plen);
     path_buf[plen] = 0;
 
-    proc_spawn((int)(unsigned long)path_buf, 0, 0);
+    // Create a 1-page shared-memory input ring for the child terminal.
+    // Layout: [0] head (child), [1] tail (us), [2..] 256-byte key ring.
+    // The shm_id rides along as argv[0] so the child can attach.
+    static int argv_arr[1];
+    pending_shm_id = ipc_shm_create(1);
+    if (pending_shm_id > 0) {
+        pending_shm_handle = ipc_shm_attach(pending_shm_id);
+        if (pending_shm_handle >= 0) {
+            ipc_shm_write_byte(pending_shm_handle, 0, 0);  // head = 0
+            ipc_shm_write_byte(pending_shm_handle, 1, 0);  // tail = 0
+        } else {
+            pending_shm_id = -1;
+        }
+    } else {
+        pending_shm_id = -1;
+        pending_shm_handle = -1;
+    }
+    argv_arr[0] = pending_shm_id > 0 ? pending_shm_id : 0;
+
+    proc_spawn((int)(unsigned long)path_buf, 1, (int)(unsigned long)argv_arr);
 }
 
 // Call once per event loop iteration to drain spawn completions.
@@ -248,6 +299,11 @@ static int dequeue_pending_spawns(void) {
         win->w = 400;
         win->h = 300;
         win->focused = 0;
+        win->shm_id = pending_shm_id;
+        win->shm_handle = pending_shm_handle;
+        win->shm_tail = 0;
+        pending_shm_id = -1;
+        pending_shm_handle = -1;
         wm_memcpy(win->title, "Terminal", 8);
         win->title[8] = 0;
 
@@ -261,6 +317,20 @@ static int dequeue_pending_spawns(void) {
 }
 
 // ── Composite & Cursor ────────────────────────────────────────────────────
+
+// Blits the child process's framebuffer into the window's client area.
+// The child buffer is full-screen sized (source 0,0 = its top-left); the
+// destination is the client rect in compositor screen coordinates.
+// Returns 0 on success (blitFromPid returns non-zero while the child is
+// still starting up and hasn't claimed its buffer yet).
+static int blit_child(window_t *win) {
+    int cx = win->canvas_x + BORDER_W;
+    int cy = win->canvas_y + TITLE_BAR_H;
+    int cw = win->w - BORDER_W * 2;
+    int ch = win->h - TITLE_BAR_H - BORDER_W;
+    if (cw <= 0 || ch <= 0) return 0;
+    return blitFromPid(win->pid, 0, 0, cx, cy, cw, ch);
+}
 
 static void draw_cursor(int cx, int cy) {
     unsigned int *fb = (unsigned int*)WASM_U8(fb_offset);
@@ -292,8 +362,9 @@ static void restore_cursor(int cx, int cy) {
     }
 }
 
-static void composite_frame(void) {
+static int composite_frame(void) {
     fill_rect(0, 0, screen_w, screen_h, 0xFF1A1A2E);
+    int all_children_ready = 1;
 
     // Draw unfocused windows first into clean backbuffer
     for (int i = 0; i < window_count; i++) {
@@ -306,6 +377,7 @@ static void composite_frame(void) {
         fill_rect(cx, cy, cw, ch, 0xFF222222);
         draw_title_bar(w);
         draw_window_borders(w);
+        if (blit_child(w) != 0) all_children_ready = 0;
     }
 
     // Draw focused window last (on top) into clean backbuffer
@@ -318,18 +390,20 @@ static void composite_frame(void) {
         fill_rect(cx, cy, cw, ch, 0xFF222222);
         draw_title_bar(w);
         draw_window_borders(w);
+        if (blit_child(w) != 0) all_children_ready = 0;
     }
 
-    // Copy clean backbuffer to frontbuffer
-    unsigned int *dst = (unsigned int*)WASM_U8(fb_offset);
-    unsigned int *src = (unsigned int*)WASM_U8(clean_fb_offset);
-    int total_pixels = screen_w * screen_h;
-    for (int i = 0; i < total_pixels; i++) {
+    // Copy clean backbuffer to frontbuffer (in 64-bit words)
+    unsigned long long *dst = (unsigned long long*)WASM_U8(fb_offset);
+    unsigned long long *src = (unsigned long long*)WASM_U8(clean_fb_offset);
+    int total_words = (screen_w * screen_h) / 2;
+    for (int i = 0; i < total_words; i++) {
         dst[i] = src[i];
     }
 
     draw_cursor(cursor_x, cursor_y);
     present(fb_offset);
+    return all_children_ready;
 }
 
 // ── Cursor ───────────────────────────────────────────────────────────────
@@ -368,10 +442,14 @@ void _start(void) {
     prev_cursor_y = cursor_y;
     composite_frame();
 
+    int retry_child_ready = 0;
+
     for (;;) {
         int spawned = dequeue_pending_spawns();
-        int full_redraw = (spawned > 0);
+        int full_redraw = (spawned > 0) || (retry_child_ready > 0);
         int mouse_moved = 0;
+
+        if (retry_child_ready > 0) retry_child_ready--;
 
         int n = pollEvents((int)(unsigned long)event_buf, EVENT_BUF_SZ);
 
@@ -381,9 +459,19 @@ void _start(void) {
             int d1   = event_buf[i * 4 + 2];
 
             if (type == 0) {  // KEY_DOWN
-                char k = (char)d0;
+                int k = (int)d0;
 
                 if (k == '\r' || k == '\n') {
+                    if (window_count == 0) {
+                        // No windows yet: Enter boots the first terminal.
+                        enqueue_spawn();
+                        dequeue_pending_spawns();
+                        full_redraw = 1;
+                    } else if (focused_idx >= 0) {
+                        send_key_to_focused('\n');  // Enter breaks the line
+                        full_redraw = 1;
+                    }
+                } else if (k == 0x1B) {  // Alt+Space: spawn new terminal
                     if (window_count < MAX_WINDOWS) {
                         enqueue_spawn();
                         dequeue_pending_spawns();
@@ -394,14 +482,19 @@ void _start(void) {
                         focus_window((focused_idx + 1) % window_count);
                         full_redraw = 1;
                     }
-                } else if (k == 'q' || k == 'Q') {
+                } else if (k == 0x11) {  // Ctrl+Q: close focused window
                     if (focused_idx >= 0) {
                         close_window(focused_idx);
                         tile_all();
                         full_redraw = 1;
                     }
-                } else if (k == '\x1B') {
+                } else if (k == 0x00) {  // Escape: quit WM
                     return;
+                } else if (focused_idx >= 0 &&
+                           (k == '\b' || (k >= 0x20 && k <= 0x7E))) {
+                    // Printable chars + backspace go to the focused terminal.
+                    send_key_to_focused(k);
+                    full_redraw = 1;
                 }
             }
             else if (type == 1) {  // MOUSE_MOVE
@@ -427,16 +520,14 @@ void _start(void) {
         }
 
         if (full_redraw) {
-            composite_frame();
+            int all_ready = composite_frame();
+            if (!all_ready) retry_child_ready = 2;
             prev_cursor_x = cursor_x;
             prev_cursor_y = cursor_y;
         } else if (mouse_moved && (cursor_x != prev_cursor_x || cursor_y != prev_cursor_y)) {
-            // Restore exact clean pixels under previous cursor from clean backbuffer
             restore_cursor(prev_cursor_x, prev_cursor_y);
-            // Draw cursor sprite onto active frontbuffer
             draw_cursor(cursor_x, cursor_y);
 
-            // Compute bounding box covering both old and new cursor positions
             int min_x = (prev_cursor_x < cursor_x ? prev_cursor_x : cursor_x) - 2;
             int min_y = (prev_cursor_y < cursor_y ? prev_cursor_y : cursor_y) - 2;
             int max_x = (prev_cursor_x > cursor_x ? prev_cursor_x : cursor_x) + 3;

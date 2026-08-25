@@ -39,20 +39,19 @@ step "sandfleaOS build — project root: $PROJECT_ROOT"
 # script failed. set -e is disabled for the wait+check block (re-enabled
 # below) so a single failure doesn't tear down the other before it's
 # been observed.
-step "phase 1/3 — WABT library + WM + filesystem images [parallel]"
+step "phase 1/3 — WM + WABT library + filesystem images"
+bash "$SCRIPT_DIR/build_wm.sh"
+
 set +e
 bash "$SCRIPT_DIR/build_wabt.sh" &
 PID_WABT=$!
-bash "$SCRIPT_DIR/build_wm.sh" &
-PID_WM=$!
 bash "$SCRIPT_DIR/build_filesystem.sh" &
 PID_FS=$!
 wait "$PID_WABT"; RC_WABT=$?
-wait "$PID_WM";   RC_WM=$?
 wait "$PID_FS";   RC_FS=$?
 set -e
-if [ $RC_WABT -ne 0 ] || [ $RC_WM -ne 0 ] || [ $RC_FS -ne 0 ]; then
-    step "ERROR: build_wabt.sh=$RC_WABT build_wm.sh=$RC_WM build_filesystem.sh=$RC_FS"
+if [ $RC_WABT -ne 0 ] || [ $RC_FS -ne 0 ]; then
+    step "ERROR: build_wabt.sh=$RC_WABT build_filesystem.sh=$RC_FS"
     exit 1
 fi
 
