@@ -1025,23 +1025,71 @@ u0 handle_command() {
 
     if (cmd_word_eq(word, "wasm")) {
         PROFILE_SCOPE("cmd:wasm");
-        // `wasm <file>` runs an arbitrary .wasm with the common host import set.
-        // argv = ["wasm", file], no foreground, no wait (fire-and-forget).
-        char *path = null;
-        if (word->next != null) {
-            path = str_view_to_c(word->next->text);
+        // `wasm <file> [args...]` runs an arbitrary .wasm with arguments forwarded in argv.
+        if (word->next == null) {
+            screen_push_line("Usage: wasm <file.wasm> [args...]");
+            goto Label_Free;
         }
-        char *argv[2] = { "wasm", path };
-        int argc = path ? 2 : 1;
+        char *path = str_view_to_c(word->next->text);
+        char *argv[16] = {0};
+        int argc = 0;
+        cmd_word_t *w = word->next;
+        while (w && argc < 16) {
+            argv[argc++] = str_view_to_c(w->text);
+            w = w->next;
+        }
+
         wasm_spawn_opts_t opts = {
             .path = path,
             .argc = argc,
+            .argv = (char *const *) argv,
+            .foreground = true,
+            .wait = false,
+        };
+        wasm_spawn(&opts);
+
+        for (int i = 0; i < argc; i++) {
+            if (argv[i]) kfree(argv[i]);
+        }
+        if (path) kfree(path);
+        goto Label_Free;
+    }
+
+    if (cmd_word_eq(word, "recv")) {
+        PROFILE_SCOPE("cmd:recv");
+        // Spawn ipc_receiver in background. It prints its PID and shm_id.
+        char *argv[1] = { "ipc_receiver.wasm" };
+        wasm_spawn_opts_t opts = {
+            .path = "ipc_receiver.wasm",
+            .argc = 1,
             .argv = (char *const *) argv,
             .foreground = false,
             .wait = false,
         };
         wasm_spawn(&opts);
-        if (path) kfree(path);
+        goto Label_Free;
+    }
+
+    if (cmd_word_eq(word, "send")) {
+        PROFILE_SCOPE("cmd:send");
+        // `send <shm_id> <target_pid>`
+        if (!word->next || !word->next->next) {
+            screen_push_line("Usage: send <shm_id> <target_pid>");
+            goto Label_Free;
+        }
+        char *shm_str = str_view_to_c(word->next->text);
+        char *pid_str = str_view_to_c(word->next->next->text);
+        char *argv[3] = { "ipc_sender.wasm", shm_str, pid_str };
+        wasm_spawn_opts_t opts = {
+            .path = "ipc_sender.wasm",
+            .argc = 3,
+            .argv = (char *const *) argv,
+            .foreground = true,
+            .wait = false,
+        };
+        wasm_spawn(&opts);
+        if (shm_str) kfree(shm_str);
+        if (pid_str) kfree(pid_str);
         goto Label_Free;
     }
 

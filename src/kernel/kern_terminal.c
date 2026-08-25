@@ -464,9 +464,8 @@ static void scroll_cell_buffer(term_session_t *s) {
 // Write ONE character to the cell buffer at cursor, handling special chars.
 // This is the lowest-level cell write — called from the ANSI parser's GROUND state.
 void term_putc(u8 c) {
-    if (!active_session || !active_session->cells) return;
-
-    term_session_t *s = active_session;
+    term_session_t *s = term_target_session();
+    if (!s || !s->cells) return;
 
     switch (c) {
         case '\n':
@@ -516,15 +515,16 @@ void term_putc(u8 c) {
 // dispatched to term_putc() which writes it into the cell buffer.
 void term_write(const char *buf, i32 len) {
     PROFILE_SCOPE("term:write");
-    if (!buf || len <= 0 || !active_session) return;
+    term_session_t *s = term_target_session();
+    if (!buf || len <= 0 || !s) return;
     for (i32 i = 0; i < len; i++) {
         ansi_putc((u8)buf[i]);
     }
 }
 
 static void ansi_putc(u8 c) {
-    if (!active_session) return;
-    term_session_t *s = active_session;
+    term_session_t *s = term_target_session();
+    if (!s) return;
 
     switch (ansi_parser.state) {
         case ANSI_GROUND:

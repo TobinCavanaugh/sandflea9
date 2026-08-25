@@ -370,10 +370,10 @@ u0 sched_run_next() {
 
     if (next == start) {
         // Wrapped all the way around: nothing else wanted the CPU.
-        // If current task is dead, we MUST switch away to any runnable task.
-        if (start->state == TASK_STATE_DEAD) {
+        // If current task is dead or blocked, we MUST switch away to any runnable task (e.g. idle/shell).
+        if (start->state == TASK_STATE_DEAD || start->state == TASK_STATE_BLOCKED) {
             kern_task_t *fallback = (idle_task && idle_task != start) ? idle_task : start->next;
-            while (fallback->state == TASK_STATE_DEAD && fallback != start) {
+            while ((fallback->state == TASK_STATE_DEAD || fallback->state == TASK_STATE_BLOCKED) && fallback != start) {
                 fallback = fallback->next;
             }
             if (fallback != start) {

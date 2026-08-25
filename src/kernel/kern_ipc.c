@@ -278,27 +278,24 @@ u32 ipc_signal_wait(u32 mask) {
 
     u64 irq = save_irq_and_disable();
 
-    // Fast path: signal already pending.
-    u32 pending = proc->pending_signals & mask;
-    if (pending) {
-        proc->pending_signals &= ~pending;
+    while (1) {
+        // Fast path / wakeup check: signal matching mask is pending
+        u32 pending = proc->pending_signals & mask;
+        if (pending) {
+            proc->pending_signals &= ~pending;
+            task->signal_wait_mask = 0;
+            restore_irq(irq);
+            return pending;
+        }
+
+        // Block until a matching signal arrives
+        task->signal_wait_mask = mask;
         restore_irq(irq);
-        return pending;
+
+        sched_block_current();
+
+        irq = save_irq_and_disable();
     }
-
-    // Block until a matching signal arrives.
-    task->signal_wait_mask = mask;
-    restore_irq(irq);
-
-    sched_block_current();
-
-    // We're back — consume pending signals.
-    irq = save_irq_and_disable();
-    pending = proc->pending_signals & mask;
-    proc->pending_signals &= ~pending;
-    task->signal_wait_mask = 0;
-    restore_irq(irq);
-    return pending;
 }
 
 u32 ipc_signal_poll(u32 mask) {
