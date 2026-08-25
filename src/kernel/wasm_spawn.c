@@ -1547,6 +1547,7 @@ do_load:
         m3_LinkRawFunction(module, "display", "blitFromPid",     "i(iiiiiii)", &wasm_display_blit_from_pid);
         m3_LinkRawFunction(module, "input",   "pollEvents",      "i(ii)",    &wasm_input_poll_events);
         m3_LinkRawFunction(module, "proc",    "spawn",           "i(iii)",   &wasm_compositor_proc_spawn);
+        m3_LinkRawFunction(module, "proc",    "dequeueSpawn",     "i()",      &wasm_compositor_proc_dequeue_spawn);
         m3_LinkRawFunction(module, "proc",    "signal",          "i(iii)",   &wasm_compositor_proc_signal);
 
         // 5. Program-specific imports (doom-style). Best-effort: missing imports

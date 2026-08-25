@@ -129,7 +129,8 @@ u0 process_exit(kern_process_t *proc) {
     ipc_process_cleanup(proc);
 
     // Compositor: clean up any display buffer tracking for this process.
-    compositor_child_cleanup(proc->pid);
+    // Use old_pid because proc->pid was already set to -1 above.
+    compositor_child_cleanup(old_pid);
 
     // Per-process cleanup hook. Runs while the process is still alive enough
     // for the hook to dereference `proc`; we invoke it BEFORE we start
@@ -198,7 +199,8 @@ static kern_task_t *task_create_internal(kern_process_t *proc, u0 (*function)(u0
     task->process = proc ? proc : kernel_process;
     task->signal_wait_mask = 0;
 
-    u64 stack_size = 128 * 1024; // 128KiB
+    u64 stack_size = 256 * 1024; // 256KiB — must be large enough for wasm3 interpreter
+                                   // recursion + host function call chain
     u0 *stack_ptr_base = kmalloc(stack_size);
     if (!stack_ptr_base) {
         kfree(task);
@@ -372,7 +374,7 @@ u0 sched_run_next() {
 
     current_task = next;
 
-    task_switch_asm(prev, current_task);
+    task_switch_asm(start, current_task);
     restore_irq(irq);
 }
 

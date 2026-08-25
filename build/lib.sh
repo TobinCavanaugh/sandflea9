@@ -34,6 +34,7 @@ C_SOURCES=(
     "src/kernel/kern_interrupts.c"
     "src/kernel/kern_keyboard.c"
     "src/kernel/kern_mem.c"
+    "src/kernel/kern_mouse.c"
     "src/kernel/kern_pci.c"
     "src/kernel/kern_sched.c"
     "src/kernel/kern_screen.c"

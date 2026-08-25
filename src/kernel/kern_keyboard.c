@@ -306,7 +306,8 @@ u0 keyboard_handle_keypress(registers_t *t) {
 
     u8 status = inb(0x64);
 
-    if (status & 0x01) {
+    // Bit 0: Output buffer full. Bit 5: 0 = Keyboard data, 1 = Mouse data.
+    if ((status & 0x01) && !(status & 0x20)) {
         u8 sc = inb(0x60);
 
         // Extended prefix — leave the consumer to decide how to interpret

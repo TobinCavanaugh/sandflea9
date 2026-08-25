@@ -580,6 +580,7 @@ u0 wasm_doom_test(u0 *arg) {
     static i32 k_tab = 0, k_shift = 0, k_alt = 0, k_strafe_l = 0, k_strafe_r = 0;
 
     static i32 k_y = 0, k_n = 0, k_backspace = 0;
+    static i32 k_num[10] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' };
 
     k_up     = doom_read_key_global(module, "KEY_UPARROW");
     k_down   = doom_read_key_global(module, "KEY_DOWNARROW");
@@ -630,6 +631,16 @@ u0 wasm_doom_test(u0 *arg) {
         { DOOM_SC_Y,      &k_y,         false },
         { DOOM_SC_N,      &k_n,         false },
         { 0x0E,           &k_backspace, false },  // Backspace key (menu navigation)
+        { 0x02,           &k_num[1],    false },  // '1'
+        { 0x03,           &k_num[2],    false },  // '2'
+        { 0x04,           &k_num[3],    false },  // '3'
+        { 0x05,           &k_num[4],    false },  // '4'
+        { 0x06,           &k_num[5],    false },  // '5'
+        { 0x07,           &k_num[6],    false },  // '6'
+        { 0x08,           &k_num[7],    false },  // '7'
+        { 0x09,           &k_num[8],    false },  // '8'
+        { 0x0A,           &k_num[9],    false },  // '9'
+        { 0x0B,           &k_num[0],    false },  // '0'
     };
     const int key_map_count = sizeof(key_map) / sizeof(key_map[0]);
 
@@ -1422,6 +1433,25 @@ u0 handle_command() {
         i32 pid = wasm_spawn(&opts);
         if (pid >= 0) {
             screen_push_linef("wm: compositor PID %d launched", pid);
+        }
+        goto Label_Free;
+    }
+
+    if (cmd_word_eq(word, "crashme")) {
+        PROFILE_SCOPE("cmd:crashme");
+        // Adversarial WASM test: exercises every sandbox boundary.
+        // Deep recursion, invalid host fn offsets, tight dispatch loops.
+        // Does NOT claim the compositor — purely tests sandboxing.
+        wasm_spawn_opts_t opts = {
+            .path = "crashme.wasm",
+            .foreground = false,
+            .wait = true,
+        };
+        i32 pid = wasm_spawn(&opts);
+        if (pid >= 0) {
+            screen_push_linef("crashme: PID %d — sandbox held", pid);
+        } else {
+            screen_push_line("crashme: spawn failed");
         }
         goto Label_Free;
     }

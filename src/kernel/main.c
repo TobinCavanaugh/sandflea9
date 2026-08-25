@@ -41,6 +41,7 @@
 #include "../include/kern_terminal.h"
 #include "../include/kern_tests.h"
 #include "../include/kern_compositor.h"
+#include "../include/kern_mouse.h"
 #include "../include/kern_ide.h"
 #include "../include/kern_fs.h"
 #include "../include/kern_profile.h"
@@ -297,8 +298,10 @@ void kern_entry(void) {
     // line below once the USB HID boot-protocol decoder is fully wired
     // up and ready to take over input.
     interrupt_register(33, (void (*)(const registers_t *)) keyboard_handle_keypress);
+    interrupt_register(44, mouse_handle_interrupt);
+    mouse_init();
     sti();
-    serial_outsl("Interrupts: Timer and keyboard handlers registered (sti)");
+    serial_outsl("Interrupts: Timer, keyboard, and mouse handlers registered (sti)");
 
     // CPU clock sanity probe: on bare metal without P-state/boost init the
     // core can sit far below its rated speed, which makes every workload
@@ -393,8 +396,6 @@ void kern_entry(void) {
             // If the compositor is active, route all input to it.
             if (g_compositor_pid != -1) {
                 compositor_push_event(0, k, 0, 0);  // KEY_DOWN
-                // Also push KEY_UP so the compositor can do edge detection.
-                // (For raw text, the compositor tracks state itself.)
                 continue;
             }
 
@@ -424,6 +425,16 @@ void kern_entry(void) {
                 if (len < 254) {
                     typingbuf[len] = k;
                     typingbuf[len + 1] = 0;
+                }
+            }
+        }
+
+        // Mouse events — route to compositor when it's active.
+        {
+            mouse_event_t mev;
+            while (mouse_eat_event(&mev)) {
+                if (g_compositor_pid != -1) {
+                    compositor_push_event(mev.type, (u32)(i32)mev.dx, (u32)(i32)mev.dy, 0);
                 }
             }
         }

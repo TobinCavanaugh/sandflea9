@@ -51,6 +51,14 @@ u0 enable_keyboard_ioapic(u64 ioapic_virt_base) {
     ioapic_write(ioapic_virt_base, 0x10 + (1 * 2) + 1, high_bits);
 }
 
+u0 enable_mouse_ioapic(u64 ioapic_virt_base) {
+    u32 low_bits = 0x2C; // vector 44 (IRQ 12)
+    u32 high_bits = 0;
+
+    ioapic_write(ioapic_virt_base, 0x10 + (12 * 2), low_bits);
+    ioapic_write(ioapic_virt_base, 0x10 + (12 * 2) + 1, high_bits);
+}
+
 u0 apic_timer_init(u64 lapic_base, u8 vector, u32 ms) {
     lapic_write(lapic_base, LAPIC_TIMER_DIV, 0x3);
     pit_prepare_sleep(10);
@@ -90,7 +98,7 @@ u0 apic_init() {
     u64 ioapic_virt = 0xFFFFFFFF10001000;
     vmm_map_page(IOAPIC_PHYS_BASE, ioapic_virt, PAGE_RW | PAGE_PCD);
     enable_keyboard_ioapic(ioapic_virt);
-
+    enable_mouse_ioapic(ioapic_virt);
 }
 
 u0 pit_prepare_sleep(u16 ms) {

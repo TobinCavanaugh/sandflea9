@@ -53,5 +53,23 @@ ISR_NOERRCODE 29
 ISR_NOERRCODE 30
 ISR_NOERRCODE 31
 
-ISR_NOERRCODE 32
-ISR_NOERRCODE 33
+%assign i 32
+%rep 224
+    global isr%+i
+    isr%+i:
+        cli
+        push qword 0
+        push qword i
+        jmp _isr_common_stub
+%assign i i+1
+%endrep
+
+section .data
+align 8
+global isr_table
+isr_table:
+%assign i 0
+%rep 256
+    dq isr%+i
+%assign i i+1
+%endrep

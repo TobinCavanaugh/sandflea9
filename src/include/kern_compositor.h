@@ -45,6 +45,7 @@ extern const void * wasm_display_claim_buffer(IM3Runtime runtime, IM3ImportConte
 extern const void * wasm_display_blit_from_pid(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
 extern const void * wasm_input_poll_events(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
 extern const void * wasm_compositor_proc_spawn(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
+extern const void * wasm_compositor_proc_dequeue_spawn(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
 extern const void * wasm_compositor_proc_signal(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
 
 // ── Kernel internal API ────────────────────────────────────────────────────

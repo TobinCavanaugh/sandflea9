@@ -27,6 +27,9 @@ extern int pollEvents(int buf, int max);
 __attribute__((import_module("proc"), import_name("spawn")))
 extern int proc_spawn(int path_ptr, int argc, int argv_ptr);
 
+__attribute__((import_module("proc"), import_name("dequeueSpawn")))
+extern int proc_dequeue_spawn(void);
+
 __attribute__((import_module("proc"), import_name("signal")))
 extern int proc_signal(int pid, int event, int data);
 
@@ -58,6 +61,7 @@ static int   fb_offset;
 static window_t windows[MAX_WINDOWS];
 static int   window_count;
 static int   focused_idx = -1;
+static int   cursor_x, cursor_y;                    // mouse cursor position
 static int   event_buf[EVENT_BUF_SZ * 4];
 
 // ── Tiny utilities ────────────────────────────────────────────────────────
@@ -204,7 +208,7 @@ static void tile_all(void) {
 
 // ── Spawn ─────────────────────────────────────────────────────────────────
 
-static void spawn_terminal(void) {
+static void enqueue_spawn(void) {
     if (window_count >= MAX_WINDOWS) return;
 
     // Place path string in a static buffer (.bss, past code/data)
@@ -215,23 +219,34 @@ static void spawn_terminal(void) {
     wm_memcpy(path_buf, name, plen);
     path_buf[plen] = 0;
 
-    int pid = proc_spawn((int)(unsigned long)path_buf, 0, 0);
-    if (pid < 0) return;
+    // Enqueue the spawn request — proc.spawn just stores it.
+    // The actual spawn happens in dequeue_pending_spawns() below.
+    int ok = proc_spawn((int)(unsigned long)path_buf, 0, 0);
+    if (ok != 0) return;
+}
 
-    window_t *win = &windows[window_count];
-    win->pid = pid;
-    win->canvas_x = 100 + window_count * 30;
-    win->canvas_y = 100 + window_count * 30;
-    win->w = 400;
-    win->h = 300;
-    win->focused = 0;
-    wm_memcpy(win->title, "Terminal", 8);
-    win->title[8] = 0;
+// Call once per event loop iteration to drain spawn completions.
+// proc.dequeueSpawn() returns the new PID, or -1 if nothing pending.
+static void dequeue_pending_spawns(void) {
+    for (;;) {
+        int pid = proc_dequeue_spawn();
+        if (pid < 0) break;
 
-    int idx = window_count;
-    window_count++;
-    focus_window(idx);
-    tile_all();
+        window_t *win = &windows[window_count];
+        win->pid = pid;
+        win->canvas_x = 100 + window_count * 30;
+        win->canvas_y = 100 + window_count * 30;
+        win->w = 400;
+        win->h = 300;
+        win->focused = 0;
+        wm_memcpy(win->title, "Terminal", 8);
+        win->title[8] = 0;
+
+        int idx = window_count;
+        window_count++;
+        focus_window(idx);
+        tile_all();
+    }
 }
 
 // ── Composite ─────────────────────────────────────────────────────────────
@@ -254,7 +269,33 @@ static void composite_frame(void) {
         }
     }
 
+    // Draw mouse cursor (4x4 white dot with black outline, hot at center)
+    for (int dy = -2; dy <= 2; dy++) {
+        for (int dx = -2; dx <= 2; dx++) {
+            int px = cursor_x + dx;
+            int py = cursor_y + dy;
+            if (px < 0 || py < 0 || px >= screen_w || py >= screen_h) continue;
+            unsigned int *fb = (unsigned int*)WASM_U8(fb_offset);
+            unsigned int col = (dx == 0 && dy == 0) ? 0xFF000000 : 0xFFFFFFFF;
+            fb[py * screen_w + px] = col;
+        }
+    }
+
     present(fb_offset);
+}
+
+// ── Cursor ───────────────────────────────────────────────────────────────
+
+// Hit test: returns window index under (x,y), or -1 for none.
+static int hit_test(int mx, int my) {
+    for (int i = window_count - 1; i >= 0; i--) {
+        window_t *w = &windows[i];
+        if (mx >= w->canvas_x && mx < w->canvas_x + w->w &&
+            my >= w->canvas_y && my < w->canvas_y + w->h) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────
@@ -270,21 +311,28 @@ void _start(void) {
     fb_offset = claimBuffer();
     if (fb_offset < 0) return;
 
+    cursor_x = screen_w / 2;
+    cursor_y = screen_h / 2;
     composite_frame();
 
     for (;;) {
+        // Drain spawn completions first — this is the safe point
+        // (minimal wasm3 recursion depth) for wasm_spawn calls.
+        dequeue_pending_spawns();
+
         int n = pollEvents((int)(unsigned long)event_buf, EVENT_BUF_SZ);
         int redraw = 0;
 
         for (int i = 0; i < n; i++) {
             int type = event_buf[i * 4 + 0];
             int d0   = event_buf[i * 4 + 1];
+            int d1   = event_buf[i * 4 + 2];
 
             if (type == 0) {  // KEY_DOWN
                 char k = (char)d0;
 
                 if (k == '\r' || k == '\n') {
-                    spawn_terminal();
+                    enqueue_spawn();
                     redraw = 1;
                 } else if (k == '\t') {
                     if (window_count > 0) {
@@ -298,6 +346,27 @@ void _start(void) {
                     }
                 } else if (k == '\x1B') {
                     return;
+                }
+            }
+            else if (type == 1) {  // MOUSE_MOVE
+                cursor_x += (int)d0;  // sign-extended dx
+                cursor_y += (int)d1;  // sign-extended dy
+                if (cursor_x < 0) cursor_x = 0;
+                if (cursor_y < 0) cursor_y = 0;
+                if (cursor_x >= screen_w) cursor_x = screen_w - 1;
+                if (cursor_y >= screen_h) cursor_y = screen_h - 1;
+                redraw = 1;
+            }
+            else if (type == 2) {  // MOUSE_BTN
+                int btn = (int)d0;  // 1=left, 2=right, 3=middle
+                int down = (int)d1;
+                if (btn == 1 && down) {
+                    // Left click: hit-test title bars to focus
+                    int hit = hit_test(cursor_x, cursor_y);
+                    if (hit >= 0) {
+                        focus_window(hit);
+                        redraw = 1;
+                    }
                 }
             }
         }

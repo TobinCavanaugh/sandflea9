@@ -26,6 +26,27 @@ static IM3Runtime g_compositor_runtime = NULL;
 // Compositor's own display buffer offset (set by claimBuffer when compositor calls it).
 static u32 g_compositor_buffer_offset = 0;
 
+// ── Deferred spawn ────────────────────────────────────────────────────────
+//
+// proc.spawn just stores the request; proc.dequeueSpawn does the actual
+// wasm_spawn(). This keeps host functions shallow (no deep call chains
+// inside wasm3's interpreter recursion) and avoids stack overflow.
+//
+// The WM calls:
+//   1. proc.spawn(path, argc, argv)  → returns 0 (accepted) or -1 (full)
+//   2. proc.dequeueSpawn()           → returns PID or -1 (nothing pending)
+
+#define SPAWN_QUEUE_SIZE 8
+
+typedef struct {
+    char path[128];
+    i32  result_pid;   // set by dequeueSpawn before signaling
+} spawn_request_t;
+
+static spawn_request_t g_spawn_queue[SPAWN_QUEUE_SIZE];
+static volatile u32    g_spawn_head = 0;   // WM writes here
+static volatile u32    g_spawn_tail = 0;   // dequeueSpawn reads here
+
 // Display buffer tracking: one entry per compositor child.
 static compositor_child_t g_children[MAX_COMPOSITOR_WINDOWS];
 static u32 g_child_count = 0;
@@ -61,8 +82,11 @@ void compositor_init(void) {
     g_child_count = 0;
     g_event_read = 0;
     g_event_write = 0;
+    g_spawn_head = 0;
+    g_spawn_tail = 0;
     mem_set((u8*)g_children, 0, sizeof(g_children));
     mem_set((u8*)g_event_buf, 0, sizeof(g_event_buf));
+    mem_set((u8*)g_spawn_queue, 0, sizeof(g_spawn_queue));
 }
 
 void compositor_push_event(u8 type, u32 d0, u32 d1, u32 d2) {
@@ -106,14 +130,12 @@ m3ApiRawFunction(wasm_display_claim_compositor) {
     u64 irq = save_irq_and_disable();
     if (g_compositor_pid != -1 && g_compositor_pid != proc->pid) {
         restore_irq(irq);
-        serial_outsl("COMPOSITOR: claimCompositor denied — already claimed");
         m3ApiReturn(-1);
     }
     g_compositor_pid = proc->pid;
     g_compositor_runtime = runtime;
     restore_irq(irq);
 
-    serial_outsf("COMPOSITOR: PID %d claimed compositor role\n", proc->pid);
     m3ApiReturn(0);
 }
 
@@ -158,10 +180,8 @@ m3ApiRawFunction(wasm_display_present) {
     if (!mem) { m3ApiReturn(-3); }
 
     u32 screen_bytes = (u32)(disp->surface.pitch * disp->surface.height);
-    if (offset + screen_bytes > mem_size) { m3ApiReturn(-4); }
+    if (offset > mem_size || mem_size - offset < screen_bytes) { m3ApiReturn(-4); }
 
-    serial_outsf("COMPOSITOR: present PID=%d offset=%u screen=%ux%u pitch=%llu\n",
-                 proc->pid, offset, disp->surface.width, disp->surface.height, disp->surface.pitch);
     mem_copy(disp->trueAddress, mem + offset, screen_bytes);
     m3ApiReturn(0);
 }
@@ -185,12 +205,8 @@ m3ApiRawFunction(wasm_display_claim_buffer) {
     u32 offset = cur_bytes;                     // place after existing memory
     u32 cur_pages = cur_bytes / 65536;          // for ResizeMemory (takes pages)
 
-    serial_outsf("COMPOSITOR: claimBuffer PID=%d cur_bytes=%u offset=%u needed=%u pages\n",
-                 proc->pid, cur_bytes, offset, pages_needed);
-
     M3Result r = ResizeMemory(runtime, cur_pages + pages_needed);
     if (r) {
-        serial_outsf("COMPOSITOR: claimBuffer resize failed: %s\n", r);
         m3ApiReturn(-1);
     }
 
@@ -213,8 +229,6 @@ m3ApiRawFunction(wasm_display_claim_buffer) {
         restore_irq(irq);
     }
 
-    serial_outsf("COMPOSITOR: claimBuffer PID %d offset=%u bytes=%u\n",
-                 proc->pid, offset, screen_bytes);
     m3ApiReturn((i32)offset);
 }
 
@@ -282,8 +296,8 @@ m3ApiRawFunction(wasm_display_blit_from_pid) {
     for (i32 y = 0; y < blit_h; y++) {
         u32 src_row_off = src_off + ((u32)(src_y + y) * src_stride) + (u32)src_x * 4;
         u32 dst_row_off = compositor_offset + ((u32)(dst_y + y) * dst_stride) + (u32)dst_x * 4;
-        if (src_row_off + row_bytes <= src_mem_size &&
-            dst_row_off + row_bytes <= dst_mem_size) {
+        if (src_row_off <= src_mem_size && src_mem_size - src_row_off >= row_bytes &&
+            dst_row_off <= dst_mem_size && dst_mem_size - dst_row_off >= row_bytes) {
             mem_copy(dst_mem + dst_row_off, src_mem + src_row_off, row_bytes);
         }
     }
@@ -311,7 +325,7 @@ m3ApiRawFunction(wasm_input_poll_events) {
     while (g_event_read != g_event_write && events_copied < (u32)max_events) {
         u32 src_idx = g_event_read * EV_SLOT_SIZE;
         u32 ev_offset = buf_offset + events_copied * 4 * EV_SLOT_SIZE;
-        if (ev_offset + 16 > mem_size) break;
+        if (ev_offset > mem_size || mem_size - ev_offset < 16) break;
 
         // Copy as 4 consecutive u32s: type, data0, data1, data2
         ((u32*)(mem + ev_offset))[0] = g_event_buf[src_idx + EV_SLOT_TYPE];
@@ -328,6 +342,8 @@ m3ApiRawFunction(wasm_input_poll_events) {
 }
 
 // ── proc.spawn ─────────────────────────────────────────────────────────────
+// Stores a spawn request in the queue. The WM must call proc.dequeueSpawn()
+// to actually perform the spawn (outside the interpreter's deepest recursion).
 
 m3ApiRawFunction(wasm_compositor_proc_spawn) {
     m3ApiReturnType(i32)
@@ -335,11 +351,66 @@ m3ApiRawFunction(wasm_compositor_proc_spawn) {
     m3ApiGetArg(i32, argc)
     m3ApiGetArg(u32, argv_offset)
 
+    (void)argc; (void)argv_offset;   // ignored for now; WM spawns hello.wasm
+
     kern_process_t *proc = sched_get_current_process();
     if (!proc || proc->pid != g_compositor_pid) { m3ApiReturn(-1); }
 
-    // DEBUG: return dummy PID to isolate the crash
-    m3ApiReturn(42);
+    // Bounds-check: read path string from WASM linear memory.
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem || path_offset >= mem_size) { m3ApiReturn(-2); }
+
+    // Enqueue the spawn request.
+    u64 irq = save_irq_and_disable();
+    u32 next = (g_spawn_head + 1) % SPAWN_QUEUE_SIZE;
+    if (next == g_spawn_tail) {
+        restore_irq(irq);
+        m3ApiReturn(-3);  // queue full
+    }
+    spawn_request_t *req = &g_spawn_queue[g_spawn_head];
+    // Copy path (truncate to 127 chars max + null).
+    u32 path_len = 0;
+    while (path_offset + path_len < mem_size && path_len < 127 && mem[path_offset + path_len])
+        path_len++;
+    for (u32 i = 0; i < path_len; i++)
+        req->path[i] = (char)mem[path_offset + i];
+    req->path[path_len] = '\0';
+    req->result_pid = -1;
+    g_spawn_head = next;
+    restore_irq(irq);
+
+    m3ApiReturn(0);
+}
+
+// ── proc.dequeueSpawn ─────────────────────────────────────────────────────
+// Actually performs a pending spawn. Called from the WM's event loop.
+// Returns the new PID, or -1 if nothing pending.
+
+m3ApiRawFunction(wasm_compositor_proc_dequeue_spawn) {
+    m3ApiReturnType(i32)
+
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc || proc->pid != g_compositor_pid) { m3ApiReturn(-1); }
+
+    u64 irq = save_irq_and_disable();
+    if (g_spawn_tail == g_spawn_head) {
+        restore_irq(irq);
+        m3ApiReturn(-1);  // nothing pending
+    }
+    spawn_request_t *req = &g_spawn_queue[g_spawn_tail];
+    g_spawn_tail = (g_spawn_tail + 1) % SPAWN_QUEUE_SIZE;
+    restore_irq(irq);
+
+    // Perform the actual spawn.  This is still a host function, but it's
+    // called from the WM's event loop where wasm3 recursion depth is minimal.
+    wasm_spawn_opts_t opts = {0};
+    opts.path = req->path;
+    opts.wasi_argv = false;
+    opts.foreground = false;
+    i32 pid = wasm_spawn(&opts);
+    req->result_pid = pid;
+    m3ApiReturn(pid);
 }
 
 
