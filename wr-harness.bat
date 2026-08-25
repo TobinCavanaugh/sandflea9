@@ -7,7 +7,7 @@ REM                                                      the framebuffer via the
 REM                                                      built-in VNC server
 REM                                                      (consumed by noVNC; works
 REM                                                      alongside -display sdl).
-REM   -qmp tcp:127.0.0.1:4444,server,nowait            so the harness can
+REM   -qmp tcp:127.0.0.1:45454,server,nowait           so the harness can
 REM                                                      hot-plug / un-plug USB
 REM                                                      devices via JSON-RPC
 REM                                                      (send-key, device_add,
@@ -47,4 +47,4 @@ qemu-system-x86_64.exe -cdrom sandfleaOS.iso ^
     -accel whpx ^
     -device qemu-xhci,id=xhci ^
     -vnc :0 ^
-    -qmp tcp:127.0.0.1:4545,server,nowait
+    -qmp tcp:127.0.0.1:45454,server,nowait
