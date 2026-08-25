@@ -303,19 +303,27 @@ void kern_entry(void) {
     sti();
     serial_outsl("Interrupts: Timer, keyboard, and mouse handlers registered (sti)");
 
-    // CPU clock sanity probe: on bare metal without P-state/boost init the
-    // core can sit far below its rated speed, which makes every workload
-    // (including the WASM interpreter) look ~2x slower than in WSL/QEMU.
-    // MPERF/APERF (MSR 0xE7/0xE8) report actual-vs-nominal cycle counts;
-    // gate on CPUID.06H:ECX[0] since some emulated CPUs lack them.
+    // CPU clock / P-state / HWP (Intel Speed Shift) initialization:
+    // On bare metal (e.g. Tiger Lake i5-1135G7 / i7-1165G7), without HWP/P-state init
+    // the CPU remains locked at minimum low-frequency mode (400-800MHz).
     {
         u32 eax, ebx, ecx, edx;
         asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(6));
+
+        // Check for HWP (Intel Speed Shift) base support (CPUID.06H:EAX[bit 7])
+        if (eax & (1 << 7)) {
+            // Enable HWP autonomous management via IA32_PM_ENABLE (MSR 0x770)
+            wrmsr(0x770, 1);
+            // Request Maximum Performance (EPP=0, Min=0, Max=0xFF, Desired=0 autonomous)
+            // IA32_HWP_REQUEST (MSR 0x774): bits 31:24=EPP(0=performance), bits 15:8=Max(0xFF)
+            wrmsr(0x774, 0x0000FF00ULL);
+            serial_outsl("CPU: Intel HWP (Speed Shift) enabled at maximum performance");
+        }
+
         if (ecx & 1) {
-            extern u64 rdmsr(u32 msr);
             u64 m0 = rdmsr(0xE7); // IA32_MPERF — max-possible cycles
             u64 a0 = rdmsr(0xE8); // IA32_APERF — actual cycles
-            delay(100);
+            delay(50);
             u64 m1 = rdmsr(0xE7);
             u64 a1 = rdmsr(0xE8);
             u64 mdiff = m1 - m0;
@@ -323,8 +331,7 @@ void kern_entry(void) {
             serial_outsf("CPU: clock ratio %llu%% of nominal (MPERF/APERF), TSC ~%llu MHz\n",
                          ratio, profile_tsc_mhz());
             if (ratio && ratio < 75) {
-                serial_outsf("CPU: WARNING — core is running at only %llu%% of nominal speed; "
-                             "init P-states/boost (IA32_PERF_CTL / EIST) to fix\n", ratio);
+                serial_outsf("CPU: WARNING — core running at %llu%% of nominal speed\n", ratio);
             }
         } else {
             serial_outsf("CPU: MPERF/APERF not present; TSC ~%llu MHz\n", profile_tsc_mhz());

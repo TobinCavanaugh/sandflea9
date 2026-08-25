@@ -31,4 +31,8 @@ u64 save_irq_and_disable();
 
 u0 restore_irq(u64 flags);
 
+u64 rdmsr(u32 msr);
+
+u0 wrmsr(u32 msr, u64 val);
+
 #endif //KERN_ASMSTUBS_H

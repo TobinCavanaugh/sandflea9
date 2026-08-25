@@ -28,6 +28,15 @@ rdmsr:
     or rax, rdx
     ret
 
+global wrmsr
+wrmsr:
+    mov rcx, rdi
+    mov rax, rsi
+    mov rdx, rsi
+    shr rdx, 32
+    wrmsr
+    ret
+
 global enable_sse
 enable_sse:
     mov rax, cr0

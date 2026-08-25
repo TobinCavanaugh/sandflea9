@@ -85,9 +85,12 @@ static void fill_rect(int x, int y, int w, int h, unsigned int color) {
     if (x < 0) x = 0; if (y < 0) y = 0;
     if (x1 <= x || y1 <= y) return;
     unsigned int *fb = (unsigned int*)WASM_U8(fb_offset);
-    for (int py = y; py < y1; py++)
-        for (int px = x; px < x1; px++)
-            fb[py * screen_w + px] = color;
+    int span = x1 - x;
+    for (int py = y; py < y1; py++) {
+        unsigned int *row = &fb[py * screen_w + x];
+        for (int px = 0; px < span; px++)
+            row[px] = color;
+    }
 }
 
 // Minimal 6x8 font — uppercase A-Z
@@ -166,7 +169,7 @@ static void draw_window_borders(window_t *win) {
 
 static void focus_window(int idx) {
     if (idx < 0 || idx >= window_count || focused_idx == idx) return;
-    if (focused_idx >= 0) {
+    if (focused_idx >= 0 && focused_idx < window_count) {
         windows[focused_idx].focused = 0;
         proc_signal(windows[focused_idx].pid, SIG_FOCUS_LOST, 0);
     }
@@ -181,9 +184,13 @@ static void close_window(int idx) {
     for (int i = idx; i + 1 < window_count; i++)
         windows[i] = windows[i + 1];
     window_count--;
+    if (window_count == 0) {
+        focused_idx = -1;
+        return;
+    }
     if (focused_idx > idx) focused_idx--;
-    if (focused_idx >= window_count) focused_idx = window_count > 0 ? 0 : -1;
-    if (focused_idx >= 0) {
+    if (focused_idx >= window_count) focused_idx = window_count - 1;
+    if (focused_idx >= 0 && focused_idx < window_count) {
         windows[focused_idx].focused = 1;
         proc_signal(windows[focused_idx].pid, SIG_FOCUS_GAINED, 0);
     }
@@ -229,6 +236,11 @@ static void enqueue_spawn(void) {
 // proc.dequeueSpawn() returns the new PID, or -1 if nothing pending.
 static void dequeue_pending_spawns(void) {
     for (;;) {
+        if (window_count >= MAX_WINDOWS) {
+            int pid = proc_dequeue_spawn();
+            if (pid < 0) break;
+            continue;
+        }
         int pid = proc_dequeue_spawn();
         if (pid < 0) break;
 
@@ -254,19 +266,29 @@ static void dequeue_pending_spawns(void) {
 static void composite_frame(void) {
     fill_rect(0, 0, screen_w, screen_h, 0xFF1A1A2E);
 
-    // Draw focused last (on top)
-    for (int pass = 0; pass < 2; pass++) {
-        for (int i = 0; i < window_count; i++) {
-            if ((pass == 0) == (i == focused_idx)) continue;
-            window_t *w = &windows[i];
-            int cx = w->canvas_x + BORDER_W;
-            int cy = w->canvas_y + TITLE_BAR_H;
-            int cw = w->w - BORDER_W * 2;
-            int ch = w->h - TITLE_BAR_H - BORDER_W;
-            fill_rect(cx, cy, cw, ch, 0xFF222222);
-            draw_title_bar(w);
-            draw_window_borders(w);
-        }
+    // Draw unfocused windows first
+    for (int i = 0; i < window_count; i++) {
+        if (i == focused_idx) continue;
+        window_t *w = &windows[i];
+        int cx = w->canvas_x + BORDER_W;
+        int cy = w->canvas_y + TITLE_BAR_H;
+        int cw = w->w - BORDER_W * 2;
+        int ch = w->h - TITLE_BAR_H - BORDER_W;
+        fill_rect(cx, cy, cw, ch, 0xFF222222);
+        draw_title_bar(w);
+        draw_window_borders(w);
+    }
+
+    // Draw focused window last (on top)
+    if (focused_idx >= 0 && focused_idx < window_count) {
+        window_t *w = &windows[focused_idx];
+        int cx = w->canvas_x + BORDER_W;
+        int cy = w->canvas_y + TITLE_BAR_H;
+        int cw = w->w - BORDER_W * 2;
+        int ch = w->h - TITLE_BAR_H - BORDER_W;
+        fill_rect(cx, cy, cw, ch, 0xFF222222);
+        draw_title_bar(w);
+        draw_window_borders(w);
     }
 
     // Draw mouse cursor (4x4 white dot with black outline, hot at center)
