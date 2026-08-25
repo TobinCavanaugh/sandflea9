@@ -314,8 +314,39 @@ u0 screen_push_buf(const char *buf, i32 len) {
     restore_irq(irq);
 }
 
+static char *g_cmd_capture_buf = NULL;
+static u32   g_cmd_capture_len = 0;
+static u32   g_cmd_capture_max = 0;
+
+u0 term_capture_output_start(char *buf, u32 max_len) {
+    g_cmd_capture_buf = buf;
+    g_cmd_capture_len = 0;
+    g_cmd_capture_max = max_len;
+    if (buf && max_len > 0) buf[0] = 0;
+}
+
+u32 term_capture_output_end(void) {
+    u32 len = g_cmd_capture_len;
+    g_cmd_capture_buf = NULL;
+    g_cmd_capture_len = 0;
+    g_cmd_capture_max = 0;
+    return len;
+}
+
 u0 screen_push_line(const char *str) {
     PROFILE_SCOPE("screen:push_line");
+
+    if (g_cmd_capture_buf && g_cmd_capture_max > 0) {
+        i32 slen = str_len(str);
+        for (i32 i = 0; i < slen && g_cmd_capture_len + 2 < g_cmd_capture_max; i++) {
+            g_cmd_capture_buf[g_cmd_capture_len++] = str[i];
+        }
+        if (g_cmd_capture_len + 1 < g_cmd_capture_max) {
+            g_cmd_capture_buf[g_cmd_capture_len++] = '\n';
+        }
+        g_cmd_capture_buf[g_cmd_capture_len] = '\0';
+    }
+
     // Re-entrant guard: if we're already inside a cell-buffer write
     // (called from scroll_cell_buffer), skip straight to the scrollback.
     if (screen_cellbuf_line_active) {

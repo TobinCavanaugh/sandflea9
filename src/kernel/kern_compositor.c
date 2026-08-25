@@ -179,8 +179,8 @@ m3ApiRawFunction(wasm_display_present) {
 
     if (comp_pid != -1 && proc->pid != comp_pid) {
         // Compositor is running, but caller isn't the compositor.
-        // The compositor will read this app's buffer and flip.
-        // Mark the child as dirty so the compositor knows to re-blit.
+        // Notify compositor via ring buffer that this child window is dirty.
+        compositor_push_event(3, (u32)proc->pid, 0, 0);
         m3ApiReturn(0);
     }
 
@@ -240,6 +240,9 @@ m3ApiRawFunction(wasm_display_present_rect) {
     restore_irq(irq);
 
     if (comp_pid != -1 && proc->pid != comp_pid) {
+        u32 d1 = ((u32)(x & 0xFFFF) << 16) | (u32)(y & 0xFFFF);
+        u32 d2 = ((u32)(w & 0xFFFF) << 16) | (u32)(h & 0xFFFF);
+        compositor_push_event(4, (u32)proc->pid, d1, d2);
         m3ApiReturn(0);
     }
 
@@ -319,11 +322,85 @@ m3ApiRawFunction(wasm_display_claim_buffer) {
             c->buf_w = (u32)disp->surface.width;
             c->buf_h = (u32)disp->surface.height;
             c->runtime = runtime;
+            compositor_push_event(3, (u32)proc->pid, 0, 0);
         }
         restore_irq(irq);
     }
 
     m3ApiReturn((i32)offset);
+}
+
+// ── display.fillRect ───────────────────────────────────────────────────────
+
+m3ApiRawFunction(wasm_display_fill_rect) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(u32, offset)
+    m3ApiGetArg(i32, x)
+    m3ApiGetArg(i32, y)
+    m3ApiGetArg(i32, w)
+    m3ApiGetArg(i32, h)
+    m3ApiGetArg(u32, color)
+
+    display_t *disp = screen_current_display();
+    if (!disp) m3ApiReturn(-1);
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem) m3ApiReturn(-1);
+
+    i32 screen_w = (i32)disp->surface.width;
+    i32 screen_h = (i32)disp->surface.height;
+
+    int x1 = x + w; if (x1 > screen_w) x1 = screen_w;
+    int y1 = y + h; if (y1 > screen_h) y1 = screen_h;
+    if (x < 0) x = 0; if (y < 0) y = 0;
+    if (x1 <= x || y1 <= y) m3ApiReturn(0);
+
+    u32 *fb = (u32*)(mem + offset);
+    int span = x1 - x;
+    u32 row_words = (u32)screen_w;
+
+    u64 last_pixel_off = (u64)(y1 - 1) * row_words + (x1 - 1);
+    if (offset + (last_pixel_off + 1) * 4 > mem_size) m3ApiReturn(-1);
+
+    u64 col64 = ((u64)color << 32) | (u64)color;
+
+    for (int py = y; py < y1; py++) {
+        u32 *row = &fb[py * row_words + x];
+        int px = 0;
+        while (px + 2 <= span) {
+            *(u64*)(row + px) = col64;
+            px += 2;
+        }
+        if (px < span) {
+            row[px] = color;
+        }
+    }
+
+    m3ApiReturn(0);
+}
+
+// ── display.copyBuffer ────────────────────────────────────────────────────
+
+m3ApiRawFunction(wasm_display_copy_buffer) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(u32, dst_offset)
+    m3ApiGetArg(u32, src_offset)
+
+    display_t *disp = screen_current_display();
+    if (!disp) m3ApiReturn(-1);
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem) m3ApiReturn(-1);
+
+    u32 total_bytes = (u32)(disp->surface.width * disp->surface.height * 4);
+    if (dst_offset + total_bytes > mem_size || src_offset + total_bytes > mem_size) {
+        m3ApiReturn(-1);
+    }
+
+    mem_copy(mem + dst_offset, mem + src_offset, total_bytes);
+    m3ApiReturn(0);
 }
 
 // ── display.blitFromPid ────────────────────────────────────────────────────

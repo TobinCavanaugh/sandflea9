@@ -795,12 +795,16 @@ Label_Done:
 }
 
 u0 handle_command() {
+    handle_command_str(typingbuf);
+}
+
+u0 handle_command_str(const char *cmd) {
     char workingbuf[256] = {0};
     u64 add = PAGE_SIZE * 1000;
 
-    if (typingbuf[0] == '\0') return;
+    if (!cmd || cmd[0] == '\0') return;
 
-    word = cmd_parse(typingbuf, kmalloc);
+    word = cmd_parse(cmd, kmalloc);
     if (!word) return;
 
     serial_outsf("[[%s]]\n", word->loc);
@@ -1072,22 +1076,53 @@ u0 handle_command() {
 
     if (cmd_word_eq(word, "send")) {
         PROFILE_SCOPE("cmd:send");
-        // `send <shm_id> <target_pid>`
+        // `send <shm_id> <target_pid> [message]`
         if (!word->next || !word->next->next) {
-            screen_push_line("Usage: send <shm_id> <target_pid>");
+            screen_push_line("Usage: send <shm_id> <target_pid> [message]");
             goto Label_Free;
         }
         char *shm_str = str_view_to_c(word->next->text);
         char *pid_str = str_view_to_c(word->next->next->text);
-        char *argv[3] = { "ipc_sender.wasm", shm_str, pid_str };
-        wasm_spawn_opts_t opts = {
-            .path = "ipc_sender.wasm",
-            .argc = 3,
-            .argv = (char *const *) argv,
-            .foreground = true,
-            .wait = false,
-        };
-        wasm_spawn(&opts);
+        i32 shm_id = 0, target_pid = 0;
+        for (const char *p = shm_str; *p >= '0' && *p <= '9'; p++) shm_id = shm_id * 10 + (*p - '0');
+        for (const char *p = pid_str; *p >= '0' && *p <= '9'; p++) target_pid = target_pid * 10 + (*p - '0');
+
+        if (word->next->next->next) {
+            char *msg = str_view_to_c(word->next->next->next->text);
+            kern_process_t *cur_proc = sched_get_current_process();
+            if (!cur_proc) cur_proc = sched_get_kernel_process();
+            i32 handle = shmem_attach_proc(cur_proc, (u32)shm_id);
+            if (handle >= 0) {
+                if (cmd_word_eq(word->next->next->next, "exit") || cmd_word_eq(word->next->next->next, "quit")) {
+                    u8 term_byte = 0xFF;
+                    shmem_write_bytes(cur_proc, handle, 0, &term_byte, 1);
+                    ipc_signal_send(target_pid, IPC_SIG_TERM);
+                    screen_push_linef("[ipc_send] Sent TERM to PID %d", target_pid);
+                } else {
+                    for (int i = 0; msg[i] != '\0'; i++) {
+                        u8 b = (u8)msg[i];
+                        shmem_write_bytes(cur_proc, handle, 0, &b, 1);
+                        ipc_signal_send(target_pid, IPC_SIG_DATA_READY);
+                        sched_yield();
+                    }
+                    screen_push_linef("[ipc_send] Sent '%s' to PID %d", msg, target_pid);
+                }
+                shmem_detach_proc(cur_proc, handle);
+            } else {
+                screen_push_linef("[ipc_send] Failed to attach to shm_id %d", shm_id);
+            }
+            if (msg) kfree(msg);
+        } else {
+            char *argv[3] = { "ipc_sender.wasm", shm_str, pid_str };
+            wasm_spawn_opts_t opts = {
+                .path = "ipc_sender.wasm",
+                .argc = 3,
+                .argv = (char *const *) argv,
+                .foreground = true,
+                .wait = false,
+            };
+            wasm_spawn(&opts);
+        }
         if (shm_str) kfree(shm_str);
         if (pid_str) kfree(pid_str);
         goto Label_Free;

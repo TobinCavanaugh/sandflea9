@@ -85,13 +85,23 @@ static i32 proc_alloc_shmem_slot(kern_process_t *proc) {
 }
 
 i32 shmem_attach_proc(kern_process_t *proc, u32 shm_id) {
-    if (!proc || shm_id == 0) return -1;
+    if (!proc || shm_id == 0 || !proc->cr3) return -1;
 
     u64 irq = save_irq_and_disable();
     kern_shmem_t *sh = shmem_find_global(shm_id);
-    if (!sh) {
+    if (!sh || sh->page_count == 0 || sh->phys_base == 0) {
         restore_irq(irq);
         return -1;
+    }
+
+    // Check if this process already has an active handle for this shm_id
+    if (proc->shmem_table) {
+        for (u32 i = 0; i < proc->shmem_capacity; i++) {
+            if (proc->shmem_table[i].active && proc->shmem_table[i].shm_id == shm_id) {
+                restore_irq(irq);
+                return (i32)i; // Safely return existing handle
+            }
+        }
     }
 
     i32 slot = proc_alloc_shmem_slot(proc);
@@ -233,15 +243,36 @@ i32 shmem_write_bytes(kern_process_t *proc, i32 handle, u32 offset, const void *
     return (i32)len;
 }
 
+i32 shmem_write_ring(u32 shm_id, const void *src, u32 len) {
+    if (shm_id == 0 || !src || len == 0) return -1;
+    u64 irq = save_irq_and_disable();
+    kern_shmem_t *sh = shmem_find_global(shm_id);
+    if (!sh || sh->page_count == 0) {
+        restore_irq(irq);
+        return -1;
+    }
+
+    u8 *ring = (u8 *)(sh->phys_base + vmm_get_hhdm());
+    u32 tail = ring[1];
+    const u8 *buf = (const u8 *)src;
+    for (u32 i = 0; i < len; i++) {
+        ring[2 + tail] = buf[i];
+        tail = (tail + 1) & 0xFF; // 256 byte circular ring
+    }
+    ring[1] = (u8)tail;
+    restore_irq(irq);
+    return (i32)len;
+}
+
 // ── Signals ──────────────────────────────────────────────────────────────────
 
 bool ipc_signal_send(i32 target_pid, u32 signal_mask) {
-    if (target_pid < 0 || signal_mask == 0) return false;
+    if (target_pid <= 0 || signal_mask == 0) return false;
 
     u64 irq = save_irq_and_disable();
 
     kern_task_t *task = sched_get_by_pid(target_pid);
-    if (!task || !task->process) {
+    if (!task || !task->process || task->process->pid != target_pid) {
         restore_irq(irq);
         return false;
     }
@@ -251,7 +282,6 @@ bool ipc_signal_send(i32 target_pid, u32 signal_mask) {
 
     // Wake any BLOCKED task whose wait mask overlaps.
     kern_task_t *head = sched_get_task_list_head();
-    bool woken = false;
     if (head) {
         kern_task_t *cur = head;
         do {
@@ -259,14 +289,13 @@ bool ipc_signal_send(i32 target_pid, u32 signal_mask) {
                 cur->state == TASK_STATE_BLOCKED &&
                 (cur->signal_wait_mask & signal_mask)) {
                 sched_unblock(cur);
-                woken = true;
             }
             cur = cur->next;
         } while (cur != head);
     }
 
     restore_irq(irq);
-    return woken;
+    return true;
 }
 
 u32 ipc_signal_wait(u32 mask) {

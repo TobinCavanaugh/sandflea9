@@ -126,21 +126,21 @@ u0 vmm_map_page_in_pml4(u64 pml4_phys, u64 phys_addr, u64 virt_addr, u64 flags) 
         pml4[pml4_idx] = new_table | PAGE_PRESENT | PAGE_RW | (flags & PAGE_USER);
     }
 
-    u64 *pdpt = (u64 *) ((pml4[pml4_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
+    u64 *pdpt = (u64 *) ((pml4[pml4_idx] & PTE_ADDR_MASK) + hhdm_offset);
     u64 pdpt_idx = PDPT_INDEX(virt_addr);
     if (!(pdpt[pdpt_idx] & PAGE_PRESENT)) {
         u64 new_table = pmm_alloc_page();
         pdpt[pdpt_idx] = new_table | PAGE_PRESENT | PAGE_RW | (flags & PAGE_USER);
     }
 
-    u64 *pd = (u64 *) ((pdpt[pdpt_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
+    u64 *pd = (u64 *) ((pdpt[pdpt_idx] & PTE_ADDR_MASK) + hhdm_offset);
     u64 pd_idx = PD_INDEX(virt_addr);
     if (!(pd[pd_idx] & PAGE_PRESENT)) {
         u64 new_table = pmm_alloc_page();
         pd[pd_idx] = new_table | PAGE_PRESENT | PAGE_RW | (flags & PAGE_USER);
     }
 
-    u64 *pt = (u64 *) ((pd[pd_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
+    u64 *pt = (u64 *) ((pd[pd_idx] & PTE_ADDR_MASK) + hhdm_offset);
     u64 pt_idx = PT_INDEX(virt_addr);
     pt[pt_idx] = phys_addr | flags | PAGE_PRESENT;
 
@@ -181,28 +181,28 @@ u64 vmm_get_phys_in_pml4(u64 pml4_phys, u64 virt_addr) {
         return 0;
     }
 
-    u64 *pdpt = (u64 *) ((pml4[pml4_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
+    u64 *pdpt = (u64 *) ((pml4[pml4_idx] & PTE_ADDR_MASK) + hhdm_offset);
     u64 pdpt_idx = PDPT_INDEX(virt_addr);
     if (!(pdpt[pdpt_idx] & PAGE_PRESENT)) {
         restore_irq(irq);
         return 0;
     }
 
-    u64 *pd = (u64 *) ((pdpt[pdpt_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
+    u64 *pd = (u64 *) ((pdpt[pdpt_idx] & PTE_ADDR_MASK) + hhdm_offset);
     u64 pd_idx = PD_INDEX(virt_addr);
     if (!(pd[pd_idx] & PAGE_PRESENT)) {
         restore_irq(irq);
         return 0;
     }
 
-    u64 *pt = (u64 *) ((pd[pd_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
+    u64 *pt = (u64 *) ((pd[pd_idx] & PTE_ADDR_MASK) + hhdm_offset);
     u64 pt_idx = PT_INDEX(virt_addr);
     if (!(pt[pt_idx] & PAGE_PRESENT)) {
         restore_irq(irq);
         return 0;
     }
 
-    u64 ret = (pt[pt_idx] & 0xFFFFFFFFFF000);
+    u64 ret = (pt[pt_idx] & PTE_ADDR_MASK);
     restore_irq(irq);
     return ret;
 }
@@ -216,21 +216,21 @@ u0 vmm_unmap_page_in_pml4(u64 pml4_phys, u64 virt_addr) {
         return;
     }
 
-    u64 *pdpt = (u64 *) ((pml4[pml4_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
+    u64 *pdpt = (u64 *) ((pml4[pml4_idx] & PTE_ADDR_MASK) + hhdm_offset);
     u64 pdpt_idx = PDPT_INDEX(virt_addr);
     if (!(pdpt[pdpt_idx] & PAGE_PRESENT)) {
         restore_irq(irq);
         return;
     }
 
-    u64 *pd = (u64 *) ((pdpt[pdpt_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
+    u64 *pd = (u64 *) ((pdpt[pdpt_idx] & PTE_ADDR_MASK) + hhdm_offset);
     u64 pd_idx = PD_INDEX(virt_addr);
     if (!(pd[pd_idx] & PAGE_PRESENT)) {
         restore_irq(irq);
         return;
     }
 
-    u64 *pt = (u64 *) ((pd[pd_idx] & 0xFFFFFFFFFF000) + hhdm_offset);
+    u64 *pt = (u64 *) ((pd[pd_idx] & PTE_ADDR_MASK) + hhdm_offset);
     u64 pt_idx = PT_INDEX(virt_addr);
     pt[pt_idx] = 0;
 
@@ -490,4 +490,27 @@ u0 kfree(void *ptr) {
         }
     }
     restore_irq(irq);
+}
+
+u0 vmm_free_pml4_user(u64 pml4_phys) {
+    if (!pml4_phys) return;
+    u64 *pml4 = (u64 *)(pml4_phys + hhdm_offset);
+    for (int p4 = 0; p4 < 256; p4++) {
+        if (!(pml4[p4] & PAGE_PRESENT)) continue;
+        u64 pdpt_phys = pml4[p4] & 0x000FFFFFFFFFF000ULL;
+        u64 *pdpt = (u64 *)(pdpt_phys + hhdm_offset);
+        for (int p3 = 0; p3 < 512; p3++) {
+            if (!(pdpt[p3] & PAGE_PRESENT)) continue;
+            u64 pd_phys = pdpt[p3] & 0x000FFFFFFFFFF000ULL;
+            u64 *pd = (u64 *)(pd_phys + hhdm_offset);
+            for (int p2 = 0; p2 < 512; p2++) {
+                if (!(pd[p2] & PAGE_PRESENT)) continue;
+                u64 pt_phys = pd[p2] & 0x000FFFFFFFFFF000ULL;
+                pmm_free(pt_phys);
+            }
+            pmm_free(pd_phys);
+        }
+        pmm_free(pdpt_phys);
+    }
+    pmm_free(pml4_phys);
 }

@@ -142,9 +142,6 @@ task_switch_asm:
 
     mov [rdi], rsp ; save current stack pointer
 
-    ; Load new stack pointer from next task struct
-    mov rsp, [rsi]
-
     ; CR3 Switch Logic
     mov rax, [rdi + 24] ; RAX = current_task->process
     mov rbx, [rsi + 24] ; RBX = next_task->process
@@ -164,6 +161,8 @@ task_switch_asm:
     mov cr3, rcx
 
 .skip_cr3:
+    ; Load new stack pointer from next task struct AFTER target address space is active
+    mov rsp, [rsi]
 
     pop r15
     pop r14

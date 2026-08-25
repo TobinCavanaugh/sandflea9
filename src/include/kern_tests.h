@@ -19,5 +19,6 @@ extern system_t system;
 extern char typingbuf[255];
 
 u0 handle_command();
+u0 handle_command_str(const char *cmd);
 
 #endif //KERN_TESTS_H

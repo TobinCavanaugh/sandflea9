@@ -45,6 +45,10 @@ typedef struct kern_process {
     struct proc_shmem_entry *shmem_table;
     u32                      shmem_capacity;
     u32                      shmem_count;
+
+    // Optional shared-memory stdout ring buffer and parent PID to signal
+    i32                      stdout_shm_id;
+    i32                      stdout_parent_pid;
 } kern_process_t;
 
 extern kern_process_t *foreground_proc;

@@ -21,6 +21,12 @@ extern int present(int offset);
 __attribute__((import_module("display"), import_name("presentRect")))
 extern int presentRect(int offset, int x, int y, int w, int h);
 
+__attribute__((import_module("display"), import_name("fillRect")))
+extern int fillRect(int offset, int x, int y, int w, int h, unsigned int color);
+
+__attribute__((import_module("display"), import_name("copyBuffer")))
+extern int copyBuffer(int dst_offset, int src_offset);
+
 __attribute__((import_module("display"), import_name("blitFromPid")))
 extern int blitFromPid(int pid, int sx, int sy, int dx, int dy, int w, int h);
 
@@ -102,17 +108,7 @@ static void wm_memcpy(char *dst, const char *src, int n) {
 // ── Drawing (to clean backbuffer) ─────────────────────────────────────────
 
 static void fill_rect(int x, int y, int w, int h, unsigned int color) {
-    int x1 = x + w; if (x1 > screen_w) x1 = screen_w;
-    int y1 = y + h; if (y1 > screen_h) y1 = screen_h;
-    if (x < 0) x = 0; if (y < 0) y = 0;
-    if (x1 <= x || y1 <= y) return;
-    unsigned int *fb = (unsigned int*)WASM_U8(clean_fb_offset);
-    int span = x1 - x;
-    for (int py = y; py < y1; py++) {
-        unsigned int *row = &fb[py * screen_w + x];
-        for (int px = 0; px < span; px++)
-            row[px] = color;
-    }
+    fillRect(clean_fb_offset, x, y, w, h, color);
 }
 
 // Minimal 6x8 font — uppercase A-Z
@@ -393,13 +389,8 @@ static int composite_frame(void) {
         if (blit_child(w) != 0) all_children_ready = 0;
     }
 
-    // Copy clean backbuffer to frontbuffer (in 64-bit words)
-    unsigned long long *dst = (unsigned long long*)WASM_U8(fb_offset);
-    unsigned long long *src = (unsigned long long*)WASM_U8(clean_fb_offset);
-    int total_words = (screen_w * screen_h) / 2;
-    for (int i = 0; i < total_words; i++) {
-        dst[i] = src[i];
-    }
+    // Copy clean backbuffer to frontbuffer (native kernel memcpy)
+    copyBuffer(fb_offset, clean_fb_offset);
 
     draw_cursor(cursor_x, cursor_y);
     present(fb_offset);
@@ -516,6 +507,9 @@ void _start(void) {
                         full_redraw = 1;
                     }
                 }
+            }
+            else if (type == 3 || type == 4) {  // CHILD_DIRTY / CHILD_DIRTY_RECT
+                full_redraw = 1;
             }
         }
 

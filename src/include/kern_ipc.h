@@ -49,6 +49,9 @@ i32 shmem_read_bytes(kern_process_t *proc, i32 handle, u32 offset, void *dst, u3
 // Writes bytes to shared memory (O(1) lookup via handle).
 i32 shmem_write_bytes(kern_process_t *proc, i32 handle, u32 offset, const void *src, u32 len);
 
+// Writes bytes to a shared memory ring buffer (byte 0=head, byte 1=tail, bytes 2..257 data).
+i32 shmem_write_ring(u32 shm_id, const void *src, u32 len);
+
 // Called by process_exit() to detach all active shared memory handles of dying process.
 void ipc_process_cleanup(kern_process_t *proc);
 
@@ -56,6 +59,8 @@ void ipc_process_cleanup(kern_process_t *proc);
 #define IPC_SIG_DATA_READY   (1u << 0)   // shared memory has new data
 #define IPC_SIG_TERM         (1u << 1)   // polite termination request
 #define IPC_SIG_CHILD_EVENT  (1u << 2)   // a child process changed state
+#define IPC_SIG_KEY          (1u << 3)   // keystroke received (bit 8 = 1<<3)
+#define IPC_SIG_STDOUT       (1u << 4)   // stdout data available in stdout ring (bit 16 = 1<<4)
 
 bool ipc_signal_send(i32 target_pid, u32 signal_mask);
 u32  ipc_signal_wait(u32 mask);

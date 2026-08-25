@@ -81,6 +81,8 @@ kern_process_t *process_create() {
     proc->shmem_table     = null;
     proc->shmem_capacity  = 0;
     proc->shmem_count     = 0;
+    proc->stdout_shm_id   = -1;
+    proc->stdout_parent_pid = -1;
     // Associate with the terminal session that was active when the
     // process was created, so screen_push_line routes output to the
     // correct TTY even after the user switches sessions.
@@ -95,6 +97,10 @@ kern_process_t *process_create() {
     proc->cr3 = pml4_phys;
 
     u64 *new_pml4 = (u64 *) (pml4_phys + vmm_get_hhdm());
+    for (int i = 0; i < 256; i++) {
+        new_pml4[i] = 0;
+    }
+
     u64 master_cr3 = (kernel_process && kernel_process->cr3) ? kernel_process->cr3 : read_cr3();
     u64 *old_pml4 = (u64 *) (master_cr3 + vmm_get_hhdm());
 
@@ -183,8 +189,7 @@ u0 process_exit(kern_process_t *proc) {
         region = next;
     }
 
-    // TODO: Free PML4 structure (requires recursive walk)
-    pmm_free(proc->cr3);
+    vmm_free_pml4_user(proc->cr3);
     kfree(proc);
     serial_outsf("Process PID %d resources freed\n", old_pid);
 }

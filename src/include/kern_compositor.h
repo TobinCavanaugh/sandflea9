@@ -43,6 +43,8 @@ extern const void * wasm_display_get_resolution(IM3Runtime runtime, IM3ImportCon
 extern const void * wasm_display_present(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
 extern const void * wasm_display_present_rect(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
 extern const void * wasm_display_claim_buffer(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
+extern const void * wasm_display_fill_rect(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
+extern const void * wasm_display_copy_buffer(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
 extern const void * wasm_display_blit_from_pid(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
 extern const void * wasm_input_poll_events(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);
 extern const void * wasm_compositor_proc_spawn(IM3Runtime runtime, IM3ImportContext _ctx, uint64_t * _sp, void * _mem);

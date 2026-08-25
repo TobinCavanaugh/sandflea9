@@ -1,4 +1,4 @@
-;; term_stub.wat — mini terminal app for the compositing WM.
+;; term_stub.wat — interactive virtual terminal app for the compositing WM.
 ;;
 ;; Input flow:
 ;;   WM creates a 1-page shm ring, passes shm_id as argv[0] (env.get_arg_i32).
@@ -7,8 +7,11 @@
 ;;   We drain the ring on each SIG_KEY:  head counter at offset 0,
 ;;   ring bytes at 2..257.  SIG_CLOSE (bit 4) exits the process.
 ;;
-;; Renders typed characters to its framebuffer (blitted by the WM), with a
-;; "> " prompt per line; Enter breaks the line, Backspace erases.
+;; Command execution:
+;;   Typed characters are buffered at offset 1024. On Enter, env.shell_exec
+;;   executes the command in the kernel (running proc, cpu, ls, help, etc.),
+;;   capturing output into offset 2048, and rendering the results with
+;;   smooth hardware scrolling.
 
 (module
   (import "display" "claimBuffer" (func $claimBuffer (result i32)))
@@ -19,6 +22,7 @@
   (import "env" "ipc_shm_attach" (func $ipc_shm_attach (param i32) (result i32)))
   (import "env" "ipc_shm_read_byte" (func $ipc_shm_read_byte (param i32 i32) (result i32)))
   (import "env" "ipc_shm_write_byte" (func $ipc_shm_write_byte (param i32 i32 i32) (result i32)))
+  (import "env" "shell_exec" (func $shell_exec (param i32 i32 i32 i32) (result i32)))
 
   (memory 1)
 
@@ -149,6 +153,55 @@
         (br $row_loop)))
   )
 
+  ;; ── Scroll terminal up by 1 text row (8 pixels) ──────────────────────────
+  (func $scroll_up (param $buf i32) (param $stride i32) (param $w i32) (param $max_rows i32)
+    (local $y i32) (local $x i32) (local $src_addr i32) (local $dst_addr i32)
+    (local $total_lines i32)
+    (local.set $total_lines (i32.mul (local.get $max_rows) (i32.const 8)))
+    (local.set $y (i32.const 0))
+    (block $done_scroll
+      (loop $scroll_loop
+        (br_if $done_scroll (i32.ge_s (local.get $y) (i32.sub (local.get $total_lines) (i32.const 8))))
+        (local.set $x (i32.const 0))
+        (block $done_x
+          (loop $col_loop
+            (br_if $done_x (i32.ge_s (local.get $x) (local.get $w)))
+            (local.set $dst_addr
+              (i32.add (local.get $buf)
+                (i32.add
+                  (i32.mul (i32.add (i32.const 8) (local.get $y)) (local.get $stride))
+                  (i32.mul (local.get $x) (i32.const 4)))))
+            (local.set $src_addr
+              (i32.add (local.get $buf)
+                (i32.add
+                  (i32.mul (i32.add (i32.const 16) (local.get $y)) (local.get $stride))
+                  (i32.mul (local.get $x) (i32.const 4)))))
+            (i32.store (local.get $dst_addr) (i32.load (local.get $src_addr)))
+            (local.set $x (i32.add (local.get $x) (i32.const 1)))
+            (br $col_loop)))
+        (local.set $y (i32.add (local.get $y) (i32.const 1)))
+        (br $scroll_loop)))
+    ;; Clear bottom row (8 lines)
+    (local.set $y (i32.sub (local.get $total_lines) (i32.const 8)))
+    (block $done_clear
+      (loop $clear_loop
+        (br_if $done_clear (i32.ge_s (local.get $y) (local.get $total_lines)))
+        (local.set $x (i32.const 0))
+        (block $done_cx
+          (loop $ccol_loop
+            (br_if $done_cx (i32.ge_s (local.get $x) (local.get $w)))
+            (local.set $dst_addr
+              (i32.add (local.get $buf)
+                (i32.add
+                  (i32.mul (i32.add (i32.const 8) (local.get $y)) (local.get $stride))
+                  (i32.mul (local.get $x) (i32.const 4)))))
+            (i32.store (local.get $dst_addr) (i32.const 0xFF101018))
+            (local.set $x (i32.add (local.get $x) (i32.const 1)))
+            (br $ccol_loop)))
+        (local.set $y (i32.add (local.get $y) (i32.const 1)))
+        (br $clear_loop)))
+  )
+
   ;; ── Draw one ASCII char at character position (col, row) ────────────────
   (func $draw_char (param $buf i32) (param $stride i32)
                    (param $ch i32) (param $col i32) (param $row i32)
@@ -231,6 +284,7 @@
     (local $max_cols i32) (local $max_rows i32)
     (local $col i32) (local $row i32)
     (local $sig i32) (local $head i32) (local $tail i32) (local $ch i32)
+    (local $cmd_len i32) (local $out_len i32) (local $out_idx i32) (local $out_ch i32)
 
     ;; 1. Claim the display buffer (kernel grows memory to screen size)
     (call $claimBuffer)
@@ -257,21 +311,22 @@
       (call $ipc_shm_attach (local.get $shm_id))
       (local.set $handle)))
 
-    ;; 5. Terminal geometry — assume the window is at least half the screen
+    ;; 5. Terminal geometry — max text columns and rows
     (local.set $max_cols
       (i32.div_s (i32.sub (i32.div_s (local.get $w) (i32.const 2)) (i32.const 16)) (i32.const 6)))
     (i32.lt_s (local.get $max_cols) (i32.const 8))
     (if (then (local.set $max_cols (i32.const 8))))
-    (i32.gt_s (local.get $max_cols) (i32.const 40))
-    (if (then (local.set $max_cols (i32.const 40))))
+    (i32.gt_s (local.get $max_cols) (i32.const 64))
+    (if (then (local.set $max_cols (i32.const 64))))
     (local.set $max_rows
       (i32.div_s (i32.sub (i32.div_s (local.get $h) (i32.const 2)) (i32.const 16)) (i32.const 8)))
     (i32.lt_s (local.get $max_rows) (i32.const 4))
     (if (then (local.set $max_rows (i32.const 4))))
-    (i32.gt_s (local.get $max_rows) (i32.const 30))
-    (if (then (local.set $max_rows (i32.const 30))))
+    (i32.gt_s (local.get $max_rows) (i32.const 40))
+    (if (then (local.set $max_rows (i32.const 40))))
 
     ;; 6. Start at row 0 with a prompt
+    (local.set $cmd_len (i32.const 0))
     (local.set $col (i32.const 2))
     (local.set $row (i32.const 0))
     (call $draw_prompt (local.get $buf) (local.get $stride) (local.get $row))
@@ -286,8 +341,8 @@
         (i32.and (local.get $sig) (i32.const 4))
         (if (then (br $done)))
 
-        ;; SIG_KEY (bit 8): drain ring bytes
-        (i32.and (local.get $sig) (i32.const 8))
+        ;; SIG_KEY (bit 8) or SIG_STDOUT (bit 16): drain ring bytes
+        (i32.and (local.get $sig) (i32.const 24))
         (if
           (then
             (i32.ge_s (local.get $handle) (i32.const 0))
@@ -304,38 +359,155 @@
                       (i32.add (i32.const 2) (local.get $head)))
                     (local.set $ch)
 
-                    ;; ── newline: next row + fresh prompt ──
-                    (i32.or
-                      (i32.eq (local.get $ch) (i32.const 0x0A))
-                      (i32.eq (local.get $ch) (i32.const 0x0D)))
-                    (if (then
-                      (i32.lt_s (local.get $row) (i32.sub (local.get $max_rows) (i32.const 1)))
-                      (if (then (local.set $row (i32.add (local.get $row) (i32.const 1)))))
-                      (local.set $col (i32.const 2))
-                      (call $draw_prompt (local.get $buf) (local.get $stride) (local.get $row))))
+                    ;; Check if this is async STDOUT stream (bit 16) or interactive KEY (bit 8)
+                    (i32.and (local.get $sig) (i32.const 16))
+                    (if
+                      (then
+                        ;; ── Async STDOUT Stream ──
+                        (i32.or (i32.eq (local.get $ch) (i32.const 0x0A)) (i32.eq (local.get $ch) (i32.const 0x0D)))
+                        (if (then
+                          (i32.ge_s (local.get $row) (i32.sub (local.get $max_rows) (i32.const 1)))
+                          (if (then
+                            (call $scroll_up (local.get $buf) (local.get $stride) (local.get $w) (local.get $max_rows))
+                            (local.set $row (i32.sub (local.get $max_rows) (i32.const 1))))
+                          (else
+                            (local.set $row (i32.add (local.get $row) (i32.const 1)))))
+                          (local.set $col (i32.const 0)))
+                        (else
+                          (i32.and
+                            (i32.ge_s (local.get $ch) (i32.const 0x20))
+                            (i32.le_s (local.get $ch) (i32.const 0x7E)))
+                          (if (then
+                            (i32.ge_s (local.get $col) (local.get $max_cols))
+                            (if (then
+                              (i32.ge_s (local.get $row) (i32.sub (local.get $max_rows) (i32.const 1)))
+                              (if (then
+                                (call $scroll_up (local.get $buf) (local.get $stride) (local.get $w) (local.get $max_rows))
+                                (local.set $row (i32.sub (local.get $max_rows) (i32.const 1))))
+                              (else
+                                (local.set $row (i32.add (local.get $row) (i32.const 1)))))
+                              (local.set $col (i32.const 0))))
+                            (call $draw_char (local.get $buf) (local.get $stride)
+                              (local.get $ch) (local.get $col) (local.get $row))
+                            (local.set $col (i32.add (local.get $col) (i32.const 1))))))))
+                      (else
+                        ;; ── Interactive Keyboard Input ──
+                        ;; ── newline: execute command and print results ──
+                        (i32.or
+                          (i32.eq (local.get $ch) (i32.const 0x0A))
+                          (i32.eq (local.get $ch) (i32.const 0x0D)))
+                        (if (then
+                          ;; If user typed a command, execute it
+                          (i32.gt_s (local.get $cmd_len) (i32.const 0))
+                          (if
+                            (then
+                              (i32.store8 (i32.add (i32.const 1024) (local.get $cmd_len)) (i32.const 0))
+                              (local.set $out_len
+                                (call $shell_exec (i32.const 1024) (local.get $cmd_len) (i32.const 2048) (i32.const 4096)))
+                              (local.set $cmd_len (i32.const 0))
 
-                    ;; ── backspace: erase previous char (keep the prompt) ──
-                    (i32.eq (local.get $ch) (i32.const 0x08))
-                    (if (then
-                      (i32.gt_s (local.get $col) (i32.const 2))
-                      (if (then
-                        (local.set $col (i32.sub (local.get $col) (i32.const 1)))
-                        (call $erase_cell (local.get $buf) (local.get $stride) (local.get $col) (local.get $row))))))
+                              ;; Print output lines
+                              (i32.gt_s (local.get $out_len) (i32.const 0))
+                              (if
+                                (then
+                                  (local.set $out_idx (i32.const 0))
+                                  ;; Advance to new line for output
+                                  (i32.ge_s (local.get $row) (i32.sub (local.get $max_rows) (i32.const 1)))
+                                  (if (then
+                                    (call $scroll_up (local.get $buf) (local.get $stride) (local.get $w) (local.get $max_rows))
+                                    (local.set $row (i32.sub (local.get $max_rows) (i32.const 1))))
+                                  (else
+                                    (local.set $row (i32.add (local.get $row) (i32.const 1)))))
+                                  (local.set $col (i32.const 0))
 
-                    ;; ── printable: wrap at end of line, then draw ──
-                    (i32.and
-                      (i32.ge_s (local.get $ch) (i32.const 0x20))
-                      (i32.le_s (local.get $ch) (i32.const 0x7E)))
-                    (if (then
-                      (i32.ge_s (local.get $col) (local.get $max_cols))
-                      (if (then
-                        (i32.lt_s (local.get $row) (i32.sub (local.get $max_rows) (i32.const 1)))
-                        (if (then (local.set $row (i32.add (local.get $row) (i32.const 1)))))
-                        (local.set $col (i32.const 2))
-                        (call $draw_prompt (local.get $buf) (local.get $stride) (local.get $row))))
-                      (call $draw_char (local.get $buf) (local.get $stride)
-                        (local.get $ch) (local.get $col) (local.get $row))
-                      (local.set $col (i32.add (local.get $col) (i32.const 1)))))
+                                  (block $done_out
+                                    (loop $out_loop
+                                      (br_if $done_out (i32.ge_s (local.get $out_idx) (local.get $out_len)))
+                                      (local.set $out_ch (i32.load8_u (i32.add (i32.const 2048) (local.get $out_idx))))
+
+                                      (i32.eq (local.get $out_ch) (i32.const 0x0A))
+                                      (if (then
+                                        (i32.ge_s (local.get $row) (i32.sub (local.get $max_rows) (i32.const 1)))
+                                        (if (then
+                                          (call $scroll_up (local.get $buf) (local.get $stride) (local.get $w) (local.get $max_rows))
+                                          (local.set $row (i32.sub (local.get $max_rows) (i32.const 1))))
+                                        (else
+                                          (local.set $row (i32.add (local.get $row) (i32.const 1)))))
+                                        (local.set $col (i32.const 0)))
+                                      (else
+                                        (i32.and
+                                          (i32.ge_s (local.get $out_ch) (i32.const 0x20))
+                                          (i32.le_s (local.get $out_ch) (i32.const 0x7E)))
+                                        (if (then
+                                          (i32.ge_s (local.get $col) (local.get $max_cols))
+                                          (if (then
+                                            (i32.ge_s (local.get $row) (i32.sub (local.get $max_rows) (i32.const 1)))
+                                            (if (then
+                                              (call $scroll_up (local.get $buf) (local.get $stride) (local.get $w) (local.get $max_rows))
+                                              (local.set $row (i32.sub (local.get $max_rows) (i32.const 1))))
+                                            (else
+                                              (local.set $row (i32.add (local.get $row) (i32.const 1)))))
+                                            (local.set $col (i32.const 0))))
+                                          (call $draw_char (local.get $buf) (local.get $stride)
+                                            (local.get $out_ch) (local.get $col) (local.get $row))
+                                          (local.set $col (i32.add (local.get $col) (i32.const 1)))))))
+                                      (local.set $out_idx (i32.add (local.get $out_idx) (i32.const 1)))
+                                      (br $out_loop))))))
+                            (else
+                              ;; Empty command, just advance
+                              (i32.ge_s (local.get $row) (i32.sub (local.get $max_rows) (i32.const 1)))
+                              (if (then
+                                (call $scroll_up (local.get $buf) (local.get $stride) (local.get $w) (local.get $max_rows))
+                                (local.set $row (i32.sub (local.get $max_rows) (i32.const 1))))
+                              (else
+                                (local.set $row (i32.add (local.get $row) (i32.const 1)))))))
+
+                          ;; Advance row for fresh prompt if needed
+                          (i32.gt_s (local.get $col) (i32.const 0))
+                          (if (then
+                            (i32.ge_s (local.get $row) (i32.sub (local.get $max_rows) (i32.const 1)))
+                            (if (then
+                              (call $scroll_up (local.get $buf) (local.get $stride) (local.get $w) (local.get $max_rows))
+                              (local.set $row (i32.sub (local.get $max_rows) (i32.const 1))))
+                            (else
+                              (local.set $row (i32.add (local.get $row) (i32.const 1)))))))
+
+                          (local.set $col (i32.const 2))
+                          (call $draw_prompt (local.get $buf) (local.get $stride) (local.get $row))))
+
+                        ;; ── backspace: erase previous char (keep the prompt) ──
+                        (i32.eq (local.get $ch) (i32.const 0x08))
+                        (if (then
+                          (i32.gt_s (local.get $cmd_len) (i32.const 0))
+                          (if (then
+                            (local.set $cmd_len (i32.sub (local.get $cmd_len) (i32.const 1)))
+                            (i32.gt_s (local.get $col) (i32.const 2))
+                            (if (then
+                              (local.set $col (i32.sub (local.get $col) (i32.const 1)))
+                              (call $erase_cell (local.get $buf) (local.get $stride) (local.get $col) (local.get $row))))))))
+
+                        ;; ── printable: buffer command char and draw ──
+                        (i32.and
+                          (i32.ge_s (local.get $ch) (i32.const 0x20))
+                          (i32.le_s (local.get $ch) (i32.const 0x7E)))
+                        (if (then
+                          (i32.lt_s (local.get $cmd_len) (i32.const 254))
+                          (if (then
+                            (i32.store8 (i32.add (i32.const 1024) (local.get $cmd_len)) (local.get $ch))
+                            (local.set $cmd_len (i32.add (local.get $cmd_len) (i32.const 1)))))
+                          (i32.ge_s (local.get $col) (local.get $max_cols))
+                          (if (then
+                            (i32.ge_s (local.get $row) (i32.sub (local.get $max_rows) (i32.const 1)))
+                            (if (then
+                              (call $scroll_up (local.get $buf) (local.get $stride) (local.get $w) (local.get $max_rows))
+                              (local.set $row (i32.sub (local.get $max_rows) (i32.const 1))))
+                            (else
+                              (local.set $row (i32.add (local.get $row) (i32.const 1)))))
+                            (local.set $col (i32.const 2))
+                            (call $draw_prompt (local.get $buf) (local.get $stride) (local.get $row))))
+                          (call $draw_char (local.get $buf) (local.get $stride)
+                            (local.get $ch) (local.get $col) (local.get $row))
+                          (local.set $col (i32.add (local.get $col) (i32.const 1)))))))
 
                     ;; advance head
                     (local.set $head (i32.and (i32.add (local.get $head) (i32.const 1)) (i32.const 0xFF)))

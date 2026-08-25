@@ -19,11 +19,9 @@
 #define PDPT_INDEX(x) (((x) >> 30) & 0x1FF)
 #define PD_INDEX(x) (((x) >> 21) & 0x1FF)
 #define PT_INDEX(x) (((x) >> 12) & 0x1FF)
-
+#define PTE_ADDR_MASK 0x000FFFFFFFFFF000ULL
 
 #define KHEAP_START_ADDR 0xFFFFFFFF88000000
-
-// todo multi page size (4k or 2MB seems standard). x64 supporst 4k, 2mb, 1g
 #define PAGE_SIZE 0x1000
 #define HEAP_MIN_SIZE 0x40000 // Initial 256KB
 
@@ -68,6 +66,8 @@ u0 vmm_map_page_in_pml4(u64 pml4_phys, u64 phys_addr, u64 virt_addr, u64 flags);
 u64 vmm_get_phys_in_pml4(u64 pml4_phys, u64 virt_addr);
 
 u0 vmm_unmap_page_in_pml4(u64 pml4_phys, u64 virt_addr);
+
+u0 vmm_free_pml4_user(u64 pml4_phys);
 
 
 u0 *pmalloc(u64 size);
