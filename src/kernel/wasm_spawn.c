@@ -482,12 +482,6 @@ m3ApiRawFunction(wasm_fd_write) {
                     if (res < 0) break;
                     total_written += res;
                 } else if (fd == 1 || fd == 2) {
-                    if (proc && proc->stdout_shm_id > 0) {
-                        shmem_write_ring((u32)proc->stdout_shm_id, host_buf, len);
-                        if (proc->stdout_parent_pid > 0) {
-                            ipc_signal_send(proc->stdout_parent_pid, 16); // Signal 16 = IPC_SIG_STDOUT
-                        }
-                    }
                     term_write((const char *)host_buf, len);
                     total_written += len;
                 } else {
@@ -659,6 +653,25 @@ m3ApiRawFunction(wasm_get_arg_i32) {
     m3ApiReturn(val);
 }
 
+m3ApiRawFunction(wasm_getcwd) {
+    m3ApiReturnType (i32)
+    m3ApiGetArg     (u32, buf_offset)
+    m3ApiGetArg     (u32, buf_size)
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (mem && buf_offset < mem_size && buf_size > 0) {
+        const char *cwd_str = fs_get_cwd();
+        u32 len = str_len(cwd_str);
+        if (len >= buf_size) len = buf_size - 1;
+        if (buf_offset + len >= mem_size) len = mem_size - 1 - buf_offset;
+        mem_copy(mem + buf_offset, (const u8*)cwd_str, len);
+        mem[buf_offset + len] = '\0';
+        m3ApiReturn((i32)len);
+    }
+    m3ApiReturn(-1);
+}
+
 m3ApiRawFunction(wasm_shell_exec) {
     m3ApiReturnType (i32)
     m3ApiGetArg     (u32, cmd_offset)
@@ -668,7 +681,7 @@ m3ApiRawFunction(wasm_shell_exec) {
 
     u32 mem_size = 0;
     u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
-    if (!mem || cmd_offset + cmd_len > mem_size || out_offset + max_out > mem_size) {
+    if (!mem || cmd_offset + cmd_len > mem_size || out_offset >= mem_size) {
         m3ApiReturn(-1);
     }
 
@@ -677,26 +690,42 @@ m3ApiRawFunction(wasm_shell_exec) {
     mem_copy((u8*)cmd_str, mem + cmd_offset, clen);
     cmd_str[clen] = '\0';
 
-    char *out_buf = (char*)(mem + out_offset);
-    term_capture_output_start(out_buf, max_out);
+    static char k_capture_buf[16384];
 
     kern_process_t *proc = sched_get_current_process();
-    if (proc && proc->argc > 0 && proc->argv[0]) {
-        i32 ring_shm = 0;
-        const char *s = proc->argv[0];
-        while (*s >= '0' && *s <= '9') {
-            ring_shm = ring_shm * 10 + (*s - '0');
-            s++;
-        }
-        if (ring_shm > 0) {
-            proc->stdout_shm_id = ring_shm;
-            proc->stdout_parent_pid = proc->pid;
-        }
+    u64 irq = save_irq_and_disable();
+    if (proc) {
+        k_capture_buf[0] = '\0';
+        proc->output_capture_buf = k_capture_buf;
+        proc->output_capture_len = 0;
+        proc->output_capture_max = sizeof(k_capture_buf);
     }
+    restore_irq(irq);
 
     handle_command_str(cmd_str);
 
-    u32 captured = term_capture_output_end();
+    irq = save_irq_and_disable();
+    u32 captured = 0;
+    if (proc) {
+        captured = proc->output_capture_len;
+        proc->output_capture_buf = NULL;
+        proc->output_capture_len = 0;
+        proc->output_capture_max = 0;
+    }
+    restore_irq(irq);
+
+    // Refresh mem pointer in case WASM linear memory grew/reallocated
+    mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (mem && out_offset < mem_size && max_out > 0) {
+        u32 copy_len = captured;
+        if (copy_len > max_out) copy_len = max_out;
+        if (out_offset + copy_len > mem_size) copy_len = mem_size - out_offset;
+        mem_copy(mem + out_offset, (u8*)k_capture_buf, copy_len);
+        if (copy_len < max_out && out_offset + copy_len < mem_size) {
+            mem[out_offset + copy_len] = '\0';
+        }
+    }
+
     m3ApiReturn((i32)captured);
 }
 
@@ -1470,6 +1499,11 @@ u0 wasm_thread_entry(u0 *arg) {
     {
         PROFILE_SCOPE("wasm:fs_load");
         i32 fd = fs_open(wasm_path);
+        if (fd < 0 && wasm_path[0] != '/' && wasm_path[0] != '\\') {
+            char root_path[256];
+            stbsp_snprintf(root_path, sizeof(root_path), "/%s", wasm_path);
+            fd = fs_open(root_path);
+        }
         if (fd < 0) {
             screen_push_linef("WASM: Could not open %s", wasm_path);
             goto Label_Done;
@@ -1619,6 +1653,7 @@ do_load:
         m3_LinkRawFunction(module, "env", "get_arg_count",   "i()",     &wasm_get_arg_count);
         m3_LinkRawFunction(module, "env", "get_arg",         "i(iii)",  &wasm_get_arg);
         m3_LinkRawFunction(module, "env", "get_arg_i32",     "i(i)",    &wasm_get_arg_i32);
+        m3_LinkRawFunction(module, "env", "getcwd",          "i(ii)",   &wasm_getcwd);
         m3_LinkRawFunction(module, "env", "shell_exec",       "i(iiii)", &wasm_shell_exec);
 
         // 4b. IPC host functions (kern_ipc.c). Best-effort — modules that
@@ -1686,11 +1721,11 @@ do_load:
                 result = m3_CallArgv(func, 2, args);
             } else {
                 // InjectArgv reported a problem; fall back to no-args.
-                screen_push_line("WASM: Calling _start() without argv");
+//                screen_push_line("WASM: Calling _start() without argv");
                 result = m3_CallArgv(func, 0, null);
             }
         } else {
-            screen_push_line("WASM: Calling _start()...");
+//            screen_push_line("WASM: Calling _start()...");
             result = m3_CallArgv(func, 0, null);
         }
 
@@ -1698,7 +1733,7 @@ do_load:
             screen_push_linef("WASM: Call error: %s", result);
             serial_outsf("WASM: Call error: %s\n", result);
         } else {
-            screen_push_line("WASM: _start returned");
+//            screen_push_line("WASM: _start returned");
             serial_outsl("WASM: _start returned");
         }
     }
@@ -1751,16 +1786,16 @@ i32 wasm_spawn(const wasm_spawn_opts_t *opts) {
     ra->stack_kb        = opts->stack_kb > 0 ? opts->stack_kb : 64u;
     ra->wasi_argv       = opts->wasi_argv;
     ra->link_extra      = opts->link_extra;
-    ra->link_user       = opts->link_user;
-
     proc->cleanup_fn  = wasm_proc_cleanup;
     proc->cleanup_ctx = ra;
 
-    // Inherit stdout shared-memory ring from parent process if present
+    // Inherit stdout shared-memory ring or parent PID from parent process if present
     kern_process_t *parent = sched_get_current_process();
-    if (parent && parent->stdout_shm_id > 0) {
-        proc->stdout_shm_id = parent->stdout_shm_id;
-        proc->stdout_parent_pid = parent->stdout_parent_pid;
+    if (parent) {
+        proc->stdout_parent_pid = parent->pid;
+        if (parent->stdout_shm_id > 0) {
+            proc->stdout_shm_id = parent->stdout_shm_id;
+        }
     }
 
     // Copy argv into proc->argv (deep copies owned by proc; freed in process_exit).

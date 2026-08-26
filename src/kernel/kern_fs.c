@@ -6,6 +6,7 @@
 #include "../util/util_str.h"
 #include "../include/kern_vmm.h"
 #include "../include/kern_sched.h"
+#include "../include/kern_terminal.h"
 
 // TODO Async I/O implementation
 
@@ -309,3 +310,205 @@ u32 fs_size(i32 fd) {
     if (!proc || fd < 0 || fd >= MAX_FILE_HANDLES || proc->fd_table[fd] == null) return 0;
     return proc->fd_table[fd]->inode.size;
 }
+
+const char *fs_get_cwd(void) {
+    kern_process_t *proc = sched_get_current_process();
+    if (proc && proc->cwd[0] != '\0') {
+        return proc->cwd;
+    }
+    if (active_session && active_session->cwd[0] != '\0') {
+        return active_session->cwd;
+    }
+    if (cwd[0] != '\0') {
+        return cwd;
+    }
+    return "//A/";
+}
+
+u0 fs_set_cwd(const char *new_cwd) {
+    if (!new_cwd || new_cwd[0] == '\0') return;
+
+    // If new_cwd has a drive prefix (e.g. "//B/" or "//A/"), switch active drive
+    if (new_cwd[0] == '/' && new_cwd[1] == '/') {
+        const char *dstart = new_cwd + 2;
+        const char *dend = dstart;
+        while (*dend && *dend != '/') dend++;
+        u32 dlen = (u32)(dend - dstart);
+        for (u8 i = 0; i < drive_count; i++) {
+            if (!drives[i].present) continue;
+            u32 dl = str_len(drives[i].name);
+            if (dlen == dl && str_eql(dstart, drives[i].name, dlen)) {
+                ext2_switch_drive(&drives[i]);
+                break;
+            }
+        }
+    }
+
+    kern_process_t *proc = sched_get_current_process();
+    if (proc && proc != sched_get_kernel_process()) {
+        u32 len = str_len(new_cwd);
+        if (len >= sizeof(proc->cwd)) len = sizeof(proc->cwd) - 1;
+        mem_copy((u8*)proc->cwd, (const u8*)new_cwd, len);
+        proc->cwd[len] = '\0';
+        return;
+    }
+
+    if (active_session) {
+        u32 len = str_len(new_cwd);
+        if (len >= sizeof(active_session->cwd)) len = sizeof(active_session->cwd) - 1;
+        mem_copy((u8*)active_session->cwd, (const u8*)new_cwd, len);
+        active_session->cwd[len] = '\0';
+    }
+
+    kern_process_t *kproc = sched_get_kernel_process();
+    if (kproc) {
+        u32 len = str_len(new_cwd);
+        if (len >= sizeof(kproc->cwd)) len = sizeof(kproc->cwd) - 1;
+        mem_copy((u8*)kproc->cwd, (const u8*)new_cwd, len);
+        kproc->cwd[len] = '\0';
+    }
+
+    u32 len = str_len(new_cwd);
+    if (len >= sizeof(cwd)) len = sizeof(cwd) - 1;
+    mem_copy((u8*)cwd, (const u8*)new_cwd, len);
+    cwd[len] = '\0';
+}
+
+u0 fs_resolve_path(const char *path, char *out, u32 out_size) {
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+
+    const char *current_cwd = fs_get_cwd();
+    if (!current_cwd || current_cwd[0] == '\0') current_cwd = "//A/";
+
+    char combined[512];
+    combined[0] = '\0';
+
+    if (!path || path[0] == '\0') {
+        u32 len = str_len(current_cwd);
+        if (len >= out_size) len = out_size - 1;
+        mem_copy((u8*)out, (const u8*)current_cwd, len);
+        out[len] = '\0';
+        return;
+    }
+
+    // Check if path has an explicit drive prefix "//drive/..." or "//drive"
+    if (path[0] == '/' && path[1] == '/') {
+        u32 len = str_len(path);
+        if (len >= sizeof(combined)) len = sizeof(combined) - 1;
+        mem_copy((u8*)combined, (const u8*)path, len);
+        combined[len] = '\0';
+    } else if (path[0] == '/') {
+        // Absolute path from root of current drive: extract drive prefix from current_cwd
+        char drive_pref[32];
+        drive_pref[0] = '\0';
+        if (current_cwd[0] == '/' && current_cwd[1] == '/') {
+            const char *p = current_cwd + 2;
+            while (*p && *p != '/') p++;
+            u32 dlen = (u32)(p - current_cwd);
+            if (dlen >= sizeof(drive_pref)) dlen = sizeof(drive_pref) - 1;
+            mem_copy((u8*)drive_pref, (const u8*)current_cwd, dlen);
+            drive_pref[dlen] = '\0';
+        } else {
+            drive_pref[0] = '/';
+            drive_pref[1] = '/';
+            drive_pref[2] = (active_drive && active_drive->name[0]) ? active_drive->name[0] : 'A';
+            drive_pref[3] = '\0';
+        }
+
+        u32 dlen = str_len(drive_pref);
+        mem_copy((u8*)combined, (const u8*)drive_pref, dlen);
+        u32 plen = str_len(path);
+        if (dlen + plen >= sizeof(combined)) plen = sizeof(combined) - 1 - dlen;
+        mem_copy((u8*)combined + dlen, (const u8*)path, plen);
+        combined[dlen + plen] = '\0';
+    } else {
+        // Relative path — prepend current_cwd
+        u32 cwd_len = str_len(current_cwd);
+        if (cwd_len >= sizeof(combined)) cwd_len = sizeof(combined) - 1;
+        mem_copy((u8*)combined, (const u8*)current_cwd, cwd_len);
+        combined[cwd_len] = '\0';
+
+        if (cwd_len > 0 && combined[cwd_len - 1] != '/') {
+            if (cwd_len < sizeof(combined) - 1) {
+                combined[cwd_len++] = '/';
+                combined[cwd_len] = '\0';
+            }
+        }
+
+        u32 path_len = str_len(path);
+        if (cwd_len + path_len >= sizeof(combined)) path_len = sizeof(combined) - 1 - cwd_len;
+        mem_copy((u8*)combined + cwd_len, (const u8*)path, path_len);
+        combined[cwd_len + path_len] = '\0';
+    }
+
+    // Canonicalize 'combined':
+    // 1. Extract drive prefix if "//..."
+    char drive_prefix[32];
+    drive_prefix[0] = '\0';
+    const char *scan = combined;
+
+    if (combined[0] == '/' && combined[1] == '/') {
+        const char *dp_end = combined + 2;
+        while (*dp_end && *dp_end != '/') dp_end++;
+        u32 dlen = (u32)(dp_end - combined);
+        if (dlen >= sizeof(drive_prefix)) dlen = sizeof(drive_prefix) - 1;
+        mem_copy((u8*)drive_prefix, (const u8*)combined, dlen);
+        drive_prefix[dlen] = '\0';
+        scan = dp_end;
+    } else {
+        drive_prefix[0] = '/';
+        drive_prefix[1] = '/';
+        drive_prefix[2] = (active_drive && active_drive->name[0]) ? active_drive->name[0] : 'A';
+        drive_prefix[3] = '\0';
+    }
+
+    // 2. Tokenize segments
+    const char *segments[32];
+    u32 seg_lens[32];
+    u32 depth = 0;
+
+    while (*scan) {
+        while (*scan == '/') scan++;
+        if (!*scan) break;
+
+        const char *seg_start = scan;
+        while (*scan && *scan != '/') scan++;
+        u32 slen = (u32)(scan - seg_start);
+
+        if (slen == 1 && seg_start[0] == '.') {
+            continue;
+        }
+        if (slen == 2 && seg_start[0] == '.' && seg_start[1] == '.') {
+            if (depth > 0) depth--;
+            continue;
+        }
+
+        if (depth < 32) {
+            segments[depth] = seg_start;
+            seg_lens[depth] = slen;
+            depth++;
+        }
+    }
+
+    // 3. Assemble normalized output: "//<drive>/" or "//<drive>/seg1/seg2"
+    u32 pos = 0;
+    u32 dlen = str_len(drive_prefix);
+    if (dlen >= out_size) dlen = out_size - 1;
+    mem_copy((u8*)out, (const u8*)drive_prefix, dlen);
+    pos = dlen;
+
+    if (depth == 0) {
+        if (pos < out_size - 1) out[pos++] = '/';
+    } else {
+        for (u32 i = 0; i < depth; i++) {
+            if (pos < out_size - 1) out[pos++] = '/';
+            u32 slen = seg_lens[i];
+            if (pos + slen >= out_size) slen = out_size - 1 - pos;
+            mem_copy((u8*)out + pos, (const u8*)segments[i], slen);
+            pos += slen;
+        }
+    }
+    out[pos] = '\0';
+}
+

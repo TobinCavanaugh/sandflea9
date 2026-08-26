@@ -49,7 +49,17 @@ typedef struct kern_process {
     // Optional shared-memory stdout ring buffer and parent PID to signal
     i32                      stdout_shm_id;
     i32                      stdout_parent_pid;
+
+    // Dedicated output capture for synchronous command execution (shell_exec)
+    char                    *output_capture_buf;
+    u32                      output_capture_len;
+    u32                      output_capture_max;
+
+    // Per-process current working directory
+    char                     cwd[256];
 } kern_process_t;
+
+kern_process_t *sched_get_process_by_pid(i32 pid);
 
 extern kern_process_t *foreground_proc;
 
@@ -103,7 +113,8 @@ kern_task_t * sched_get_task_list_head();
 
 kern_process_t * sched_get_current_process();
 kern_process_t * sched_get_kernel_process();
-u8 sched_kill_process(i32 pi);
+u8 sched_kill_process(i32 pid);
+u8 sched_kill_children(i32 parent_pid);
 
 u0* pmalloc(u64 size);
 u0 pfree(void *ptr);

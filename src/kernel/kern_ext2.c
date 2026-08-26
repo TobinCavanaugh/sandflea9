@@ -3,6 +3,7 @@
 //
 
 #include "../include/kern_ext2.h"
+#include "../include/kern_fs.h"
 #include "../include/kern_mem.h"
 #include "../include/kern_ide.h"
 #include "../include/kern_vmm.h"
@@ -19,10 +20,8 @@ drive_t drives[MAX_DRIVES] = {0};
 u8      drive_count = 0;
 drive_t *active_drive = null;
 
-// Current working directory. Tracks the active drive implicitly — if the
-// user does `cd //B`, the drive switches AND cwd captures the prefix.
-// On the boot drive (A), cwd is just "/path". On other drives: "//B/path".
-char cwd[256] = "/";
+// Current working directory. Always includes drive prefix: "//A/", "//A/wasm", "//B/".
+char cwd[256] = "//A/";
 
 // Legacy globals — kept for source compatibility with existing code.
 // They are repointed by ext2_switch_drive() whenever the active drive changes.
@@ -757,6 +756,10 @@ static u32 ext2_find_child(ext2_inode_t *dir_inode, const char *name) {
 ext2_inode_t *ext2_find_path(const char *path, u32 *out_inode_no) {
     if (!path || *path == '\0' || block_size == 0) return null;
 
+    char resolved[256];
+    fs_resolve_path(path, resolved, sizeof(resolved));
+    path = resolved;
+
     // ── //drive prefix: cross to a different drive ──────────────────────
     if (path[0] == '/' && path[1] == '/') {
         const char *drive_start = path + 2;
@@ -1173,26 +1176,57 @@ static u32 ext2_create_file_in_dir(const char *name, u32 parent_inode_no) {
     return new_inode_no;
 }
 
-// Create a file at the given path (must be direct child of root "/")
+// Create a file at the given path.
+// Resolves relative paths using fs_resolve_path and supports creating in subdirectories.
 // Returns 0 on failure, new inode number on success.
 u32 ext2_create_file(const char *path) {
     if (!path || path[0] == 0 || block_size == 0) return 0;
 
-    // For MVP: only support creating files in root directory
-    // Parse: /filename or just filename
-    const char *name = path;
-    if (name[0] == '/') name++;
-    if (name[0] == 0) return 0;
+    char resolved[256];
+    fs_resolve_path(path, resolved, sizeof(resolved));
 
-    // Validate: no subdirectories in path
-    for (const char *p = name; *p; p++) {
-        if (*p == '/') {
-            serial_outsf("ext2_create: nested paths not supported: %s\n", path);
-            return 0;
-        }
+    // Find the last '/' to separate parent directory and filename
+    const char *last_slash = null;
+    for (const char *p = resolved; *p; p++) {
+        if (*p == '/') last_slash = p;
     }
 
-    return ext2_create_file_in_dir(name, 2);  // 2 = root inode
+    if (!last_slash) return 0;
+
+    const char *filename = last_slash + 1;
+    if (*filename == '\0') return 0;
+
+    u32 parent_inode_no = 2;
+
+    // Check if parent directory is root ("/" or "//drive")
+    if (last_slash == resolved) {
+        // Parent is "/" on current drive
+        parent_inode_no = 2;
+    } else if (resolved[0] == '/' && resolved[1] == '/' && last_slash == resolved + 1) {
+        // Parent is synthetic root "//" — invalid for file creation
+        return 0;
+    } else {
+        // Parent is a directory: extract parent path
+        char parent_dir[256];
+        u32 plen = (u32)(last_slash - resolved);
+        if (plen >= sizeof(parent_dir)) plen = sizeof(parent_dir) - 1;
+        mem_copy((u8*)parent_dir, (const u8*)resolved, plen);
+        parent_dir[plen] = '\0';
+
+        ext2_inode_t *pi = ext2_find_path(parent_dir, &parent_inode_no);
+        if (!pi) {
+            serial_outsf("ext2_create: parent directory not found: %s\n", parent_dir);
+            return 0;
+        }
+        if ((pi->mode & 0xF000) != 0x4000) {
+            serial_outsf("ext2_create: parent is not a directory: %s\n", parent_dir);
+            kfree(pi);
+            return 0;
+        }
+        kfree(pi);
+    }
+
+    return ext2_create_file_in_dir(filename, parent_inode_no);
 }
 
 u8 *get_block_ptr(u32 block_id) {

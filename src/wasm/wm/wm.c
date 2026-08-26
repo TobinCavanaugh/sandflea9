@@ -243,6 +243,16 @@ static void tile_all(void) {
         windows[i].canvas_y = (i / cols) * cell_h;
         windows[i].w = cell_w;
         windows[i].h = cell_h;
+
+        if (windows[i].shm_handle >= 0) {
+            int cw = cell_w - BORDER_W * 2;
+            int ch = cell_h - TITLE_BAR_H - BORDER_W;
+            ipc_shm_write_byte(windows[i].shm_handle, 258, cw & 0xFF);
+            ipc_shm_write_byte(windows[i].shm_handle, 259, (cw >> 8) & 0xFF);
+            ipc_shm_write_byte(windows[i].shm_handle, 260, ch & 0xFF);
+            ipc_shm_write_byte(windows[i].shm_handle, 261, (ch >> 8) & 0xFF);
+            proc_signal(windows[i].pid, SIG_KEY, 0);
+        }
     }
 }
 
@@ -482,8 +492,8 @@ void _start(void) {
                 } else if (k == 0x00) {  // Escape: quit WM
                     return;
                 } else if (focused_idx >= 0 &&
-                           (k == '\b' || (k >= 0x20 && k <= 0x7E))) {
-                    // Printable chars + backspace go to the focused terminal.
+                           (k == 0x03 || k == '\b' || (k >= 0x20 && k <= 0x7E))) {
+                    // Printable chars, backspace, and Ctrl+C go to the focused terminal.
                     send_key_to_focused(k);
                     full_redraw = 1;
                 }

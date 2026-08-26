@@ -38,4 +38,9 @@ i32 fs_seek(i32 fd, i32 offset, seek_type_t whence);
 u32 fs_tell(i32 fd);
 u32 fs_size(i32 fd);
 
+// Current working directory & path resolution
+const char *fs_get_cwd(void);
+u0          fs_set_cwd(const char *new_cwd);
+u0          fs_resolve_path(const char *path, char *out, u32 out_size);
+
 #endif // KERN_FS_H

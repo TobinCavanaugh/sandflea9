@@ -16,6 +16,8 @@
 #include "../include/ssfn.h"
 #include "../include/kern_screen.h"
 #include "../include/kern_sched.h"
+#include "../include/kern_compositor.h"
+#include "../include/kern_ext2.h"
 #include "../include/string.h"
 #include "../util/util_str.h"
 
@@ -126,6 +128,7 @@ i32 session_init(u32 id, u16 cols, u16 rows) {
     memset(s->fg_key_queue, 0, FG_QUEUE_SIZE);
     s->foreground_proc = NULL;
     memset(s->typingbuf, 0, 256);
+    stbsp_snprintf(s->cwd, sizeof(s->cwd), "//A/");
     s->owns_framebuffer = false;
 
     return 0;
@@ -143,6 +146,7 @@ static void session_save_globals(term_session_t *s) {
     s->foreground_proc       = foreground_proc;
 
     mem_copy((u8*)s->typingbuf, (u8*)typingbuf, 256);
+    mem_copy((u8*)s->cwd, (u8*)cwd, 256);
 
     // owns_framebuffer is a global declared in kern_tests.h
     // Since we can't include that here, we just save what we know.
@@ -161,6 +165,7 @@ static void session_restore_globals(term_session_t *s) {
     foreground_proc          = s->foreground_proc;
 
     mem_copy((u8*)typingbuf, (u8*)s->typingbuf, 256);
+    mem_copy((u8*)cwd, (u8*)s->cwd, 256);
 }
 
 void session_switch(u32 id) {
@@ -183,6 +188,14 @@ void session_switch(u32 id) {
     //     a separate mechanism — see the note in main.c)
 
     restore_irq(irq);
+
+    // 5. If switching to compositor session, trigger full repaint in WM.
+    //    If switching to a text console session, redraw cell buffer to hardware.
+    if (compositor_is_active()) {
+        compositor_push_event(3, 0, 0, 0); // CHILD_DIRTY (full repaint)
+    } else {
+        term_render();
+    }
 }
 
 term_session_t *session_by_id(u32 id) {
@@ -314,38 +327,35 @@ u0 screen_push_buf(const char *buf, i32 len) {
     restore_irq(irq);
 }
 
-static char *g_cmd_capture_buf = NULL;
-static u32   g_cmd_capture_len = 0;
-static u32   g_cmd_capture_max = 0;
-
-u0 term_capture_output_start(char *buf, u32 max_len) {
-    g_cmd_capture_buf = buf;
-    g_cmd_capture_len = 0;
-    g_cmd_capture_max = max_len;
-    if (buf && max_len > 0) buf[0] = 0;
-}
-
-u32 term_capture_output_end(void) {
-    u32 len = g_cmd_capture_len;
-    g_cmd_capture_buf = NULL;
-    g_cmd_capture_len = 0;
-    g_cmd_capture_max = 0;
-    return len;
+static kern_process_t *term_get_capture_proc(void) {
+    kern_process_t *proc = sched_get_current_process();
+    if (proc && proc->output_capture_buf && proc->output_capture_max > 0) return proc;
+    if (proc && proc->stdout_parent_pid > 0) {
+        kern_process_t *parent = sched_get_process_by_pid(proc->stdout_parent_pid);
+        if (parent && parent->output_capture_buf && parent->output_capture_max > 0) return parent;
+    }
+    return NULL;
 }
 
 u0 screen_push_line(const char *str) {
     PROFILE_SCOPE("screen:push_line");
+    if (!str) return;
 
-    if (g_cmd_capture_buf && g_cmd_capture_max > 0) {
+    u64 irq = save_irq_and_disable();
+    kern_process_t *cap_proc = term_get_capture_proc();
+    if (cap_proc && cap_proc->output_capture_buf && cap_proc->output_capture_max > 0) {
         i32 slen = str_len(str);
-        for (i32 i = 0; i < slen && g_cmd_capture_len + 2 < g_cmd_capture_max; i++) {
-            g_cmd_capture_buf[g_cmd_capture_len++] = str[i];
+        for (i32 i = 0; i < slen && cap_proc->output_capture_len + 2 < cap_proc->output_capture_max; i++) {
+            cap_proc->output_capture_buf[cap_proc->output_capture_len++] = str[i];
         }
-        if (g_cmd_capture_len + 1 < g_cmd_capture_max) {
-            g_cmd_capture_buf[g_cmd_capture_len++] = '\n';
+        if (cap_proc->output_capture_len + 1 < cap_proc->output_capture_max) {
+            cap_proc->output_capture_buf[cap_proc->output_capture_len++] = '\n';
         }
-        g_cmd_capture_buf[g_cmd_capture_len] = '\0';
+        cap_proc->output_capture_buf[cap_proc->output_capture_len] = '\0';
+        restore_irq(irq);
+        return; // Isolated process output — do not leak into global kernel console!
     }
+    restore_irq(irq);
 
     // Re-entrant guard: if we're already inside a cell-buffer write
     // (called from scroll_cell_buffer), skip straight to the scrollback.
@@ -546,8 +556,22 @@ void term_putc(u8 c) {
 // dispatched to term_putc() which writes it into the cell buffer.
 void term_write(const char *buf, i32 len) {
     PROFILE_SCOPE("term:write");
+    if (!buf || len <= 0) return;
+
+    u64 irq = save_irq_and_disable();
+    kern_process_t *cap_proc = term_get_capture_proc();
+    if (cap_proc && cap_proc->output_capture_buf && cap_proc->output_capture_max > 0) {
+        for (i32 i = 0; i < len && cap_proc->output_capture_len + 1 < cap_proc->output_capture_max; i++) {
+            cap_proc->output_capture_buf[cap_proc->output_capture_len++] = buf[i];
+        }
+        cap_proc->output_capture_buf[cap_proc->output_capture_len] = '\0';
+        restore_irq(irq);
+        return;
+    }
+    restore_irq(irq);
+
     term_session_t *s = term_target_session();
-    if (!buf || len <= 0 || !s) return;
+    if (!s) return;
     for (i32 i = 0; i < len; i++) {
         ansi_putc((u8)buf[i]);
     }

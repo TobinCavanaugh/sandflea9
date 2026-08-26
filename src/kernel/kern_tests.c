@@ -1059,72 +1059,120 @@ u0 handle_command_str(const char *cmd) {
         goto Label_Free;
     }
 
-    if (cmd_word_eq(word, "recv")) {
+typedef struct {
+    char msg[512];
+    bool valid;
+} ipc_channel_t;
+
+static ipc_channel_t g_ipc_channels[16];
+static volatile i32  g_recv_waiting_pid = -1;
+static volatile u32  g_recv_waiting_channel = 1;
+
+    if (cmd_word_eq(word, "recv") || cmd_word_eq(word, "receive")) {
         PROFILE_SCOPE("cmd:recv");
-        // Spawn ipc_receiver in background. It prints its PID and shm_id.
-        char *argv[1] = { "ipc_receiver.wasm" };
-        wasm_spawn_opts_t opts = {
-            .path = "ipc_receiver.wasm",
-            .argc = 1,
-            .argv = (char *const *) argv,
-            .foreground = false,
-            .wait = false,
-        };
-        wasm_spawn(&opts);
+        u32 channel = 1;
+        if (word->next) {
+            char *chan_str = str_view_to_c(word->next->text);
+            if (chan_str) {
+                u32 c = 0;
+                for (const char *p = chan_str; *p >= '0' && *p <= '9'; p++) c = c * 10 + (*p - '0');
+                if (c > 0 && c < 16) channel = c;
+                kfree(chan_str);
+            }
+        }
+
+        // If message is already waiting in this channel, read it immediately
+        if (g_ipc_channels[channel].valid) {
+            screen_push_linef("[recv] %s", g_ipc_channels[channel].msg);
+            g_ipc_channels[channel].valid = false;
+            goto Label_Free;
+        }
+
+        kern_process_t *cur_proc = sched_get_current_process();
+        g_recv_waiting_pid = cur_proc ? cur_proc->pid : -1;
+        g_recv_waiting_channel = channel;
+
+        screen_push_linef("[recv] Waiting for message on channel %u...", channel);
+
+        while (1) {
+            u32 sig = ipc_signal_poll(IPC_SIG_TERM | IPC_SIG_DATA_READY);
+            if (sig & IPC_SIG_TERM) {
+                screen_push_line("^C");
+                break;
+            }
+            if (g_ipc_channels[channel].valid) {
+                screen_push_linef("[recv] %s", g_ipc_channels[channel].msg);
+                g_ipc_channels[channel].valid = false;
+                break;
+            }
+            sched_yield();
+        }
+
+        g_recv_waiting_pid = -1;
         goto Label_Free;
     }
 
     if (cmd_word_eq(word, "send")) {
         PROFILE_SCOPE("cmd:send");
-        // `send <shm_id> <target_pid> [message]`
-        if (!word->next || !word->next->next) {
-            screen_push_line("Usage: send <shm_id> <target_pid> [message]");
+        if (!word->next) {
+            screen_push_line("Usage: send [channel] <message>");
             goto Label_Free;
         }
-        char *shm_str = str_view_to_c(word->next->text);
-        char *pid_str = str_view_to_c(word->next->next->text);
-        i32 shm_id = 0, target_pid = 0;
-        for (const char *p = shm_str; *p >= '0' && *p <= '9'; p++) shm_id = shm_id * 10 + (*p - '0');
-        for (const char *p = pid_str; *p >= '0' && *p <= '9'; p++) target_pid = target_pid * 10 + (*p - '0');
 
-        if (word->next->next->next) {
-            char *msg = str_view_to_c(word->next->next->next->text);
-            kern_process_t *cur_proc = sched_get_current_process();
-            if (!cur_proc) cur_proc = sched_get_kernel_process();
-            i32 handle = shmem_attach_proc(cur_proc, (u32)shm_id);
-            if (handle >= 0) {
-                if (cmd_word_eq(word->next->next->next, "exit") || cmd_word_eq(word->next->next->next, "quit")) {
-                    u8 term_byte = 0xFF;
-                    shmem_write_bytes(cur_proc, handle, 0, &term_byte, 1);
-                    ipc_signal_send(target_pid, IPC_SIG_TERM);
-                    screen_push_linef("[ipc_send] Sent TERM to PID %d", target_pid);
-                } else {
-                    for (int i = 0; msg[i] != '\0'; i++) {
-                        u8 b = (u8)msg[i];
-                        shmem_write_bytes(cur_proc, handle, 0, &b, 1);
-                        ipc_signal_send(target_pid, IPC_SIG_DATA_READY);
-                        sched_yield();
-                    }
-                    screen_push_linef("[ipc_send] Sent '%s' to PID %d", msg, target_pid);
-                }
-                shmem_detach_proc(cur_proc, handle);
-            } else {
-                screen_push_linef("[ipc_send] Failed to attach to shm_id %d", shm_id);
-            }
-            if (msg) kfree(msg);
-        } else {
-            char *argv[3] = { "ipc_sender.wasm", shm_str, pid_str };
-            wasm_spawn_opts_t opts = {
-                .path = "ipc_sender.wasm",
-                .argc = 3,
-                .argv = (char *const *) argv,
-                .foreground = true,
-                .wait = false,
-            };
-            wasm_spawn(&opts);
+        u32 channel = 1;
+        cmd_word_t *msg_start = word->next;
+
+        // Check if first arg is a numeric channel (e.g. 1..15)
+        bool is_num = true;
+        for (u32 i = 0; i < word->next->text.len; i++) {
+            char ch = word->next->text.data[i];
+            if (ch < '0' || ch > '9') { is_num = false; break; }
         }
-        if (shm_str) kfree(shm_str);
-        if (pid_str) kfree(pid_str);
+
+        if (is_num && word->next->next) {
+            char *chan_str = str_view_to_c(word->next->text);
+            if (chan_str) {
+                u32 c = 0;
+                for (const char *p = chan_str; *p >= '0' && *p <= '9'; p++) c = c * 10 + (*p - '0');
+                if (c > 0 && c < 16) {
+                    channel = c;
+                    msg_start = word->next->next;
+                }
+                kfree(chan_str);
+            }
+        }
+
+        // Assemble message from remaining words
+        char msg_buf[512] = {0};
+        u32 mlen = 0;
+        cmd_word_t *cw = msg_start;
+        while (cw && mlen < sizeof(msg_buf) - 2) {
+            char *chunk = str_view_to_c(cw->text);
+            if (chunk) {
+                for (int i = 0; chunk[i] != '\0' && mlen < sizeof(msg_buf) - 2; i++) {
+                    msg_buf[mlen++] = chunk[i];
+                }
+                kfree(chunk);
+            }
+            if (cw->next && mlen < sizeof(msg_buf) - 2) {
+                msg_buf[mlen++] = ' ';
+            }
+            cw = cw->next;
+        }
+        msg_buf[mlen] = '\0';
+
+        // Store into channel
+        for (u32 i = 0; i <= mlen; i++) {
+            g_ipc_channels[channel].msg[i] = msg_buf[i];
+        }
+        g_ipc_channels[channel].valid = true;
+
+        // Wake up any waiting receiver process
+        if (g_recv_waiting_pid > 0 && g_recv_waiting_channel == channel) {
+            ipc_signal_send(g_recv_waiting_pid, IPC_SIG_DATA_READY);
+        }
+
+        screen_push_linef("[send] (ch %u) %s", channel, msg_buf);
         goto Label_Free;
     }
 
@@ -1204,16 +1252,38 @@ u0 handle_command_str(const char *cmd) {
 
     if (cmd_word_eq(word, "kill") && word->next) {
         PROFILE_SCOPE("cmd:kill");
-        if (word->next->val_type != CMD_WT_i64) {
-            screen_push_line("Argument is not a valid i64 value");
+        if (cmd_word_eq(word->next, "children") || cmd_word_eq(word->next, "child")) {
+            kern_process_t *cur = sched_get_current_process();
+            i32 ppid = cur ? cur->pid : 1;
+            u8 k = sched_kill_children(ppid);
+            screen_push_linef("Terminated %d background process(es)", (int)k);
         } else {
-            i32 pid = (i32) word->next->val_i64;
-            if (sched_kill_process(pid)) {
+            i32 pid = -1;
+            if (word->next->val_type == CMD_WT_i64) {
+                pid = (i32) word->next->val_i64;
+            } else {
+                char *s = str_view_to_c(word->next->text);
+                if (s) {
+                    pid = 0;
+                    for (const char *p = s; *p >= '0' && *p <= '9'; p++) pid = pid * 10 + (*p - '0');
+                    kfree(s);
+                }
+            }
+            if (pid > 0 && sched_kill_process(pid)) {
                 screen_push_linef("Process %d marked for termination", pid);
             } else {
                 screen_push_linef("Process %d not found or protected", pid);
             }
         }
+        goto Label_Free;
+    }
+
+    if (cmd_word_eq(word, "killchildren")) {
+        PROFILE_SCOPE("cmd:killchildren");
+        kern_process_t *cur = sched_get_current_process();
+        i32 ppid = cur ? cur->pid : 1;
+        u8 k = sched_kill_children(ppid);
+        screen_push_linef("Terminated %d background process(es)", (int)k);
         goto Label_Free;
     }
 
@@ -1247,48 +1317,53 @@ u0 handle_command_str(const char *cmd) {
     }
 
 
+    // ── pwd: print current working directory ───────────────────────────
+    if (cmd_word_eq(word, "pwd")) {
+        PROFILE_SCOPE("cmd:pwd");
+        screen_push_line(fs_get_cwd());
+        goto Label_Free;
+    }
+
     // ── cd: change directory / switch drives ────────────────────────────
     if (cmd_word_eq(word, "cd")) {
         PROFILE_SCOPE("cmd:cd");
 
         if (word->next == null) {
-            screen_push_linef("cwd: %s", cwd);
+            screen_push_linef("cwd: %s", fs_get_cwd());
             goto Label_Free;
         }
 
-        char *target = str_view_to_c(word->next->text);
-        if (!target) goto Label_Free;
+        char *raw_target = str_view_to_c(word->next->text);
+        if (!raw_target) goto Label_Free;
 
         // `cd //` — go to synthetic root (just prints drives via ls)
-        if (target[0] == '/' && target[1] == '/' && target[2] == '\0') {
+        if (raw_target[0] == '/' && raw_target[1] == '/' && raw_target[2] == '\0') {
             screen_push_line("cd: use ls // to list drives");
-            kfree(target);
+            kfree(raw_target);
             goto Label_Free;
         }
+
+        char target[256];
+        fs_resolve_path(raw_target, target, sizeof(target));
+        kfree(raw_target);
 
         // Resolve the path to validate it exists and is a directory
         u32 inode_no = 2;
         ext2_inode_t *dir_inode = ext2_find_path(target, &inode_no);
         if (!dir_inode) {
             screen_push_linef("cd: path not found: %s", target);
-            kfree(target);
             goto Label_Free;
         }
         if ((dir_inode->mode & 0xF000) != 0x4000) {
             screen_push_linef("cd: not a directory: %s", target);
             kfree(dir_inode);
-            kfree(target);
             goto Label_Free;
         }
         kfree(dir_inode);
 
         // Update cwd
-        u32 tlen = str_len(target);
-        if (tlen >= 255) tlen = 254;
-        mem_copy((u8*)cwd, (u8*)target, tlen);
-        cwd[tlen] = '\0';
+        fs_set_cwd(target);
 
-        kfree(target);
         goto Label_Free;
     }
 
@@ -1298,9 +1373,19 @@ u0 handle_command_str(const char *cmd) {
 
         char *ls_path = null;
         if (word->next != null) {
-            ls_path = str_view_to_c(word->next->text);
+            char *raw_arg = str_view_to_c(word->next->text);
+            if (raw_arg) {
+                if (raw_arg[0] == '/' && raw_arg[1] == '/' && raw_arg[2] == '\0') {
+                    ls_path = raw_arg;
+                } else {
+                    char resolved[256];
+                    fs_resolve_path(raw_arg, resolved, sizeof(resolved));
+                    kfree(raw_arg);
+                    ls_path = str_dup(resolved, kmalloc);
+                }
+            }
         } else {
-            ls_path = str_dup(cwd, kmalloc);
+            ls_path = str_dup(fs_get_cwd(), kmalloc);
         }
         if (!ls_path) goto Label_Free;
 

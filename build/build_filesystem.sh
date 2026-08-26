@@ -35,7 +35,6 @@ disk_img_fingerprint() {
             "src/blob/DOOM1.WAD:DOOM1.WAD" \
             "src/blob/c.txt:folder/a.txt" \
             "src/wasm/wat/hello.wat:hello.wat" \
-            "src/wasm/wat/term_stub.wat:term_stub.wat" \
             "src/wasm/wat/add_test.wat:add_test.wat" \
             "src/wasm/wat/cat.wat:cat.wat" \
             "src/wasm/wat/lsr.wat:lsr.wat" \
@@ -99,7 +98,6 @@ write src/blob/DOOM1.WAD DOOM1.WAD
 mkdir folder
 write src/blob/c.txt folder/a.txt
 write src/wasm/wat/hello.wat hello.wat
-write src/wasm/wat/term_stub.wat term_stub.wat
 write src/wasm/wat/add_test.wat add_test.wat
 write src/wasm/wat/cat.wat cat.wat
 write src/wasm/wat/lsr.wat lsr.wat

@@ -31,28 +31,40 @@ u64 read_cr3();
 
 u0 sched_init() {
     PROFILE_AUTO_BEGIN;
-    kernel_process = kmalloc(sizeof(kern_process_t));
+    kernel_process = kmallocz(sizeof(kern_process_t));
     kernel_process->pid = 0;
     kernel_process->cr3 = read_cr3();
     kernel_process->heap_vptr = 0x1000000; // Arbitrary start for user-space heap
     kernel_process->mem_regions = null;
     kernel_process->thread_count = 1;
     for (int i = 0; i < MAX_FILE_HANDLES; i++) kernel_process->fd_table[i] = null;
+    kernel_process->cwd[0] = '/';
+    kernel_process->cwd[1] = '/';
+    kernel_process->cwd[2] = 'A';
+    kernel_process->cwd[3] = '/';
+    kernel_process->cwd[4] = '\0';
 
-    kern_task_t *root_task = kmalloc(sizeof(kern_task_t));
+    kern_task_t *root_task = kmallocz(sizeof(kern_task_t));
     root_task->tid = 0;
     root_task->state = TASK_STATE_RUNNING;
     root_task->process = kernel_process;
-    root_task->stack_base = null; // We don't know the root stack base easily
-    root_task->next = root_task;
 
-    current_task = root_task;
     task_list_head = root_task;
+    root_task->next = root_task;
+    root_task->next_ready = null;
+    current_task = root_task;
     PROFILE_AUTO_END;
 }
 
+// Global PID counter — starts at 0 (kernel_process = PID 0).
+// Each newly allocated process receives ++process_id_c.
+static i32 process_id_c = 0;
+
+i32 sched_get_next_pid(void) {
+    return process_id_c + 1;
+}
+
 i32 task_id_c = 0;
-i32 process_id_c = 0;
 
 u0 sched_thread_exit() {
     u64 irq = save_irq_and_disable();
@@ -65,7 +77,7 @@ u0 sched_thread_exit() {
 }
 
 kern_process_t *process_create() {
-    kern_process_t *proc = kmalloc(sizeof(kern_process_t));
+    kern_process_t *proc = kmallocz(sizeof(kern_process_t));
     if (!proc) return null;
 
     proc->pid = ++process_id_c;
@@ -83,10 +95,21 @@ kern_process_t *process_create() {
     proc->shmem_count     = 0;
     proc->stdout_shm_id   = -1;
     proc->stdout_parent_pid = -1;
+    proc->output_capture_buf = null;
+    proc->output_capture_len = 0;
+    proc->output_capture_max = 0;
     // Associate with the terminal session that was active when the
     // process was created, so screen_push_line routes output to the
     // correct TTY even after the user switches sessions.
     proc->terminal_session = active_session;
+
+    // Inherit working directory: from caller process, active session, or global cwd
+    const char *initial_cwd = fs_get_cwd();
+    if (!initial_cwd || initial_cwd[0] == '\0') initial_cwd = "/";
+    u32 cwd_len = str_len(initial_cwd);
+    if (cwd_len >= sizeof(proc->cwd)) cwd_len = sizeof(proc->cwd) - 1;
+    mem_copy((u8*)proc->cwd, (const u8*)initial_cwd, cwd_len);
+    proc->cwd[cwd_len] = '\0';
 
     // Create a new PML4
     u64 pml4_phys = pmm_alloc_page();
@@ -275,16 +298,30 @@ kern_process_t *sched_get_kernel_process() {
 }
 
 kern_task_t *sched_get_by_pid(i32 pid) {
+    if (pid < 0) return null;
+    u64 irq = save_irq_and_disable();
     kern_task_t *head = sched_get_task_list_head();
-    if (!head) return null;
+    if (!head) {
+        restore_irq(irq);
+        return null;
+    }
 
     kern_task_t *cur = head;
     do {
-        if (cur->process && cur->process->pid == pid) return cur;
+        if (cur->process && cur->process->pid == pid) {
+            restore_irq(irq);
+            return cur;
+        }
         cur = cur->next;
     } while (cur != head);
 
+    restore_irq(irq);
     return null;
+}
+
+kern_process_t *sched_get_process_by_pid(i32 pid) {
+    kern_task_t *t = sched_get_by_pid(pid);
+    return t ? t->process : null;
 }
 
 u8 sched_kill_process(i32 pid) {
@@ -310,6 +347,30 @@ u8 sched_kill_process(i32 pid) {
 
     restore_irq(irq);
     return found;
+}
+
+u8 sched_kill_children(i32 parent_pid) {
+    if (parent_pid <= 0) return 0;
+
+    u64 irq = save_irq_and_disable();
+    kern_task_t *head = task_list_head;
+    if (!head) {
+        restore_irq(irq);
+        return 0;
+    }
+
+    kern_task_t *cur = head;
+    u8 count = 0;
+    do {
+        if (cur->process && cur->process->stdout_parent_pid == parent_pid && cur->process->pid != parent_pid) {
+            cur->state = TASK_STATE_DEAD;
+            count++;
+        }
+        cur = cur->next;
+    } while (cur != head);
+
+    restore_irq(irq);
+    return count;
 }
 
 static inline u0 sched_sync_kernel_pml4(kern_task_t *task) {

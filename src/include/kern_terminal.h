@@ -77,6 +77,9 @@ typedef struct {
     // Shell input buffer (per-session, swapped when session switches)
     char    typingbuf[256];
 
+    // Current working directory (per-session, swapped when session switches)
+    char    cwd[256];
+
     // Does this session's foreground app take over the framebuffer directly?
     bool    owns_framebuffer;
 } term_session_t;
@@ -124,10 +127,6 @@ u0 term_init(u16 cols, u16 rows);
 
 // Write data through the ANSI parser into the active session's cell buffer
 u0 term_write(const char *buf, i32 len);
-
-// Output capture for virtual terminal shell execution
-u0  term_capture_output_start(char *buf, u32 max_len);
-u32 term_capture_output_end(void);
 
 // Session management
 i32 session_init(u32 id, u16 cols, u16 rows);

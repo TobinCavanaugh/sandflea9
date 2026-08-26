@@ -29,32 +29,39 @@ log "Using clang: $WASI_CC"
 
 WM_SRC="src/wasm/wm/wm.c"
 WM_OUT="$WASM_DIR/wm.wasm"
+TERM_SRC="src/wasm/term/term.c"
+TERM_OUT="$WASM_DIR/term_stub.wasm"
 
 mkdir -p "$WASM_DIR"
 
-# Check if rebuild needed
-SHOULD_REBUILD=0
-[ ! -f "$WM_OUT" ] && SHOULD_REBUILD=1
-[ "$WM_SRC" -nt "$WM_OUT" ] && SHOULD_REBUILD=1
-
-if [ $SHOULD_REBUILD -eq 0 ]; then
-    log "wm.wasm up to date — skipping"
-    exit 0
+# Check if WM rebuild needed
+if [ ! -f "$WM_OUT" ] || [ "$WM_SRC" -nt "$WM_OUT" ]; then
+    log "Compiling wm.wasm"
+    $WASI_CC \
+        --target=wasm32-wasi \
+        -mno-bulk-memory -mno-sign-ext -mno-mutable-globals \
+        -mno-nontrapping-fptoint -mno-simd128 -mno-reference-types \
+        -Os -fno-exceptions -nostdlib -ffreestanding \
+        -Wl,--strip-all -Wl,--allow-undefined -Wl,--export=_start \
+        "$WM_SRC" -o "$WM_OUT" 2>&1
+    WM_SIZE=$(stat -c%s "$WM_OUT" 2>/dev/null || stat -f%z "$WM_OUT" 2>/dev/null)
+    ok "wm.wasm: $WM_SIZE bytes"
+else
+    log "wm.wasm up to date"
 fi
 
-log "Compiling wm.wasm"
-
-# Flags: MVP-compatible wasm32 (no bulk-memory, no sign-ext, no simd).
-# -nostdlib because wm.c has no libc deps — all imports are kernel host fns.
-# -Wl,--no-entry because _start is exported manually via __attribute__((export_name)).
-# Strip debug info for size.
-$WASI_CC \
-    --target=wasm32-wasi \
-    -mno-bulk-memory -mno-sign-ext -mno-mutable-globals \
-    -mno-nontrapping-fptoint -mno-simd128 -mno-reference-types \
-    -Os -fno-exceptions -nostdlib -ffreestanding \
-    -Wl,--strip-all -Wl,--allow-undefined -Wl,--export=_start \
-    "$WM_SRC" -o "$WM_OUT" 2>&1
-
-WM_SIZE=$(stat -c%s "$WM_OUT" 2>/dev/null || stat -f%z "$WM_OUT" 2>/dev/null)
-ok "wm.wasm: $WM_SIZE bytes"
+# Check if Terminal rebuild needed
+if [ ! -f "$TERM_OUT" ] || [ "$TERM_SRC" -nt "$TERM_OUT" ]; then
+    log "Compiling term_stub.wasm"
+    $WASI_CC \
+        --target=wasm32-wasi \
+        -mno-bulk-memory -mno-sign-ext -mno-mutable-globals \
+        -mno-nontrapping-fptoint -mno-simd128 -mno-reference-types \
+        -Os -fno-exceptions -nostdlib -ffreestanding \
+        -Wl,--strip-all -Wl,--allow-undefined -Wl,--export=_start \
+        "$TERM_SRC" -o "$TERM_OUT" 2>&1
+    TERM_SIZE=$(stat -c%s "$TERM_OUT" 2>/dev/null || stat -f%z "$TERM_OUT" 2>/dev/null)
+    ok "term_stub.wasm: $TERM_SIZE bytes"
+else
+    log "term_stub.wasm up to date"
+fi
