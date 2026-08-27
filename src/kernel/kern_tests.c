@@ -1027,6 +1027,27 @@ u0 handle_command_str(const char *cmd) {
         goto Label_Free;
     }
 
+    if (cmd_word_eq(word, "mklink") && word->next && word->next->next) {
+        PROFILE_SCOPE("cmd:mklink");
+        // `mklink <link> <target>` — create a symlink. The target is stored
+        // verbatim (relative targets resolve against the link's own directory).
+        char *link_path = str_view_to_c(word->next->text);
+        char *link_target = str_view_to_c(word->next->next->text);
+        if (link_path && link_target) {
+            u32 ino = ext2_create_symlink(link_path, link_target);
+            if (ino == 0) {
+                screen_push_linef("mklink: failed to create link %s -> %s", link_path, link_target);
+            } else {
+                screen_push_linef("mklink: %s -> %s (inode %u)", link_path, link_target, ino);
+            }
+        } else {
+            screen_push_line("mklink: usage: mklink <link> <target>");
+        }
+        if (link_path) kfree(link_path);
+        if (link_target) kfree(link_target);
+        goto Label_Free;
+    }
+
     if (cmd_word_eq(word, "wasm")) {
         PROFILE_SCOPE("cmd:wasm");
         // `wasm <file> [args...]` runs an arbitrary .wasm with arguments forwarded in argv.

@@ -12,6 +12,17 @@
 
 #define EXT2_SIGNATURE 0xEF53
 
+// Inode file-type bits (mode & 0xF000)
+#define EXT2_S_IFDIR  0x4000
+#define EXT2_S_IFREG  0x8000
+#define EXT2_S_IFLNK  0xA000
+
+// Directory entry file_type values (EXT2_FT_*)
+#define EXT2_FT_UNKNOWN 0
+#define EXT2_FT_REG_FILE 1
+#define EXT2_FT_DIR     2
+#define EXT2_FT_SYMLINK 7
+
 
 // Superblock
 typedef struct {
@@ -153,6 +164,10 @@ void block_cache_stats(u32 *out_hits, u32 *out_misses, u32 *out_used, u32 *out_c
 
 // File creation
 u32 ext2_create_file(const char *path);
+
+// Symlinks
+u32  ext2_create_symlink(const char *path, const char *target);
+bool ext2_read_symlink_target(ext2_inode_t *inode, char *out, u32 out_size);
 
 // Explorer API
 u0 ext2_explorer_init(ext2_explorer_t *explorer, u32 start_inode);

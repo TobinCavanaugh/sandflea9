@@ -578,8 +578,31 @@ m3ApiRawFunction(wasm_ls) {
                                 u32 ncopy = entry->name_len < 255 ? entry->name_len : 255;
                                 mem_copy((u8*)name, (u8*)entry->name, ncopy);
                                 name[ncopy] = '\0';
-                                const char *type = (entry->file_type == 2) ? "/" : "";
-                                screen_push_linef("%-32s %s", name, type);
+                                // Fallback for ext2 filesystems without the
+                                // FILETYPE incompat feature: infer type from mode.
+                                u8 ft = entry->file_type;
+                                if (ft == EXT2_FT_UNKNOWN) {
+                                    ext2_inode_t tino;
+                                    if (ext2_get_inode(entry->inode, &tino)) {
+                                        u16 fmode = tino.mode & 0xF000;
+                                        if (fmode == EXT2_S_IFDIR) ft = EXT2_FT_DIR;
+                                        else if (fmode == EXT2_S_IFLNK) ft = EXT2_FT_SYMLINK;
+                                    }
+                                }
+                                if (ft == EXT2_FT_DIR) {
+                                    screen_push_linef("%-32s /", name);
+                                } else if (ft == EXT2_FT_SYMLINK) {
+                                    ext2_inode_t link_ino;
+                                    char target[256];
+                                    if (ext2_get_inode(entry->inode, &link_ino) &&
+                                        ext2_read_symlink_target(&link_ino, target, sizeof(target))) {
+                                        screen_push_linef("%-32s -> %s", name, target);
+                                    } else {
+                                        screen_push_linef("%-32s", name);
+                                    }
+                                } else {
+                                    screen_push_linef("%-32s", name);
+                                }
                             }
                         }
                     }

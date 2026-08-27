@@ -753,12 +753,51 @@ static u32 ext2_find_child(ext2_inode_t *dir_inode, const char *name) {
     return 0;
 }
 
+// Read a symlink's target string. Fast symlinks (target ≤ 60 bytes) store the
+// text directly in the inode's block pointers (i_blocks == 0); longer targets
+// live in a single data block.
+bool ext2_read_symlink_target(ext2_inode_t *inode, char *out, u32 out_size) {
+    if (!inode || !out || out_size == 0 || (inode->mode & 0xF000) != EXT2_S_IFLNK) {
+        return false;
+    }
+
+    u32 len = inode->size;
+    if (len >= out_size) len = out_size - 1;
+
+    if (inode->blocks == 0) {
+        // Fast symlink — data lives in the 60-byte block pointer area.
+        mem_copy((u8 *)out, (u8 *)inode->block, len);
+    } else {
+        u32 phys = ext2_get_bmap(inode, 0);
+        if (phys == 0) return false;
+        u8 *buf = kmalloc(block_size);
+        if (!buf) return false;
+        ext2_read_block(phys, buf);
+        mem_copy((u8 *)out, buf, len);
+        kfree(buf);
+    }
+
+    out[len] = '\0';
+    return true;
+}
+
+// Maximum number of symlinks followed during path resolution, guarding
+// against link loops (e.g. a -> b, b -> a).
+#define EXT2_SYMLINK_MAX_DEPTH 8
+
 ext2_inode_t *ext2_find_path(const char *path, u32 *out_inode_no) {
     if (!path || *path == '\0' || block_size == 0) return null;
 
     char resolved[256];
+    char link_path[512];   // rebuilt path while following symlinks
     fs_resolve_path(path, resolved, sizeof(resolved));
-    path = resolved;
+
+    u32 symlink_depth = 0;
+
+restart:
+    // On the first pass we walk `resolved`; after following a symlink we
+    // re-enter with the reconstructed `link_path` (drive-switch included).
+    path = (symlink_depth > 0) ? link_path : resolved;
 
     // ── //drive prefix: cross to a different drive ──────────────────────
     if (path[0] == '/' && path[1] == '/') {
@@ -814,6 +853,7 @@ ext2_inode_t *ext2_find_path(const char *path, u32 *out_inode_no) {
 
     char name_buf[256];
     while (*ptr) {
+        const char *comp_start = ptr;   // where this component begins (for symlink parent rebuild)
         int i = 0;
         while (*ptr && *ptr != '/' && i < 255) {
             name_buf[i++] = *ptr++;
@@ -829,6 +869,61 @@ ext2_inode_t *ext2_find_path(const char *path, u32 *out_inode_no) {
             if (current_inode_no == 0) {
                 kfree(current_inode);
                 return null;
+            }
+
+            // ── Symlink following ──────────────────────────────────────
+            if (!ext2_get_inode(current_inode_no, current_inode)) {
+                kfree(current_inode);
+                return null;
+            }
+            if ((current_inode->mode & 0xF000) == EXT2_S_IFLNK) {
+                if (++symlink_depth > EXT2_SYMLINK_MAX_DEPTH) {
+                    kfree(current_inode);
+                    return null;   // link loop — give up
+                }
+
+                char target[256];
+                if (!ext2_read_symlink_target(current_inode, target, sizeof(target))) {
+                    kfree(current_inode);
+                    return null;
+                }
+
+                // Rebuild the remaining path: <prefix before this component>
+                // + <link target> + <components after this one>. Relative
+                // targets are therefore resolved against the symlink's own
+                // directory, matching POSIX readlink semantics.
+                u32 prefix_len = (u32)(comp_start - path);
+                if (target[0] == '/' && target[1] == '/') {
+                    prefix_len = 0;   // target has its own drive prefix
+                }
+                const char *rest = ptr;   // points at '/' or end after component
+
+                u32 pos = 0;
+                if (prefix_len > 0) {
+                    if (prefix_len >= sizeof(link_path)) prefix_len = sizeof(link_path) - 1;
+                    mem_copy((u8 *)link_path, (const u8 *)path, prefix_len);
+                    pos = prefix_len;
+                }
+                u32 tlen = str_len(target);
+                if (pos + tlen >= sizeof(link_path)) tlen = sizeof(link_path) - 1 - pos;
+                mem_copy((u8 *)link_path + pos, (const u8 *)target, tlen);
+                pos += tlen;
+                u32 rlen = str_len(rest);
+                if (pos + rlen >= sizeof(link_path)) rlen = sizeof(link_path) - 1 - pos;
+                mem_copy((u8 *)link_path + pos, (const u8 *)rest, rlen);
+                pos += rlen;
+                link_path[pos] = '\0';
+
+                // Canonicalize (handles '.', '..', redundant slashes).
+                char canon[512];
+                fs_resolve_path(link_path, canon, sizeof(canon));
+                u32 clen = str_len(canon);
+                if (clen >= sizeof(link_path)) clen = sizeof(link_path) - 1;
+                mem_copy((u8 *)link_path, (const u8 *)canon, clen);
+                link_path[clen] = '\0';
+
+                kfree(current_inode);
+                goto restart;
             }
         }
         if (*ptr == '/') ptr++;
@@ -923,6 +1018,7 @@ bool ext2_explorer_next(ext2_explorer_t *explorer, ext2_explore_result_t *result
                 if (ext2_get_inode(entry_inode, &temp_ino)) {
                     if ((temp_ino.mode & 0xF000) == 0x4000) entry_type = 2; // Directory
                     else if ((temp_ino.mode & 0xF000) == 0x8000) entry_type = 1; // Regular file
+                    else if ((temp_ino.mode & 0xF000) == 0xA000) entry_type = EXT2_FT_SYMLINK; // Symlink
                 }
             }
 
@@ -1026,65 +1122,15 @@ u32 ext2_alloc_block(void) {
     return 0;
 }
 
-// Create a regular file with one data block in the given parent directory.
-// Returns the new inode number, or 0 on failure.
-// The parent inode's directory block is modified to include the new entry.
-static u32 ext2_create_file_in_dir(const char *name, u32 parent_inode_no) {
-    if (!name || name[0] == 0 || parent_inode_no == 0) return 0;
+// Append a directory entry to a parent directory. Grows the directory with a
+// fresh block if needed and reuses the slack space of the last entry record.
+// Returns true on success.
+static bool ext2_add_dir_entry(u32 parent_inode_no, const char *name, u32 name_len,
+                               u32 entry_inode_no, u8 file_type) {
+    if (parent_inode_no == 0 || !name || name_len == 0 || name_len > 250) return false;
 
-    u32 name_len = str_len(name);
-    if (name_len > 250) return 0;  // ext2 max name length
-
-    // Allocate a new inode
-    u32 new_inode_no = ext2_alloc_inode();
-    if (new_inode_no == 0) {
-        serial_outsf("ext2_create: no free inode for %s\n", name);
-        return 0;
-    }
-
-    // Allocate one data block
-    u32 data_block = ext2_alloc_block();
-    if (data_block == 0) {
-        serial_outsf("ext2_create: no free block for %s\n", name);
-        // Release the inode we just allocated
-        ext2_bgd_t *bgdt = (ext2_bgd_t *)bgdt_cache;
-        u32 g = (new_inode_no - 1) / sb_ptr->inodes_per_group;
-        u32 bit = (new_inode_no - 1) % sb_ptr->inodes_per_group;
-        u32 bitmap_block = bgdt[g].inode_bitmap;
-        if (bitmap_block) {
-            u8 *ib = kmalloc(block_size);
-            if (ib) {
-                ext2_read_block(bitmap_block, ib);
-                ib[bit / 8] &= ~(1 << (bit % 8));
-                ext2_write_block(bitmap_block, ib);
-                bgdt[g].free_inodes_count++;
-                kfree(ib);
-            }
-        }
-        return 0;
-    }
-
-    // Initialize the new inode (regular file, 0644)
-    u32 actual_inode_size = max(sizeof(ext2_inode_t), (u32)sb_ptr->inode_size);
-    ext2_inode_t *new_inode = kmalloc(actual_inode_size);
-    if (!new_inode) return 0;
-    mem_set((u8*)new_inode, 0, actual_inode_size);
-
-    new_inode->mode = 0x81A4;          // regular file, 0644 permissions
-    new_inode->size = 0;               // empty file — grows via fs_write
-    new_inode->blocks = block_size / 512;  // sectors count
-    new_inode->block[0] = data_block;
-    new_inode->links_count = 1;
-
-    ext2_write_inode(new_inode_no, new_inode);
-    kfree(new_inode);
-
-    // Add directory entry to parent
     ext2_inode_t parent_inode_buf;
-    if (!ext2_get_inode(parent_inode_no, &parent_inode_buf)) {
-        serial_outsf("ext2_create: cannot read parent inode %u\n", parent_inode_no);
-        return 0;
-    }
+    if (!ext2_get_inode(parent_inode_no, &parent_inode_buf)) return false;
 
     // Calculate entry size needed: header(8) + name_len, padded to 4-byte align
     u32 entry_size = 8 + name_len;
@@ -1098,7 +1144,7 @@ static u32 ext2_create_file_in_dir(const char *name, u32 parent_inode_no) {
     // If no blocks yet, allocate one for the parent directory
     if (parent_inode_buf.size == 0 || ext2_get_bmap(&parent_inode_buf, 0) == 0) {
         u32 dir_block = ext2_alloc_block();
-        if (dir_block == 0) return 0;
+        if (dir_block == 0) return false;
         parent_inode_buf.block[0] = dir_block;
         parent_inode_buf.size = block_size;
         parent_inode_buf.blocks = block_size / 512;
@@ -1106,10 +1152,10 @@ static u32 ext2_create_file_in_dir(const char *name, u32 parent_inode_no) {
 
     u32 last_block_idx = total_blocks - 1;
     u32 phys_block = ext2_get_bmap(&parent_inode_buf, last_block_idx);
-    if (phys_block == 0) return 0;
+    if (phys_block == 0) return false;
 
     u8 *dir_buf = kmalloc(block_size);
-    if (!dir_buf) return 0;
+    if (!dir_buf) return false;
     ext2_read_block(phys_block, dir_buf);
 
     // Find the last entry in the directory block
@@ -1143,8 +1189,7 @@ static u32 ext2_create_file_in_dir(const char *name, u32 parent_inode_no) {
             entry_size = remaining;  // take all remaining space
         } else {
             kfree(dir_buf);
-            serial_outsl("ext2_create: no room in directory block");
-            return 0;
+            return false;
         }
     } else {
         new_entry_off = 0;
@@ -1154,15 +1199,15 @@ static u32 ext2_create_file_in_dir(const char *name, u32 parent_inode_no) {
 
     if (new_entry_off + entry_size > block_size) {
         kfree(dir_buf);
-        return 0;
+        return false;
     }
 
     // Write the new directory entry
     ext2_dir_entry_t *new_entry = (ext2_dir_entry_t *)(dir_buf + new_entry_off);
-    new_entry->inode = new_inode_no;
+    new_entry->inode = entry_inode_no;
     new_entry->rec_len = entry_size;
-    new_entry->name_len = name_len;
-    new_entry->file_type = 1;  // regular file
+    new_entry->name_len = (u8)name_len;
+    new_entry->file_type = file_type;
     mem_copy((u8*)new_entry->name, (const u8*)name, name_len);
 
     ext2_write_block(phys_block, dir_buf);
@@ -1171,8 +1216,145 @@ static u32 ext2_create_file_in_dir(const char *name, u32 parent_inode_no) {
     // Update parent inode
     ext2_write_inode(parent_inode_no, &parent_inode_buf);
 
+    return true;
+}
+
+// Release an inode that was allocated but whose creation failed partway.
+static void ext2_release_inode(u32 inode_no) {
+    if (inode_no == 0 || !bgdt_cache || block_size == 0 || !sb_ptr) return;
+    ext2_bgd_t *bgdt = (ext2_bgd_t *)bgdt_cache;
+    u32 g = (inode_no - 1) / sb_ptr->inodes_per_group;
+    u32 bit = (inode_no - 1) % sb_ptr->inodes_per_group;
+    u32 bitmap_block = bgdt[g].inode_bitmap;
+    if (bitmap_block) {
+        u8 *ib = kmalloc(block_size);
+        if (ib) {
+            ext2_read_block(bitmap_block, ib);
+            ib[bit / 8] &= ~(1 << (bit % 8));
+            ext2_write_block(bitmap_block, ib);
+            bgdt[g].free_inodes_count++;
+            kfree(ib);
+        }
+    }
+}
+
+// Create a regular file with one data block in the given parent directory.
+// Returns the new inode number, or 0 on failure.
+// The parent inode's directory block is modified to include the new entry.
+static u32 ext2_create_file_in_dir(const char *name, u32 parent_inode_no) {
+    if (!name || name[0] == 0 || parent_inode_no == 0) return 0;
+
+    u32 name_len = str_len(name);
+    if (name_len > 250) return 0;  // ext2 max name length
+
+    // Allocate a new inode
+    u32 new_inode_no = ext2_alloc_inode();
+    if (new_inode_no == 0) {
+        serial_outsf("ext2_create: no free inode for %s\n", name);
+        return 0;
+    }
+
+    // Allocate one data block
+    u32 data_block = ext2_alloc_block();
+    if (data_block == 0) {
+        serial_outsf("ext2_create: no free block for %s\n", name);
+        ext2_release_inode(new_inode_no);
+        return 0;
+    }
+
+    // Initialize the new inode (regular file, 0644)
+    u32 actual_inode_size = max(sizeof(ext2_inode_t), (u32)sb_ptr->inode_size);
+    ext2_inode_t *new_inode = kmalloc(actual_inode_size);
+    if (!new_inode) return 0;
+    mem_set((u8*)new_inode, 0, actual_inode_size);
+
+    new_inode->mode = 0x81A4;          // regular file, 0644 permissions
+    new_inode->size = 0;               // empty file — grows via fs_write
+    new_inode->blocks = block_size / 512;  // sectors count
+    new_inode->block[0] = data_block;
+    new_inode->links_count = 1;
+
+    ext2_write_inode(new_inode_no, new_inode);
+    kfree(new_inode);
+
+    // Add directory entry to parent
+    if (!ext2_add_dir_entry(parent_inode_no, name, name_len, new_inode_no, EXT2_FT_REG_FILE)) {
+        serial_outsf("ext2_create: cannot add directory entry for %s\n", name);
+        return 0;
+    }
+
     serial_outsf("ext2_create: created %s (inode %u, block %u)\n",
                  name, new_inode_no, data_block);
+    return new_inode_no;
+}
+
+// Create a symlink in the given parent directory pointing at `target`.
+// Fast symlinks (target ≤ 60 bytes) embed the target in the inode itself;
+// longer targets use one data block. Returns the new inode number, or 0.
+static u32 ext2_create_symlink_in_dir(const char *name, const char *target, u32 parent_inode_no) {
+    if (!name || name[0] == 0 || !target || target[0] == 0 || parent_inode_no == 0) return 0;
+
+    u32 name_len = str_len(name);
+    u32 target_len = str_len(target);
+    if (name_len > 250 || target_len > 1024) return 0;  // ext2 max name; sane target cap
+
+    // Allocate a new inode
+    u32 new_inode_no = ext2_alloc_inode();
+    if (new_inode_no == 0) {
+        serial_outsf("ext2_symlink: no free inode for %s\n", name);
+        return 0;
+    }
+
+    // Fast symlinks fit in the 60-byte block-pointer area (i_blocks == 0).
+    bool fast = target_len <= 60;
+    u32 data_block = 0;
+    if (!fast) {
+        data_block = ext2_alloc_block();
+        if (data_block == 0) {
+            serial_outsf("ext2_symlink: no free block for %s\n", name);
+            ext2_release_inode(new_inode_no);
+            return 0;
+        }
+    }
+
+    u32 actual_inode_size = max(sizeof(ext2_inode_t), (u32)sb_ptr->inode_size);
+    ext2_inode_t *new_inode = kmalloc(actual_inode_size);
+    if (!new_inode) return 0;
+    mem_set((u8*)new_inode, 0, actual_inode_size);
+
+    new_inode->mode = 0xA1FF;          // symlink, 0777
+    new_inode->size = target_len;
+    new_inode->links_count = 1;
+
+    if (fast) {
+        mem_copy((u8*)new_inode->block, (const u8*)target, target_len);
+        new_inode->blocks = 0;
+    } else {
+        new_inode->blocks = block_size / 512;
+        new_inode->block[0] = data_block;
+    }
+
+    ext2_write_inode(new_inode_no, new_inode);
+    kfree(new_inode);
+
+    // Slow symlink: write the target text into the data block
+    if (!fast) {
+        u8 *buf = kmalloc(block_size);
+        if (buf) {
+            mem_set(buf, 0, block_size);
+            mem_copy(buf, (const u8*)target, target_len);
+            ext2_write_block(data_block, buf);
+            kfree(buf);
+        }
+    }
+
+    if (!ext2_add_dir_entry(parent_inode_no, name, name_len, new_inode_no, EXT2_FT_SYMLINK)) {
+        serial_outsf("ext2_symlink: cannot add directory entry for %s\n", name);
+        return 0;
+    }
+
+    serial_outsf("ext2_symlink: created %s -> %s (inode %u)%s\n",
+                 name, target, new_inode_no, fast ? " [fast]" : "");
     return new_inode_no;
 }
 
@@ -1227,6 +1409,60 @@ u32 ext2_create_file(const char *path) {
     }
 
     return ext2_create_file_in_dir(filename, parent_inode_no);
+}
+
+// Create a symlink at the given path pointing at `target`.
+// Resolves relative paths using fs_resolve_path and supports creating in
+// subdirectories (whose path may itself traverse symlinks).
+// Returns 0 on failure, new inode number on success.
+u32 ext2_create_symlink(const char *path, const char *target) {
+    if (!path || path[0] == 0 || !target || target[0] == 0 || block_size == 0) return 0;
+
+    char resolved[256];
+    fs_resolve_path(path, resolved, sizeof(resolved));
+
+    // Find the last '/' to separate parent directory and link name
+    const char *last_slash = null;
+    for (const char *p = resolved; *p; p++) {
+        if (*p == '/') last_slash = p;
+    }
+
+    if (!last_slash) return 0;
+
+    const char *filename = last_slash + 1;
+    if (*filename == '\0') return 0;
+
+    u32 parent_inode_no = 2;
+
+    // Check if parent directory is root ("/" or "//drive")
+    if (last_slash == resolved) {
+        // Parent is "/" on current drive
+        parent_inode_no = 2;
+    } else if (resolved[0] == '/' && resolved[1] == '/' && last_slash == resolved + 1) {
+        // Parent is synthetic root "//" — invalid for link creation
+        return 0;
+    } else {
+        // Parent is a directory: extract parent path
+        char parent_dir[256];
+        u32 plen = (u32)(last_slash - resolved);
+        if (plen >= sizeof(parent_dir)) plen = sizeof(parent_dir) - 1;
+        mem_copy((u8*)parent_dir, (const u8*)resolved, plen);
+        parent_dir[plen] = '\0';
+
+        ext2_inode_t *pi = ext2_find_path(parent_dir, &parent_inode_no);
+        if (!pi) {
+            serial_outsf("ext2_symlink: parent directory not found: %s\n", parent_dir);
+            return 0;
+        }
+        if ((pi->mode & 0xF000) != 0x4000) {
+            serial_outsf("ext2_symlink: parent is not a directory: %s\n", parent_dir);
+            kfree(pi);
+            return 0;
+        }
+        kfree(pi);
+    }
+
+    return ext2_create_symlink_in_dir(filename, target, parent_inode_no);
 }
 
 u8 *get_block_ptr(u32 block_id) {
