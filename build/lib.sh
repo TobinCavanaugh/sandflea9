@@ -42,6 +42,7 @@ C_SOURCES=(
     "src/kernel/kern_terminal.c"
     "src/kernel/kern_profile.c"
     "src/kernel/kern_tests.c"
+    "src/kernel/quake.c"
     "src/kernel/kern_vmm.c"
     "src/kernel/libgcc_stubs.c"
     "src/kernel/main.c"

@@ -208,6 +208,8 @@ void kern_entry(void) {
         }
     }
 
+    vmm_init_pat();
+
     if (framebuffer_request.response == NULL || framebuffer_request.response->framebuffer_count < 1) {
         serial_outsl("FATAL: No framebuffer provided by Limine!");
         for (;;) {
@@ -470,19 +472,16 @@ void kern_entry(void) {
         }
 
         // Mouse events — route to compositor when it's active on current session.
-        {
+        if (compositor_is_active()) {
             mouse_event_t mev;
             while (mouse_eat_event(&mev)) {
-                if (compositor_is_active()) {
-                    compositor_push_event(mev.type, (u32)(i32)mev.dx, (u32)(i32)mev.dy, 0);
-                }
+                compositor_push_event(mev.type, (u32)(i32)mev.dx, (u32)(i32)mev.dy, 0);
             }
         }
 
         // Render the active session (cell buffer, cursor, header bar, input prompt).
-        // Skip when the compositor owns the display on the active session — it handles
-        // all rendering via display.present() and we'd just overwrite its pixels.
-        if (!compositor_is_active()) {
+        // Skip when the compositor or a direct-framebuffer app (like Quake) owns the display on the active session.
+        if (!compositor_is_active() && (!active_session || !active_session->owns_framebuffer)) {
             term_render();
         }
         asm volatile("hlt");

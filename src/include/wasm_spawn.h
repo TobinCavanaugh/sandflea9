@@ -7,6 +7,8 @@
 // It defines IM3Module, IM3Runtime, and is needed by the link_extra hook below.
 #include "m3_env.h"
 
+typedef struct kern_process kern_process_t;
+
 typedef struct wasm_spawn_opts {
     const char *path;             // required: ".wasm" file path on ext2
     int         argc;             // 0 if no argv; values beyond 16 are truncated
@@ -38,6 +40,9 @@ i32 wasm_spawn(const wasm_spawn_opts_t *opts);
 // Thread entry — registered with sched_create_process_thread().
 // Does the actual file read, parse/load/link, argv injection, _start call, and cleanup.
 u0 wasm_thread_entry(u0 *arg);
+
+// Kernel WASI linker used by custom game launchers.
+extern void kern_link_wasi(IM3Module module, kern_process_t *proc);
 
 // Forward decls of the standard host functions so other TUs (e.g. doom's
 // wasm_doom_test in kern_tests.c) can take their address for m3_LinkRawFunction.

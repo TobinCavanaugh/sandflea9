@@ -14,6 +14,7 @@
 #define PAGE_USER (1ull << 2)
 #define PAGE_PWT (1ull << 3)
 #define PAGE_PCD (1ull << 4)
+#define PAGE_WC (PAGE_PWT) // PAT index 1 when IA32_PAT is configured
 
 #define PML4_INDEX(x) (((x) >> 39) & 0x1FF)
 #define PDPT_INDEX(x) (((x) >> 30) & 0x1FF)
@@ -55,7 +56,11 @@ u64 pmm_get_free_count();
 
 u64 vmm_get_hhdm();
 
+u0 vmm_init_pat(void);
+
 u64 vmm_mmio_map_phys(u64 phys_addr, u64 size);
+
+u64 vmm_wc_map_phys(u64 phys_addr, u64 size);
 
 u64 read_cr3();
 

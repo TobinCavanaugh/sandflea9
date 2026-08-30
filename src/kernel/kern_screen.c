@@ -6,6 +6,7 @@
 
 #include "../include/kern_mem.h"
 #include "../include/kern_vmm.h"
+#include "../include/kern_serial.h"
 #include "../include/ssfn.h"
 #include "../util/util_str.h"
 
@@ -38,7 +39,24 @@ u8 screen_init(struct limine_framebuffer_response *response, display_t *display_
             v->backbuffer.pitch = fb->pitch;
             v->backbuffer.bpp = fb->bpp;
 
-            v->trueAddress = fb->address;
+            u64 fb_phys = 0;
+            u64 hhdm = vmm_get_hhdm();
+            if ((u64)fb->address >= hhdm) {
+                fb_phys = (u64)fb->address - hhdm;
+            } else {
+                fb_phys = vmm_get_phys_in_pml4(read_cr3(), (u64)fb->address);
+            }
+            u64 fb_size = (u64)fb->pitch * fb->height;
+            u64 wc_virt = 0;
+            if (fb_phys != 0) {
+                wc_virt = vmm_wc_map_phys(fb_phys, fb_size);
+            }
+            if (wc_virt != 0) {
+                v->trueAddress = (void *)wc_virt;
+                serial_outsf("Screen: Display %d Framebuffer WC mapped at 0x%016llx (phys 0x%016llx)\n", i, wc_virt, fb_phys);
+            } else {
+                v->trueAddress = fb->address;
+            }
 
             // v->surface.address = fb->address;
             v->surface.address = kmalloc(v->surface.pitch * v->surface.height);

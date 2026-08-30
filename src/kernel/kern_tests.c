@@ -29,6 +29,7 @@
 
 extern volatile u64 sw;
 
+
 cmd_word_t *word;
 
 // Doom globals
@@ -979,6 +980,20 @@ u0 handle_command_str(const char *cmd) {
                               loaded_mult, loaded_mult * 100, ratio, eff_mhz);
         }
 
+        goto Label_Free;
+    }
+
+    if (cmd_word_eq(word, "quake")) {
+        PROFILE_BEGIN("cmd:quake");
+        char *path = word->next ? str_view_to_c(word->next->text)
+                                : str_view_to_c(STR_VIEW_LIT("quake.wasm"));
+        if (path) {
+            wasm_quake_launch(path);
+            // The custom Quake thread uses this path asynchronously only
+            // until its first instruction; wasm_spawn copies its own path.
+            kfree(path);
+        }
+        PROFILE_END("cmd:quake");
         goto Label_Free;
     }
 

@@ -59,6 +59,40 @@ u64 vmm_mmio_map_phys(u64 phys_addr, u64 size) {
     return virt_start;
 }
 
+u0 vmm_init_pat(void) {
+    // Standard PAT layout:
+    // PAT0 = WB (0x06), PAT1 = WC (0x01), PAT2 = UC- (0x07), PAT3 = UC (0x00)
+    // PAT4 = WB (0x06), PAT5 = WC (0x01), PAT6 = UC- (0x07), PAT7 = UC (0x00)
+    u64 pat = 0x0007010600070106ULL;
+    wrmsr(0x277, pat);
+    serial_outs("VMM: IA32_PAT initialized (PAT1=WC)\n");
+}
+
+#define WC_VIRT_BASE  0xFFFFFFFF30000000
+static u64 wc_virt_next = WC_VIRT_BASE;
+
+u64 vmm_wc_map_phys(u64 phys_addr, u64 size) {
+    u64 page_count = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    u64 phys_page  = phys_addr & ~(PAGE_SIZE - 1);
+
+    if (wc_virt_next + page_count * PAGE_SIZE >= 0xFFFFFFFF88000000) {
+        serial_outsf("VMM: WC map overflow at virt 0x%016llx (size %llx)\n",
+                     wc_virt_next, size);
+        return 0;
+    }
+
+    u64 virt_start = wc_virt_next;
+
+    for (u64 i = 0; i < page_count; i++) {
+        vmm_map_page(phys_page + i * PAGE_SIZE,
+                     virt_start + i * PAGE_SIZE,
+                     PAGE_RW | PAGE_WC);
+    }
+
+    wc_virt_next += page_count * PAGE_SIZE;
+    return virt_start;
+}
+
 u0 pmm_free(u64 phys_addr) {
     if (phys_addr == 0) return;
     u64 irq = save_irq_and_disable();

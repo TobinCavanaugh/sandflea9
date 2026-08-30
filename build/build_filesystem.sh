@@ -13,36 +13,38 @@ set -e
 . "$(dirname "$0")/lib.sh"
 
 # ---- disk.img (boot volume) --------------------------------------------
-log "Creating boot filesystem (disk.img, 32MB, ext2, label='A')"
+log "Creating boot filesystem (disk.img, 64MB, ext2, label='A')"
 # truncate is faster than `dd if=/dev/zero` because the kernel
 # allocates sparse pages; only the ext2 metadata blocks need to be
 # zeroed, which mkfs.ext2 does anyway.
-truncate -s 32M "$ISO_DIR/disk.img"
+truncate -s 64M "$ISO_DIR/disk.img"
 mkfs.ext2 -F -L A "$ISO_DIR/disk.img"
 ok "disk.img formatted"
 
-debugfs -w "$ISO_DIR/disk.img" <<EOF
-write src/blob/testfile.txt testfile.txt
-write src/blob/a.txt a.txt
-write src/blob/b.txt b.txt
-write src/blob/c.txt c.txt
-write src/blob/utf8.txt utf8
-write src/blob/DOOM1.WAD DOOM1.WAD
-mkdir folder
-write src/blob/c.txt folder/a.txt
-write src/wasm/wat/hello.wat hello.wat
-write src/wasm/wat/add_test.wat add_test.wat
-write src/wasm/wat/cat.wat cat.wat
-write src/wasm/wat/lsr.wat lsr.wat
-write src/wasm/wat/file_test.wat file_test.wat
-write src/wasm/wat/crashme.wat crashme.wat
-write src/wasm/wat/ipc_receiver.wat ipc_receiver.wat
-write src/wasm/wat/ipc_sender.wat ipc_sender.wat
-EOF
-
-# Auto-include all user-app .wasm files compiled by wb.bat. Filter
-# out the in-kernel tool so it doesn't redundantly end up in /A/.
 {
+    echo "write src/blob/testfile.txt testfile.txt"
+    echo "write src/blob/a.txt a.txt"
+    echo "write src/blob/b.txt b.txt"
+    echo "write src/blob/c.txt c.txt"
+    echo "write src/blob/utf8.txt utf8"
+    echo "write src/blob/DOOM1.WAD DOOM1.WAD"
+    echo "write src/blob/quake.wasm quake.wasm"
+    echo "mkdir id1"
+    [ -f src/blob/id1/pak0.pak ] && echo "write src/blob/id1/pak0.pak id1/pak0.pak"
+    [ -f src/blob/id1/pak1.pak ] && echo "write src/blob/id1/pak1.pak id1/pak1.pak"
+    echo "mkdir folder"
+    echo "write src/blob/c.txt folder/a.txt"
+    echo "write src/wasm/wat/hello.wat hello.wat"
+    echo "write src/wasm/wat/add_test.wat add_test.wat"
+    echo "write src/wasm/wat/cat.wat cat.wat"
+    echo "write src/wasm/wat/lsr.wat lsr.wat"
+    echo "write src/wasm/wat/file_test.wat file_test.wat"
+    echo "write src/wasm/wat/crashme.wat crashme.wat"
+    echo "write src/wasm/wat/ipc_receiver.wat ipc_receiver.wat"
+    echo "write src/wasm/wat/ipc_sender.wat ipc_sender.wat"
+
+    # Auto-include all user-app .wasm files compiled by wb.bat. Filter
+    # out the in-kernel tool so it doesn't redundantly end up in /A/.
     for wasm_path in obj/wasm/*.wasm; do
         [ -f "$wasm_path" ] || continue
         [ "$(basename "$wasm_path")" = "wat2wasm.wasm" ] && continue

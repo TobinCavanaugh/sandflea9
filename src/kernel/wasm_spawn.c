@@ -1399,7 +1399,7 @@ m3ApiRawFunction(kern_wasi_fd_datasync) {
 // Link all WASI functions into the module under wasi_snapshot_preview1.
 // Called from wasm_thread_entry before _start.
 // ----------------------------------------------------------------
-static u0 kern_link_wasi(IM3Module module, kern_process_t *proc) {
+u0 kern_link_wasi(IM3Module module, kern_process_t *proc) {
     if (!module) return;
 
     // Populate the static context
