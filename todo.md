@@ -5,9 +5,14 @@ Switch everything to UTF-8
 ### WASM
 - WASM permissions 
 - WASM modules / syscalls
+- General API
+- Module interaction
 
 ### ELF
 - Need to be able to execute ELFs, WASM is good for now
+
+### ACPI
+- Power button
 
 ### Multicore
 - MADT / ACPI parsing
@@ -15,7 +20,6 @@ Switch everything to UTF-8
 - give each process an affinity, if multicore give core 0 kernel stuff, mux other threads to processes
 
 ### FS
-- EXT2 Needs indirect inode support 
 - AHCI, replace IDE
 - Need fs agnostic file interface that uses handles (uring? async?)
 
@@ -26,7 +30,13 @@ Switch everything to UTF-8
 - Needs research
 
 ### WM 
-- Should probably be a wasm process, idk. If perf sucks, switch it to C native
+- proper infinite canvas
+- Drawing API
+- Win + scroll / win + alt scroll
+- win alt arrows to move across workspaces
 
-### Permissions / hashig
+### Permissions / hashing
 https://github.com/BLAKE3-team/BLAKE3
+
+
+integer overflow in wasm quake
