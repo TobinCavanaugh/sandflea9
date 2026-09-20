@@ -146,8 +146,12 @@ u0 process_exit(kern_process_t *proc) {
     if (proc == foreground_proc) {
         foreground_proc = null;
     }
-    // Also clear the per-session foreground_proc so the main loop
-    // stops forwarding keys to a freed process.
+    // Also clear the per-session foreground_proc and release framebuffer
+    // ownership so the terminal session is fully restored.
+    if (proc->terminal_session) {
+        term_session_t *ts = (term_session_t *)proc->terminal_session;
+        ts->owns_framebuffer = false;
+    }
     for (int i = 0; i < MAX_SESSIONS; i++) {
         if (sessions[i].foreground_proc == (void*)proc) {
             sessions[i].foreground_proc = NULL;

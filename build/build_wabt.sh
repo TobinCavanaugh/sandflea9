@@ -16,6 +16,17 @@
 set -e
 . "$(dirname "$0")/lib.sh"
 
+WABT_DIR="src/external/wabt-1.0.41"
+
+# Fast-path: if wat2wasm.wasm exists and WABT sources haven't changed, skip entirely.
+if [ -f "$WASM_DIR/wat2wasm.wasm" ] && [ -d "$WABT_DIR" ]; then
+    NEWEST_SRC=$(find "$WABT_DIR" -type f -newer "$WASM_DIR/wat2wasm.wasm" 2>/dev/null | head -n 1)
+    if [ -z "$NEWEST_SRC" ]; then
+        log "wat2wasm.wasm up to date"
+        exit 0
+    fi
+fi
+
 # ---- Locate wasi-sdk -----------------------------------------------------
 WASI_CC=""
 for candidate in \

@@ -458,6 +458,13 @@ u0 wasm_quake_game(void *arg) {
     }
 
 quake_exit:
+    {
+        kern_process_t *cur_p = sched_get_current_process();
+        term_session_t *q_session = (cur_p && cur_p->terminal_session) ? (term_session_t *)cur_p->terminal_session : active_session;
+        if (q_session) {
+            q_session->owns_framebuffer = false;
+        }
+    }
     if (active_session) {
         active_session->owns_framebuffer = false;
     }

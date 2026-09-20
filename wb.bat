@@ -27,8 +27,18 @@ if exist "%WAT2WASM%" (
     echo --- Compiling WASM ^(Windows wat2wasm.exe^) ---
     if not exist "obj\wasm" mkdir "obj\wasm"
     for %%f in (src\wasm\wat\*.wat) do (
-        echo   %%f
-        "%WAT2WASM%" "%%f" -o "obj\wasm\%%~nf.wasm"
+        set "DO_COMPILE=0"
+        if not exist "obj\wasm\%%~nf.wasm" (
+            set "DO_COMPILE=1"
+        ) else (
+            for %%w in ("obj\wasm\%%~nf.wasm") do (
+                if "%%~tf" gtr "%%~tw" set "DO_COMPILE=1"
+            )
+        )
+        if "!DO_COMPILE!"=="1" (
+            echo   %%f
+            "%WAT2WASM%" "%%f" -o "obj\wasm\%%~nf.wasm"
+        )
     )
     REM Pre-compiled .wasm files from drives\A (no matching .wat source)
     if exist "drives\A\*.wasm" (
@@ -50,17 +60,15 @@ if exist "%WAT2WASM%" (
     )
 )
 
-REM Translate %CD% (Windows) to a WSL path and run build.sh inside WSL.
-REM If the resolved WSL path contains a single quote, fail loudly rather
-REM than produce a broken cd command downstream.
-for /f "usebackq tokens=*" %%I in (`wsl wslpath -a "%CD%"`) do set "WSL_DIR=%%I"
-echo "%WSL_DIR%" | findstr /R /C:"'" >nul
-if not errorlevel 1 (
-    echo [ERROR] Project path contains a single quote after WSL translation:
-    echo         %WSL_DIR%
-    echo         WSL bash cannot cd into this path. Rename the offending directory.
-    exit /b 1
+REM Translate %CD% (Windows) to a WSL path instantly in pure batch (avoids slow wslpath process spawn).
+set "DRIVE_LETTER=%CD:~0,1%"
+for %%a in (a b c d e f g h i j k l m n o p q r s t u v w x y z) do (
+    if /i "!DRIVE_LETTER!"=="%%a" set "DRIVE_LOWER=%%a"
 )
+set "REST_OF_PATH=%CD:~2%"
+set "REST_OF_PATH=!REST_OF_PATH:\=/!"
+set "WSL_DIR=/mnt/!DRIVE_LOWER!!REST_OF_PATH!"
+
 echo Invoking WSL build at "%WSL_DIR%"
 wsl -e bash -c "cd '%WSL_DIR%' && bash build/build.sh %*"
 set "BUILD_EXIT_CODE=%ERRORLEVEL%"
