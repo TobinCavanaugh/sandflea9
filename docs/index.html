@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>sandfleaOS // Subsystem Matrix & Tech-Tree Roadmap</title>
+  <meta name="description" content="Interactive architecture graph, tech-tree dependency map, and development roadmap for sandfleaOS (Wasm-first, non-POSIX x86_64 OS).">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
+</head>
+<body>
+  <div id="app">
+    <!-- Top Header -->
+    <header>
+      <div class="brand">
+        <div>
+          <div class="brand-title">sandfleaOS</div>
+          <div class="brand-tag">Wasm-First // Non-POSIX x86_64</div>
+        </div>
+      </div>
+
+      <!-- Stats Counters -->
+      <div class="stats-bar">
+        <div class="stat-pill">
+          <span class="stat-dot completed"></span>
+          <span id="stat-completed-count">0 STABLE</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-dot in-progress"></span>
+          <span id="stat-inprogress-count">0 ACTIVE</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-dot planned"></span>
+          <span id="stat-planned-count">0 PLANNED</span>
+        </div>
+      </div>
+
+      <!-- Search & Controls -->
+      <div class="controls-bar">
+        <div class="search-wrapper">
+          <span class="search-icon">></span>
+          <input type="text" id="search-input" class="search-input" placeholder="SEARCH SUBSYSTEMS...">
+        </div>
+        <button id="btn-fit-all" class="btn" title="Fit all nodes in view">
+          <span>FIT VIEW</span>
+        </button>
+        <button id="btn-auto-layout" class="btn" title="Auto-layout hierarchy">
+          <span>AUTO LAYOUT</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Subsystem Layer Filters -->
+    <div id="category-filters" class="filter-bar">
+      <!-- Generated dynamically by JS -->
+    </div>
+
+    <!-- Main Interactive Canvas Viewport -->
+    <main id="viewport-container">
+      <div class="canvas-grid"></div>
+      <canvas id="graph-canvas"></canvas>
+
+      <!-- Active Path Highlight Notification -->
+      <div id="highlight-pill" class="highlight-pill">
+        <span>TRACING: <strong id="highlight-node-title"></strong></span>
+        <button id="btn-clear-highlight" class="btn-clear-highlight" title="Clear Path Selection">[CLEAR]</button>
+      </div>
+
+      <!-- Floating Canvas Controls -->
+      <div class="floating-toolbar">
+        <button id="btn-zoom-in" class="btn btn-icon-only" title="Zoom In">+</button>
+        <button id="btn-zoom-out" class="btn btn-icon-only" title="Zoom Out">-</button>
+      </div>
+
+      <!-- Legend -->
+      <div class="legend-bar">
+        <div class="legend-item"><span class="stat-dot completed"></span> STABLE / DONE</div>
+        <div class="legend-item"><span class="stat-dot in-progress"></span> IN PROGRESS</div>
+        <div class="legend-item"><span class="stat-dot planned"></span> PLANNED</div>
+        <div class="legend-item"><span class="stat-dot research"></span> UNDER RESEARCH</div>
+      </div>
+
+      <!-- MiniMap Radar -->
+      <div id="minimap">
+        <canvas id="minimap-canvas"></canvas>
+      </div>
+    </main>
+
+    <!-- Side Inspector -->
+    <aside id="side-inspector">
+      <div class="panel-header">
+        <div class="panel-meta-row">
+          <span id="panel-cat-badge" class="panel-category-badge">CATEGORY</span>
+          <span id="panel-status-badge" class="panel-status-badge">STATUS</span>
+        </div>
+        <button id="panel-close-btn" class="panel-close-btn" title="Close Panel">✕</button>
+        <h2 id="panel-title" class="panel-title">SUBSYSTEM TITLE</h2>
+        <p id="panel-summary" class="panel-summary">Brief summary of the subsystem capability.</p>
+      </div>
+
+      <div class="panel-body">
+        <!-- Prerequisites & Dependents Navigation -->
+        <div class="section-card">
+          <div class="section-title">DEPENDENCY TREE</div>
+          <div style="display:flex; flex-direction:column; gap:10px;">
+            <div>
+              <div style="font-size:10px; color:var(--text-secondary); margin-bottom:4px; font-family:var(--font-mono); text-transform:uppercase;">REQUIRES (PREREQUISITES):</div>
+              <div id="panel-prereqs" class="deps-container"></div>
+            </div>
+            <div>
+              <div style="font-size:10px; color:var(--text-secondary); margin-bottom:4px; font-family:var(--font-mono); text-transform:uppercase;">UNLOCKS (DEPENDENTS):</div>
+              <div id="panel-unlocks" class="deps-container"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Architecture & Rationale -->
+        <div class="section-card">
+          <div class="section-title">OVERVIEW & ARCHITECTURE RATIONALE</div>
+          <p id="panel-desc" class="section-text"></p>
+          <div style="margin-top: 8px; font-size: 11px; color: #ffffff; font-family: var(--font-mono); font-weight: 700; text-transform:uppercase;">WHY THIS MATTERS:</div>
+          <p id="panel-importance" class="section-text" style="color: var(--text-secondary);"></p>
+        </div>
+
+        <!-- Technical Implementation Notes -->
+        <div class="section-card">
+          <div class="section-title">IMPLEMENTATION DETAILS</div>
+          <p id="panel-notes" class="section-text"></p>
+        </div>
+
+        <!-- Difficulties vs Easy Wins -->
+        <div class="section-card">
+          <div class="section-title">ENGINEERING REALITIES</div>
+          <div class="difficulty-box">
+            <div class="box-header">DIFFICULTIES & EDGE CASES</div>
+            <ul id="panel-difficulties" class="list-items"></ul>
+          </div>
+          <div class="wins-box">
+            <div class="box-header">EASY PARTS & WINS</div>
+            <ul id="panel-wins" class="list-items"></ul>
+          </div>
+        </div>
+
+        <!-- Source Code Mapping -->
+        <div class="section-card">
+          <div class="section-title">CODEBASE SOURCE FILES</div>
+          <div id="panel-files" class="file-list"></div>
+        </div>
+
+        <!-- Subtasks Checklist -->
+        <div class="section-card">
+          <div class="section-title">SUBTASKS & DELIVERABLES</div>
+          <div id="panel-subtasks" class="subtask-list"></div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Fallback & Data Script -->
+  <script src="data/roadmap.js"></script>
+  <!-- Interactive Graph Engine -->
+  <script src="js/graph.js"></script>
+</body>
+</html>

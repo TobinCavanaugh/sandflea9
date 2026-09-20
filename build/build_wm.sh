@@ -65,3 +65,26 @@ if [ ! -f "$TERM_OUT" ] || [ "$TERM_SRC" -nt "$TERM_OUT" ]; then
 else
     log "term_stub.wasm up to date"
 fi
+
+# ---- Check for WinMan WASM from C# project or blob directory -------------
+WINMAN_OUT="$WASM_DIR/winman.wasm"
+for candidate in \
+    "src/blob/winman.wasm" \
+    "/mnt/c/Users/tobin/RiderProjects/winman/bin/Release/net8.0/browser-wasm/AppBundle/winman.wasm" \
+    "/mnt/c/Users/tobin/RiderProjects/winman/bin/Release/net8.0/browser-wasm/native/winman.wasm" \
+    "/mnt/c/Users/tobin/RiderProjects/winman/bin/Debug/net8.0/browser-wasm/AppBundle/winman.wasm" \
+    "../winman/bin/Release/net8.0/browser-wasm/AppBundle/winman.wasm" \
+    "../winman/bin/Release/net8.0/browser-wasm/native/winman.wasm"
+do
+    if [ -f "$candidate" ]; then
+        if [ ! -f "$WINMAN_OUT" ] || [ "$candidate" -nt "$WINMAN_OUT" ]; then
+            log "Staging winman.wasm from $candidate"
+            cp "$candidate" "$WINMAN_OUT"
+            WINMAN_SIZE=$(stat -c%s "$WINMAN_OUT" 2>/dev/null || stat -f%z "$WINMAN_OUT" 2>/dev/null)
+            ok "winman.wasm: $WINMAN_SIZE bytes"
+        else
+            log "winman.wasm up to date"
+        fi
+        break
+    fi
+done

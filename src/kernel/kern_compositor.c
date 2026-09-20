@@ -1,9 +1,13 @@
-// kern_compositor.c — WASM compositor host implementation.
+// kern_compositor.c — WASM compositor & Window Manager host implementation.
 //
-// Provides the kernel-side of the compositor protocol:
-//   display.* — framebuffer access (claimCompositor, present, claimBuffer, blitFromPid)
-//   input.*   — hardware input event delivery
-//   proc.*    — child process lifecycle
+// Provides the kernel-side of the window manager & compositor protocol:
+//   display.* — hardware framebuffer presentation & legacy buffer claims
+//   input.*   — hardware input event delivery (legacy alias)
+//   wm.*      — privileged window manager controls (event poll, surface blit, input routing)
+//   window.*  — client window lifecycle (create, destroy, setTitle, setSize)
+//   surface.* — client frame presentation & dirty rectangle commits
+//   winput.*  — client input event queue consumption
+//   proc.*    — child process lifecycle & spawning
 
 #include "../include/kern_compositor.h"
 #include "../include/kern_screen.h"
@@ -29,37 +33,69 @@ bool compositor_is_active(void) {
     return (active_session->id == g_compositor_session_id);
 }
 
-// Compositor runtime — set by claimCompositor, used by present/blitFromPid.
+// Compositor runtime — set by claimCompositor, used by present/blit.
 static IM3Runtime g_compositor_runtime = NULL;
 
 // Compositor's own display buffer offset (set by claimBuffer when compositor calls it).
 static u32 g_compositor_buffer_offset = 0;
 
+// ── Window Management Table ────────────────────────────────────────────────
+
+static kern_window_t g_windows[MAX_COMPOSITOR_WINDOWS];
+static u16 g_window_generation = 1;
+
+static i32 make_window_handle(u16 index) {
+    if (++g_window_generation == 0) g_window_generation = 1;
+    return (i32)(((u32)g_window_generation << 16) | (u32)(index & 0xFFFF));
+}
+
+static i32 compositor_find_window_by_handle(i32 handle) {
+    if (handle <= 0) return -1;
+    u16 idx = (u16)(handle & 0xFFFF);
+    if (idx >= MAX_COMPOSITOR_WINDOWS) return -1;
+    if (!g_windows[idx].active || g_windows[idx].handle != handle) return -1;
+    return (i32)idx;
+}
+
+static i32 compositor_find_free_window_slot(void) {
+    for (u32 i = 0; i < MAX_COMPOSITOR_WINDOWS; i++) {
+        if (!g_windows[i].active) return (i32)i;
+    }
+    return -1;
+}
+
+static i32 compositor_find_window_by_pid(i32 pid) {
+    for (u32 i = 0; i < MAX_COMPOSITOR_WINDOWS; i++) {
+        if (g_windows[i].active && g_windows[i].pid == pid)
+            return (i32)i;
+    }
+    return -1;
+}
+
+static void comp_str_copy(char *dst, const char *src, u32 max_len) {
+    if (!dst || max_len == 0) return;
+    if (!src) { dst[0] = '\0'; return; }
+    u32 i = 0;
+    while (i + 1 < max_len && src[i]) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
 // ── Deferred spawn ────────────────────────────────────────────────────────
-//
-// proc.spawn just stores the request; proc.dequeueSpawn does the actual
-// wasm_spawn(). This keeps host functions shallow (no deep call chains
-// inside wasm3's interpreter recursion) and avoids stack overflow.
-//
-// The WM calls:
-//   1. proc.spawn(path, argc, argv)  → returns 0 (accepted) or -1 (full)
-//   2. proc.dequeueSpawn()           → returns PID or -1 (nothing pending)
 
 #define SPAWN_QUEUE_SIZE 8
 
 typedef struct {
     char path[128];
-    i32  arg0;         // first argv entry, passed as a raw int (e.g. shm_id)
-    i32  result_pid;   // set by dequeueSpawn before signaling
+    i32  arg0;
+    i32  result_pid;
 } spawn_request_t;
 
 static spawn_request_t g_spawn_queue[SPAWN_QUEUE_SIZE];
-static volatile u32    g_spawn_head = 0;   // WM writes here
-static volatile u32    g_spawn_tail = 0;   // dequeueSpawn reads here
-
-// Display buffer tracking: one entry per compositor child.
-static compositor_child_t g_children[MAX_COMPOSITOR_WINDOWS];
-static u32 g_child_count = 0;
+static volatile u32    g_spawn_head = 0;
+static volatile u32    g_spawn_tail = 0;
 
 // Input event ring buffer for the compositor.
 // Each event is 4 u32s: type, data0, data1, data2.
@@ -72,17 +108,6 @@ static u32 g_event_buf[COMPOSITOR_EVENT_QUEUE_SIZE * EV_SLOT_SIZE];
 static volatile u32 g_event_read  = 0;
 static volatile u32 g_event_write = 0;
 
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-// Find child slot by PID, or -1 if not found.
-static i32 compositor_find_child(i32 pid) {
-    for (u32 i = 0; i < g_child_count; i++) {
-        if (g_children[i].active && g_children[i].pid == pid)
-            return (i32)i;
-    }
-    return -1;
-}
-
 // ── Public API ─────────────────────────────────────────────────────────────
 
 void compositor_init(void) {
@@ -90,12 +115,12 @@ void compositor_init(void) {
     g_compositor_session_id = 0;
     g_compositor_runtime = NULL;
     g_compositor_buffer_offset = 0;
-    g_child_count = 0;
     g_event_read = 0;
     g_event_write = 0;
     g_spawn_head = 0;
     g_spawn_tail = 0;
-    mem_set((u8*)g_children, 0, sizeof(g_children));
+    g_window_generation = 1;
+    mem_set((u8*)g_windows, 0, sizeof(g_windows));
     mem_set((u8*)g_event_buf, 0, sizeof(g_event_buf));
     mem_set((u8*)g_spawn_queue, 0, sizeof(g_spawn_queue));
 }
@@ -121,14 +146,16 @@ void compositor_child_cleanup(i32 pid) {
         g_event_read = g_event_write;  // drain events
     }
 
-    i32 idx = compositor_find_child(pid);
-    if (idx < 0) return;
-    g_children[idx].active = false;
-    // Compact the array.
-    for (u32 i = (u32)idx; i + 1 < g_child_count; i++) {
-        g_children[i] = g_children[i + 1];
+    // Cleanup all windows registered to this PID and notify WM
+    for (u32 i = 0; i < MAX_COMPOSITOR_WINDOWS; i++) {
+        if (g_windows[i].active && g_windows[i].pid == pid) {
+            i32 handle = g_windows[i].handle;
+            g_windows[i].active = false;
+            if (g_compositor_pid != -1 && pid != g_compositor_pid) {
+                compositor_push_event(WM_EV_WIN_DESTROYED, (u32)handle, (u32)pid, 0);
+            }
+        }
     }
-    g_child_count--;
 }
 
 // ── display.claimCompositor ────────────────────────────────────────────────
@@ -178,13 +205,13 @@ m3ApiRawFunction(wasm_display_present) {
     restore_irq(irq);
 
     if (comp_pid != -1 && proc->pid != comp_pid) {
-        // Compositor is running, but caller isn't the compositor.
-        // Notify compositor via ring buffer that this child window is dirty.
-        compositor_push_event(3, (u32)proc->pid, 0, 0);
+        // Find window for this process
+        i32 win_idx = compositor_find_window_by_pid(proc->pid);
+        i32 handle = (win_idx >= 0) ? g_windows[win_idx].handle : proc->pid;
+        compositor_push_event(WM_EV_WIN_COMMITTED, (u32)handle, (u32)proc->pid, 0);
         m3ApiReturn(0);
     }
 
-    // If caller IS the compositor, but compositor is NOT on the active session:
     if (comp_pid != -1 && proc->pid == comp_pid && !compositor_is_active()) {
         m3ApiReturn(0);
     }
@@ -240,9 +267,11 @@ m3ApiRawFunction(wasm_display_present_rect) {
     restore_irq(irq);
 
     if (comp_pid != -1 && proc->pid != comp_pid) {
+        i32 win_idx = compositor_find_window_by_pid(proc->pid);
+        i32 handle = (win_idx >= 0) ? g_windows[win_idx].handle : proc->pid;
         u32 d1 = ((u32)(x & 0xFFFF) << 16) | (u32)(y & 0xFFFF);
         u32 d2 = ((u32)(w & 0xFFFF) << 16) | (u32)(h & 0xFFFF);
-        compositor_push_event(4, (u32)proc->pid, d1, d2);
+        compositor_push_event(WM_EV_WIN_COMMITTED, (u32)handle, d1, d2);
         m3ApiReturn(0);
     }
 
@@ -295,34 +324,48 @@ m3ApiRawFunction(wasm_display_claim_buffer) {
     if (!disp) { m3ApiReturn(-1); }
 
     u32 screen_bytes = (u32)(disp->surface.pitch * disp->surface.height);
-    u32 pages_needed = (screen_bytes + 65535) / 65536;   // 64KB WASM pages
+    u32 pages_needed = (screen_bytes + 65535) / 65536;
 
-    // m3_GetMemorySize returns BYTES (m3_env.c line 451: length = numPageBytes)
     u32 cur_bytes = m3_GetMemorySize(runtime);
-    u32 offset = cur_bytes;                     // place after existing memory
-    u32 cur_pages = cur_bytes / 65536;          // for ResizeMemory (takes pages)
+    u32 offset = cur_bytes;
+    u32 cur_pages = cur_bytes / 65536;
 
     M3Result r = ResizeMemory(runtime, cur_pages + pages_needed);
     if (r) {
         m3ApiReturn(-1);
     }
 
-    // Track the buffer. Compositor gets its own offset, children get tracked
-    // in g_children for blitFromPid.
     if (g_compositor_pid != -1) {
         u64 irq = save_irq_and_disable();
         if (proc->pid == g_compositor_pid) {
-            // Compositor itself: record buffer offset for blitFromPid destination.
             g_compositor_buffer_offset = offset;
-        } else if (g_child_count < MAX_COMPOSITOR_WINDOWS) {
-            compositor_child_t *c = &g_children[g_child_count++];
-            c->active = true;
-            c->pid = proc->pid;
-            c->buffer_offset = offset;
-            c->buf_w = (u32)disp->surface.width;
-            c->buf_h = (u32)disp->surface.height;
-            c->runtime = runtime;
-            compositor_push_event(3, (u32)proc->pid, 0, 0);
+        } else {
+            i32 idx = compositor_find_window_by_pid(proc->pid);
+            if (idx < 0) {
+                idx = compositor_find_free_window_slot();
+                if (idx >= 0) {
+                    kern_window_t *w = &g_windows[idx];
+                    w->active = true;
+                    w->handle = make_window_handle((u16)idx);
+                    w->pid = proc->pid;
+                    w->parent_handle = 0;
+                    w->win_type = WIN_TYPE_TOPLEVEL;
+                    w->flags = WIN_FLAG_NONE;
+                    w->buffer_offset = offset;
+                    w->buf_w = (u32)disp->surface.width;
+                    w->buf_h = (u32)disp->surface.height;
+                    w->stride = (u32)disp->surface.width * 4;
+                    w->runtime = runtime;
+                    w->event_read = 0;
+                    w->event_write = 0;
+                    comp_str_copy(w->title, "App Window", sizeof(w->title));
+                    compositor_push_event(WM_EV_WIN_CREATED, (u32)w->handle, (u32)proc->pid, (u32)WIN_TYPE_TOPLEVEL);
+                }
+            } else {
+                g_windows[idx].buffer_offset = offset;
+                g_windows[idx].runtime = runtime;
+                compositor_push_event(WM_EV_WIN_COMMITTED, (u32)g_windows[idx].handle, 0, 0);
+            }
         }
         restore_irq(irq);
     }
@@ -403,7 +446,7 @@ m3ApiRawFunction(wasm_display_copy_buffer) {
     m3ApiReturn(0);
 }
 
-// ── display.blitFromPid ────────────────────────────────────────────────────
+// ── display.blitFromPid (Legacy compatibility) ─────────────────────────────
 
 m3ApiRawFunction(wasm_display_blit_from_pid) {
     m3ApiReturnType(i32)
@@ -420,13 +463,12 @@ m3ApiRawFunction(wasm_display_blit_from_pid) {
 
     if (blit_w <= 0 || blit_h <= 0) { m3ApiReturn(0); }
 
-    i32 idx = compositor_find_child(pid);
+    i32 idx = compositor_find_window_by_pid(pid);
     if (idx < 0) { m3ApiReturn(-2); }
 
-    compositor_child_t *child = &g_children[idx];
+    kern_window_t *child = &g_windows[idx];
     if (!child->runtime) { m3ApiReturn(-3); }
 
-    // Compositor's destination buffer — use the tracked offset.
     u32 compositor_offset = g_compositor_buffer_offset;
     IM3Runtime compositor_rt = g_compositor_runtime;
     if (!compositor_rt || compositor_offset == 0) { m3ApiReturn(-4); }
@@ -443,17 +485,15 @@ m3ApiRawFunction(wasm_display_blit_from_pid) {
     u8 *src_mem = m3_GetMemory(child->runtime, &src_mem_size, 0);
     if (!src_mem) { m3ApiReturn(-6); }
 
-    u32 src_stride = child->buf_w * 4;
+    u32 src_stride = child->stride ? child->stride : (child->buf_w * 4);
     u32 src_off = child->buffer_offset;
 
-    // Clamp source rectangle to child buffer bounds.
     if (src_x < 0) src_x = 0;
     if (src_y < 0) src_y = 0;
     if (src_x + blit_w > (i32)child->buf_w) blit_w = (i32)child->buf_w - src_x;
     if (src_y + blit_h > (i32)child->buf_h) blit_h = (i32)child->buf_h - src_y;
     if (blit_w <= 0 || blit_h <= 0) { m3ApiReturn(0); }
 
-    // Clamp dest rectangle to compositor buffer bounds.
     u32 dst_max_x = dst_stride / 4;
     u32 dst_max_y = (dst_mem_size - compositor_offset) / dst_stride;
     if (dst_x < 0) dst_x = 0;
@@ -462,7 +502,6 @@ m3ApiRawFunction(wasm_display_blit_from_pid) {
     if ((u32)(dst_y + blit_h) > dst_max_y) blit_h = (i32)dst_max_y - dst_y;
     if (blit_w <= 0 || blit_h <= 0) { m3ApiReturn(0); }
 
-    // Row-by-row copy.
     u32 row_bytes = (u32)blit_w * 4;
     for (i32 y = 0; y < blit_h; y++) {
         u32 src_row_off = src_off + ((u32)(src_y + y) * src_stride) + (u32)src_x * 4;
@@ -476,18 +515,12 @@ m3ApiRawFunction(wasm_display_blit_from_pid) {
     m3ApiReturn(0);
 }
 
-// ── input.pollEvents ───────────────────────────────────────────────────────
+// ── wm.pollEvents / input.pollEvents ───────────────────────────────────────
 
-m3ApiRawFunction(wasm_input_poll_events) {
-    m3ApiReturnType(i32)
-    m3ApiGetArg(u32, buf_offset)
-    m3ApiGetArg(i32, max_events)
-
+static i32 poll_events_internal(IM3Runtime runtime, u32 buf_offset, i32 max_events) {
     kern_process_t *proc = sched_get_current_process();
-    if (!proc || proc->pid != g_compositor_pid) { m3ApiReturn(-1); }
+    if (!proc || proc->pid != g_compositor_pid) { return -1; }
 
-    // Direct drain from hardware driver queues into compositor event ring buffer:
-    // Only drain if the compositor's session is currently active.
     if (compositor_is_active()) {
         mouse_event_t mev;
         while (mouse_eat_event(&mev)) {
@@ -496,25 +529,21 @@ m3ApiRawFunction(wasm_input_poll_events) {
 
         u8 k = 0;
         while ((k = keyboard_eat_key())) {
-            // F1-F4: switch virtual terminal sessions
             if (k >= KEY_F1 && k <= KEY_F4) {
-                u32 target = k - KEY_F1;  // F1=0, F2=1, F3=2, F4=3
+                u32 target = k - KEY_F1;
                 if (target < MAX_SESSIONS && (!active_session || target != active_session->id)) {
-                    serial_outsf("VT switch: %s -> %s\n",
-                                 active_session ? active_session->name : "?",
-                                 sessions[target].name);
                     session_switch(target);
                     sched_idle_wake();
                 }
                 continue;
             }
-            compositor_push_event(0, k, 0, 0);  // KEY_DOWN
+            compositor_push_event(WM_EV_KEY_DOWN, k, 0, 0);
         }
     }
 
     u32 mem_size = 0;
     u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
-    if (!mem) { m3ApiReturn(0); }
+    if (!mem) { return 0; }
 
     u32 events_copied = 0;
     u64 irq = save_irq_and_disable();
@@ -524,7 +553,6 @@ m3ApiRawFunction(wasm_input_poll_events) {
         u32 ev_offset = buf_offset + events_copied * 4 * EV_SLOT_SIZE;
         if (ev_offset > mem_size || mem_size - ev_offset < 16) break;
 
-        // Copy as 4 consecutive u32s: type, data0, data1, data2
         ((u32*)(mem + ev_offset))[0] = g_event_buf[src_idx + EV_SLOT_TYPE];
         ((u32*)(mem + ev_offset))[1] = g_event_buf[src_idx + EV_SLOT_DATA0];
         ((u32*)(mem + ev_offset))[2] = g_event_buf[src_idx + EV_SLOT_DATA1];
@@ -541,12 +569,438 @@ m3ApiRawFunction(wasm_input_poll_events) {
         sched_yield();
     }
 
+    return (i32)events_copied;
+}
+
+m3ApiRawFunction(wasm_input_poll_events) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(u32, buf_offset)
+    m3ApiGetArg(i32, max_events)
+
+    i32 count = poll_events_internal(runtime, buf_offset, max_events);
+    m3ApiReturn(count);
+}
+
+m3ApiRawFunction(wasm_wm_poll_events) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(u32, buf_offset)
+    m3ApiGetArg(i32, max_events)
+
+    i32 count = poll_events_internal(runtime, buf_offset, max_events);
+    m3ApiReturn(count);
+}
+
+// ── wm.blitSurface ─────────────────────────────────────────────────────────
+
+m3ApiRawFunction(wasm_wm_blit_surface) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, win_handle)
+    m3ApiGetArg(i32, src_x)
+    m3ApiGetArg(i32, src_y)
+    m3ApiGetArg(i32, dst_x)
+    m3ApiGetArg(i32, dst_y)
+    m3ApiGetArg(i32, blit_w)
+    m3ApiGetArg(i32, blit_h)
+
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc || proc->pid != g_compositor_pid) { m3ApiReturn(-1); }
+    if (blit_w <= 0 || blit_h <= 0) { m3ApiReturn(0); }
+
+    i32 idx = compositor_find_window_by_handle(win_handle);
+    if (idx < 0) { m3ApiReturn(-2); }
+
+    kern_window_t *child = &g_windows[idx];
+    if (!child->runtime) { m3ApiReturn(-3); }
+
+    u32 compositor_offset = g_compositor_buffer_offset;
+    IM3Runtime compositor_rt = g_compositor_runtime ? g_compositor_runtime : runtime;
+    if (!compositor_rt) { m3ApiReturn(-4); }
+
+    u32 dst_mem_size = 0;
+    u8 *dst_mem = m3_GetMemory(compositor_rt, &dst_mem_size, 0);
+    if (!dst_mem) { m3ApiReturn(-5); }
+
+    display_t *disp = screen_current_display();
+    if (!disp) { m3ApiReturn(-5); }
+    u32 dst_stride = (u32)disp->surface.pitch;
+
+    u32 src_mem_size = 0;
+    u8 *src_mem = m3_GetMemory(child->runtime, &src_mem_size, 0);
+    if (!src_mem) { m3ApiReturn(-6); }
+
+    u32 src_stride = child->stride ? child->stride : (child->buf_w * 4);
+    u32 src_off = child->buffer_offset;
+
+    if (src_x < 0) src_x = 0;
+    if (src_y < 0) src_y = 0;
+    if (src_x + blit_w > (i32)child->buf_w) blit_w = (i32)child->buf_w - src_x;
+    if (src_y + blit_h > (i32)child->buf_h) blit_h = (i32)child->buf_h - src_y;
+    if (blit_w <= 0 || blit_h <= 0) { m3ApiReturn(0); }
+
+    u32 dst_max_x = dst_stride / 4;
+    u32 dst_max_y = (dst_mem_size - compositor_offset) / dst_stride;
+    if (dst_x < 0) dst_x = 0;
+    if (dst_y < 0) dst_y = 0;
+    if ((u32)(dst_x + blit_w) > dst_max_x) blit_w = (i32)dst_max_x - dst_x;
+    if ((u32)(dst_y + blit_h) > dst_max_y) blit_h = (i32)dst_max_y - dst_y;
+    if (blit_w <= 0 || blit_h <= 0) { m3ApiReturn(0); }
+
+    u32 row_bytes = (u32)blit_w * 4;
+    for (i32 y = 0; y < blit_h; y++) {
+        u32 src_row_off = src_off + ((u32)(src_y + y) * src_stride) + (u32)src_x * 4;
+        u32 dst_row_off = compositor_offset + ((u32)(dst_y + y) * dst_stride) + (u32)dst_x * 4;
+        if (src_row_off <= src_mem_size && src_mem_size - src_row_off >= row_bytes &&
+            dst_row_off <= dst_mem_size && dst_mem_size - dst_row_off >= row_bytes) {
+            mem_copy(dst_mem + dst_row_off, src_mem + src_row_off, row_bytes);
+        }
+    }
+
+    m3ApiReturn(0);
+}
+
+// ── wm.routeInput ──────────────────────────────────────────────────────────
+
+m3ApiRawFunction(wasm_wm_route_input) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, win_handle)
+    m3ApiGetArg(u32, event_type)
+    m3ApiGetArg(u32, flags)
+    m3ApiGetArg(u32, data0)
+    m3ApiGetArg(u32, data1)
+
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc || proc->pid != g_compositor_pid) { m3ApiReturn(-1); }
+
+    i32 idx = compositor_find_window_by_handle(win_handle);
+    if (idx < 0) { m3ApiReturn(-2); }
+
+    kern_window_t *w = &g_windows[idx];
+    u64 irq = save_irq_and_disable();
+
+    u32 next = (w->event_write + 1) % CLIENT_EVENT_QUEUE_SIZE;
+    if (next == w->event_read) {
+        restore_irq(irq);
+        m3ApiReturn(-3); // queue full
+    }
+
+    client_event_t *ev = &w->event_buf[w->event_write];
+    ev->type = (u16)event_type;
+    ev->flags = (u16)flags;
+    ev->win = win_handle;
+    ev->data0 = data0;
+    ev->data1 = data1;
+    w->event_write = next;
+
+    restore_irq(irq);
+    m3ApiReturn(0);
+}
+
+// ── wm.getWindowInfo ───────────────────────────────────────────────────────
+
+m3ApiRawFunction(wasm_wm_get_window_info) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, win_handle)
+    m3ApiGetArg(u32, out_info_ptr)
+
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc || proc->pid != g_compositor_pid) { m3ApiReturn(-1); }
+
+    i32 idx = compositor_find_window_by_handle(win_handle);
+    if (idx < 0) { m3ApiReturn(-2); }
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem || out_info_ptr + sizeof(kern_window_info_t) > mem_size) {
+        m3ApiReturn(-3);
+    }
+
+    kern_window_t *w = &g_windows[idx];
+    kern_window_info_t *info = (kern_window_info_t*)(mem + out_info_ptr);
+    info->handle = w->handle;
+    info->pid = w->pid;
+    info->parent_handle = w->parent_handle;
+    info->win_type = w->win_type;
+    info->flags = w->flags;
+    info->buf_w = w->buf_w;
+    info->buf_h = w->buf_h;
+    info->stride = w->stride;
+    comp_str_copy(info->title, w->title, sizeof(info->title));
+
+    m3ApiReturn(0);
+}
+
+// ── window.create ──────────────────────────────────────────────────────────
+
+m3ApiRawFunction(wasm_window_create) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, parent_handle)
+    m3ApiGetArg(u32, win_type)
+    m3ApiGetArg(u32, title_ptr)
+    m3ApiGetArg(u32, title_len)
+    m3ApiGetArg(u32, w)
+    m3ApiGetArg(u32, h)
+    m3ApiGetArg(u32, flags)
+
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc) { m3ApiReturn(-1); }
+
+    u64 irq = save_irq_and_disable();
+    i32 idx = compositor_find_free_window_slot();
+    if (idx < 0) {
+        restore_irq(irq);
+        m3ApiReturn(-2); // out of window handles
+    }
+
+    kern_window_t *win = &g_windows[idx];
+    i32 handle = make_window_handle((u16)idx);
+    win->active = true;
+    win->handle = handle;
+    win->pid = proc->pid;
+    win->parent_handle = parent_handle;
+    win->win_type = win_type;
+    win->flags = flags;
+    win->buf_w = w;
+    win->buf_h = h;
+    win->stride = w * 4;
+    win->buffer_offset = 0;
+    win->runtime = runtime;
+    win->event_read = 0;
+    win->event_write = 0;
+
+    // Read title from linear memory
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (mem && title_ptr < mem_size && title_len > 0) {
+        u32 copy_len = (title_len < 63) ? title_len : 63;
+        if (title_ptr + copy_len > mem_size) copy_len = mem_size - title_ptr;
+        for (u32 i = 0; i < copy_len; i++) win->title[i] = (char)mem[title_ptr + i];
+        win->title[copy_len] = '\0';
+    } else {
+        comp_str_copy(win->title, "Window", sizeof(win->title));
+    }
+
+    if (g_compositor_pid != -1) {
+        u32 d2 = ((u32)(parent_handle & 0xFFFF) << 16) | (u32)(win_type & 0xFFFF);
+        compositor_push_event(WM_EV_WIN_CREATED, (u32)handle, (u32)proc->pid, d2);
+    }
+    restore_irq(irq);
+
+    m3ApiReturn(handle);
+}
+
+// ── window.destroy ─────────────────────────────────────────────────────────
+
+m3ApiRawFunction(wasm_window_destroy) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, handle)
+
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc) { m3ApiReturn(-1); }
+
+    u64 irq = save_irq_and_disable();
+    i32 idx = compositor_find_window_by_handle(handle);
+    if (idx < 0) {
+        restore_irq(irq);
+        m3ApiReturn(-2);
+    }
+
+    kern_window_t *win = &g_windows[idx];
+    if (win->pid != proc->pid && proc->pid != g_compositor_pid) {
+        restore_irq(irq);
+        m3ApiReturn(-3); // not owner
+    }
+
+    win->active = false;
+    if (g_compositor_pid != -1) {
+        compositor_push_event(WM_EV_WIN_DESTROYED, (u32)handle, (u32)win->pid, 0);
+    }
+    restore_irq(irq);
+
+    m3ApiReturn(0);
+}
+
+// ── window.setTitle ────────────────────────────────────────────────────────
+
+m3ApiRawFunction(wasm_window_set_title) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, handle)
+    m3ApiGetArg(u32, title_ptr)
+    m3ApiGetArg(u32, title_len)
+
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc) { m3ApiReturn(-1); }
+
+    i32 idx = compositor_find_window_by_handle(handle);
+    if (idx < 0) { m3ApiReturn(-2); }
+
+    kern_window_t *win = &g_windows[idx];
+    if (win->pid != proc->pid && proc->pid != g_compositor_pid) { m3ApiReturn(-3); }
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (mem && title_ptr < mem_size && title_len > 0) {
+        u32 copy_len = (title_len < 63) ? title_len : 63;
+        if (title_ptr + copy_len > mem_size) copy_len = mem_size - title_ptr;
+        for (u32 i = 0; i < copy_len; i++) win->title[i] = (char)mem[title_ptr + i];
+        win->title[copy_len] = '\0';
+    }
+
+    if (g_compositor_pid != -1) {
+        compositor_push_event(WM_EV_WIN_TITLE, (u32)handle, (u32)proc->pid, 0);
+    }
+
+    m3ApiReturn(0);
+}
+
+// ── window.setSize ─────────────────────────────────────────────────────────
+
+m3ApiRawFunction(wasm_window_set_size) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, handle)
+    m3ApiGetArg(u32, w)
+    m3ApiGetArg(u32, h)
+
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc) { m3ApiReturn(-1); }
+
+    i32 idx = compositor_find_window_by_handle(handle);
+    if (idx < 0) { m3ApiReturn(-2); }
+
+    kern_window_t *win = &g_windows[idx];
+    if (win->pid != proc->pid && proc->pid != g_compositor_pid) { m3ApiReturn(-3); }
+
+    win->buf_w = w;
+    win->buf_h = h;
+    win->stride = w * 4;
+
+    if (g_compositor_pid != -1) {
+        u32 d2 = ((w & 0xFFFF) << 16) | (h & 0xFFFF);
+        compositor_push_event(WM_EV_WIN_RESIZE, (u32)handle, (u32)proc->pid, d2);
+    }
+
+    m3ApiReturn(0);
+}
+
+// ── surface.attach ─────────────────────────────────────────────────────────
+
+m3ApiRawFunction(wasm_surface_attach) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, handle)
+    m3ApiGetArg(u32, buf_offset)
+    m3ApiGetArg(u32, w)
+    m3ApiGetArg(u32, h)
+    m3ApiGetArg(u32, stride)
+
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc) { m3ApiReturn(-1); }
+
+    i32 idx = compositor_find_window_by_handle(handle);
+    if (idx < 0) { m3ApiReturn(-2); }
+
+    kern_window_t *win = &g_windows[idx];
+    if (win->pid != proc->pid && proc->pid != g_compositor_pid) { m3ApiReturn(-3); }
+
+    win->buffer_offset = buf_offset;
+    win->buf_w = w;
+    win->buf_h = h;
+    win->stride = (stride > 0) ? stride : (w * 4);
+    win->runtime = runtime;
+
+    m3ApiReturn(0);
+}
+
+// ── surface.commit ─────────────────────────────────────────────────────────
+
+m3ApiRawFunction(wasm_surface_commit) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, handle)
+
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc) { m3ApiReturn(-1); }
+
+    i32 idx = compositor_find_window_by_handle(handle);
+    if (idx < 0) { m3ApiReturn(-2); }
+
+    kern_window_t *win = &g_windows[idx];
+    if (g_compositor_pid != -1) {
+        compositor_push_event(WM_EV_WIN_COMMITTED, (u32)handle, 0, 0);
+    }
+
+    m3ApiReturn(0);
+}
+
+// ── surface.commitRect ─────────────────────────────────────────────────────
+
+m3ApiRawFunction(wasm_surface_commit_rect) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, handle)
+    m3ApiGetArg(i32, x)
+    m3ApiGetArg(i32, y)
+    m3ApiGetArg(i32, w)
+    m3ApiGetArg(i32, h)
+
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc) { m3ApiReturn(-1); }
+
+    i32 idx = compositor_find_window_by_handle(handle);
+    if (idx < 0) { m3ApiReturn(-2); }
+
+    if (g_compositor_pid != -1) {
+        u32 d1 = ((u32)(x & 0xFFFF) << 16) | (u32)(y & 0xFFFF);
+        u32 d2 = ((u32)(w & 0xFFFF) << 16) | (u32)(h & 0xFFFF);
+        compositor_push_event(WM_EV_WIN_COMMITTED, (u32)handle, d1, d2);
+    }
+
+    m3ApiReturn(0);
+}
+
+// ── winput.poll ────────────────────────────────────────────────────────────
+
+m3ApiRawFunction(wasm_winput_poll) {
+    m3ApiReturnType(i32)
+    m3ApiGetArg(i32, win_filter)
+    m3ApiGetArg(u32, buf_offset)
+    m3ApiGetArg(i32, max_events)
+
+    kern_process_t *proc = sched_get_current_process();
+    if (!proc) { m3ApiReturn(-1); }
+
+    u32 mem_size = 0;
+    u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
+    if (!mem || max_events <= 0) { m3ApiReturn(0); }
+
+    u32 events_copied = 0;
+    u64 irq = save_irq_and_disable();
+
+    for (u32 i = 0; i < MAX_COMPOSITOR_WINDOWS && events_copied < (u32)max_events; i++) {
+        kern_window_t *w = &g_windows[i];
+        if (!w->active || w->pid != proc->pid) continue;
+        if (win_filter > 0 && w->handle != win_filter) continue;
+
+        while (w->event_read != w->event_write && events_copied < (u32)max_events) {
+            u32 ev_off = buf_offset + events_copied * sizeof(client_event_t);
+            if (ev_off + sizeof(client_event_t) > mem_size) break;
+
+            client_event_t *dst = (client_event_t*)(mem + ev_off);
+            client_event_t *src = &w->event_buf[w->event_read];
+            *dst = *src;
+
+            w->event_read = (w->event_read + 1) % CLIENT_EVENT_QUEUE_SIZE;
+            events_copied++;
+        }
+    }
+
+    restore_irq(irq);
+
+    if (events_copied == 0) {
+        sched_idle_wake();
+        sched_yield();
+    }
+
     m3ApiReturn((i32)events_copied);
 }
 
 // ── proc.spawn ─────────────────────────────────────────────────────────────
-// Stores a spawn request in the queue. The WM must call proc.dequeueSpawn()
-// to actually perform the spawn (outside the interpreter's deepest recursion).
 
 m3ApiRawFunction(wasm_compositor_proc_spawn) {
     m3ApiReturnType(i32)
@@ -557,9 +1011,6 @@ m3ApiRawFunction(wasm_compositor_proc_spawn) {
     kern_process_t *proc = sched_get_current_process();
     if (!proc || proc->pid != g_compositor_pid) { m3ApiReturn(-1); }
 
-    // argv is an array of `argc` raw u32 integers in the caller's linear
-    // memory (the WM passes a shm_id for the child's input ring). Only the
-    // first entry is captured; negative/absent args become 0.
     i32 arg0 = 0;
     if (argc > 0 && argv_offset != 0) {
         u32 mem_size = 0;
@@ -571,16 +1022,10 @@ m3ApiRawFunction(wasm_compositor_proc_spawn) {
         }
     }
 
-    if (g_child_count >= MAX_COMPOSITOR_WINDOWS) {
-        m3ApiReturn(-4); // max child limit reached
-    }
-
-    // Bounds-check: read path string from WASM linear memory.
     u32 mem_size = 0;
     u8 *mem = m3_GetMemory(runtime, &mem_size, 0);
     if (!mem || path_offset >= mem_size) { m3ApiReturn(-2); }
 
-    // Enqueue the spawn request.
     u64 irq = save_irq_and_disable();
     u32 next = (g_spawn_head + 1) % SPAWN_QUEUE_SIZE;
     if (next == g_spawn_tail) {
@@ -588,7 +1033,6 @@ m3ApiRawFunction(wasm_compositor_proc_spawn) {
         m3ApiReturn(-3);  // queue full
     }
     spawn_request_t *req = &g_spawn_queue[g_spawn_head];
-    // Copy path (truncate to 127 chars max + null).
     u32 path_len = 0;
     while (path_offset + path_len < mem_size && path_len < 127 && mem[path_offset + path_len])
         path_len++;
@@ -604,8 +1048,6 @@ m3ApiRawFunction(wasm_compositor_proc_spawn) {
 }
 
 // ── proc.dequeueSpawn ─────────────────────────────────────────────────────
-// Actually performs a pending spawn. Called from the WM's event loop.
-// Returns the new PID, or -1 if nothing pending.
 
 m3ApiRawFunction(wasm_compositor_proc_dequeue_spawn) {
     m3ApiReturnType(i32)
@@ -616,22 +1058,17 @@ m3ApiRawFunction(wasm_compositor_proc_dequeue_spawn) {
     u64 irq = save_irq_and_disable();
     if (g_spawn_tail == g_spawn_head) {
         restore_irq(irq);
-        m3ApiReturn(-1);  // nothing pending
+        m3ApiReturn(-1);
     }
     spawn_request_t *req = &g_spawn_queue[g_spawn_tail];
     g_spawn_tail = (g_spawn_tail + 1) % SPAWN_QUEUE_SIZE;
     restore_irq(irq);
 
-    // Perform the actual spawn.  This is still a host function, but it's
-    // called from the WM's event loop where wasm3 recursion depth is minimal.
     wasm_spawn_opts_t opts = {0};
     opts.path = req->path;
     opts.wasi_argv = false;
     opts.foreground = false;
 
-    // Format arg0 as a decimal string so the child can read it with
-    // env.get_arg_i32(0). The buffer only needs to live through
-    // wasm_spawn() (it deep-copies argv).
     char argbuf[16];
     char *argv[1] = { argbuf };
     if (req->arg0 > 0) {
@@ -649,7 +1086,6 @@ m3ApiRawFunction(wasm_compositor_proc_dequeue_spawn) {
     m3ApiReturn(pid);
 }
 
-
 // ── proc.signal ────────────────────────────────────────────────────────────
 
 m3ApiRawFunction(wasm_compositor_proc_signal) {
@@ -661,8 +1097,6 @@ m3ApiRawFunction(wasm_compositor_proc_signal) {
     kern_process_t *proc = sched_get_current_process();
     if (!proc || proc->pid != g_compositor_pid) { m3ApiReturn(-1); }
 
-    // Pack event + data into an IPC signal.
-    // Bits 0-7: event type, bits 8-31: data.
     u32 mask = ((u32)event & 0xFF) | ((u32)data << 8);
     bool ok = ipc_signal_send(pid, mask);
     m3ApiReturn(ok ? 0 : -1);

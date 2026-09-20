@@ -1692,7 +1692,7 @@ do_load:
         m3_LinkRawFunction(module, "env", "ipc_signal_send",      "i(ii)",   &wasm_ipc_signal_send);
         m3_LinkRawFunction(module, "env", "ipc_signal_wait",      "i(i)",    &wasm_ipc_signal_wait);
 
-        // 4c. Compositor host functions (kern_compositor.c). Best-effort.
+        // 4c. Compositor & Window Manager host functions (kern_compositor.c). Best-effort.
         //     Non-compositor modules silently skip these.
         m3_LinkRawFunction(module, "display", "claimCompositor", "i()",      &wasm_display_claim_compositor);
         m3_LinkRawFunction(module, "display", "getResolution",   "i()",      &wasm_display_get_resolution);
@@ -1703,6 +1703,28 @@ do_load:
         m3_LinkRawFunction(module, "display", "copyBuffer",      "i(ii)",     &wasm_display_copy_buffer);
         m3_LinkRawFunction(module, "display", "blitFromPid",     "i(iiiiiii)", &wasm_display_blit_from_pid);
         m3_LinkRawFunction(module, "input",   "pollEvents",      "i(ii)",    &wasm_input_poll_events);
+
+        // Window Manager (privileged)
+        m3_LinkRawFunction(module, "wm",      "pollEvents",      "i(ii)",      &wasm_wm_poll_events);
+        m3_LinkRawFunction(module, "wm",      "blitSurface",     "i(iiiiiii)", &wasm_wm_blit_surface);
+        m3_LinkRawFunction(module, "wm",      "routeInput",      "i(iiiii)",   &wasm_wm_route_input);
+        m3_LinkRawFunction(module, "wm",      "getWindowInfo",   "i(ii)",      &wasm_wm_get_window_info);
+
+        // Client Window API
+        m3_LinkRawFunction(module, "window",  "create",          "i(iiiiiii)", &wasm_window_create);
+        m3_LinkRawFunction(module, "window",  "destroy",         "i(i)",       &wasm_window_destroy);
+        m3_LinkRawFunction(module, "window",  "setTitle",        "i(iii)",     &wasm_window_set_title);
+        m3_LinkRawFunction(module, "window",  "setSize",         "i(iii)",     &wasm_window_set_size);
+
+        // Client Surface API
+        m3_LinkRawFunction(module, "surface", "attach",          "i(iiiii)",   &wasm_surface_attach);
+        m3_LinkRawFunction(module, "surface", "commit",          "i(i)",       &wasm_surface_commit);
+        m3_LinkRawFunction(module, "surface", "commitRect",      "i(iiiii)",   &wasm_surface_commit_rect);
+
+        // Client Input API
+        m3_LinkRawFunction(module, "winput",  "poll",            "i(iii)",     &wasm_winput_poll);
+
+        // Process lifecycle
         m3_LinkRawFunction(module, "proc",    "spawn",           "i(iii)",   &wasm_compositor_proc_spawn);
         m3_LinkRawFunction(module, "proc",    "dequeueSpawn",     "i()",      &wasm_compositor_proc_dequeue_spawn);
         m3_LinkRawFunction(module, "proc",    "signal",          "i(iii)",   &wasm_compositor_proc_signal);

@@ -1,0 +1,1005 @@
+{
+  "version": "1.0.0",
+  "project": "sandfleaOS",
+  "tagline": "A Wasm-First, Non-POSIX x86_64 Operating System",
+  "lastUpdated": "2026-09-10",
+  "categories": [
+    { "id": "arch_boot", "name": "Architecture & Boot", "color": "#6366f1", "icon": "cpu" },
+    { "id": "memory", "name": "Memory Subsystems", "color": "#3b82f6", "icon": "database" },
+    { "id": "io_drivers", "name": "Hardware & Drivers", "color": "#06b6d4", "icon": "hard-drive" },
+    { "id": "storage_fs", "name": "Storage & Filesystem", "color": "#10b981", "icon": "folder" },
+    { "id": "runtime_wasm", "name": "WASM & Execution", "color": "#f59e0b", "icon": "zap" },
+    { "id": "concurrency_ipc", "name": "Process & Scheduling", "color": "#ec4899", "icon": "layers" },
+    { "id": "graphics_ui", "name": "Graphics & Terminal", "color": "#8b5cf6", "icon": "layout" },
+    { "id": "apps_userland", "name": "Apps & Showcases", "color": "#14b8a6", "icon": "gamepad" },
+    { "id": "roadmap_future", "name": "Future Roadmap", "color": "#e11d48", "icon": "compass" }
+  ],
+  "nodes": [
+    {
+      "id": "limine-boot",
+      "title": "Limine Bootloader & Higher-Half",
+      "category": "arch_boot",
+      "status": "completed",
+      "summary": "UEFI ISO boot via Limine protocol, establishing higher-half direct physical memory mapping and entry context.",
+      "position": { "x": 100, "y": 280 },
+      "dependsOn": [],
+      "details": {
+        "description": "sandfleaOS boots in 64-bit Long Mode via the modern Limine bootloader protocol. Limine supplies the kernel with physical memory maps, higher-half direct map offsets (HHDM), initial page tables, ACPI pointers, and linear framebuffer handles without legacy BIOS baggage.",
+        "importance": "Enables sandfleaOS to target purely modern UEFI hardware with a clean higher-half memory space (kernel at 0xFFFFFFFF80000000+), bypassing the pain of real-mode 16-bit A20 gate legacy bootstrap.",
+        "difficulties": [
+          "Ensuring all pointers transition smoothly from physical addresses to the HHDM virtual addresses.",
+          "Formatting the UEFI-compatible ISO using xorriso, mtools, and Limine deployment binaries."
+        ],
+        "easyParts": [
+          "Limine's request/response protocol structure simplifies getting boot info compared to multiboot2.",
+          "Automatic 64-bit long mode entry with paging already active."
+        ],
+        "notes": "Handles Limine response structures in src/include/limine_requests.h and src/kernel/main.c.",
+        "sourceFiles": [
+          { "path": "src/kernel/main.c", "description": "Kernel entry point (kern_entry)" },
+          { "path": "src/include/limine_requests.h", "description": "Limine feature request structures" },
+          { "path": "link.ld", "description": "Higher-half linker script" }
+        ],
+        "subtasks": [
+          { "text": "Limine protocol requests configuration", "done": true },
+          { "text": "Higher-half virtual address linkage", "done": true },
+          { "text": "UEFI ISO image creation pipeline", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "serial-logging",
+      "title": "Multi-Channel Serial & Profiling",
+      "category": "arch_boot",
+      "status": "completed",
+      "summary": "Multi-COM UART logging system separating primary debugging (COM1), automated testing (COM2), and performance profiling (COM3).",
+      "position": { "x": 100, "y": 480 },
+      "dependsOn": ["limine-boot"],
+      "details": {
+        "description": "Provides non-blocking and formatted logging across 3 independent serial channels. COM1 serves as the developer console, COM2 acts as the headless test harness stream, and COM3 outputs microsecond-accurate TSC profiling markers for flamegraph generation.",
+        "importance": "Essential for early kernel bring-up before display/framebuffers exist, and powers the automated test suite and performance profiling without polluting interactive logs.",
+        "difficulties": [
+          "Baud rate divisor math and FIFO queue handling at high throughput.",
+          "Overhead in timer interrupts when profiling was active (busy-waiting on UART at 38400 baud)."
+        ],
+        "easyParts": [
+          "Standard 8250/16550 UART I/O ports (0x3F8, 0x2F8, 0x3E8) are very predictable in QEMU and bare metal."
+        ],
+        "notes": "Uses custom formatted print routines (serial_outsf) supporting integers, hex, strings, and floats.",
+        "sourceFiles": [
+          { "path": "src/kernel/kern_serial.c", "description": "Serial UART driver and multi-channel multiplexer" },
+          { "path": "src/kernel/kern_profile.c", "description": "TSC profiling scopes and flamegraph emitter" }
+        ],
+        "subtasks": [
+          { "text": "COM1/COM2/COM3 initialization", "done": true },
+          { "text": "Formatted serial_outsf engine", "done": true },
+          { "text": "Flamegraph converter integration", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "cpu-tuning-msr",
+      "title": "CPU Tuning, SSE & Intel HWP",
+      "category": "arch_boot",
+      "status": "completed",
+      "summary": "SSE register activation for variadic ABIs and Intel Speed Shift (HWP) autonomous clock un-throttling on bare metal.",
+      "position": { "x": 100, "y": 80 },
+      "dependsOn": ["limine-boot"],
+      "details": {
+        "description": "Enables CPU SSE extensions (CR0/CR4 flags) required by x86-64 System V ABI. Configures Model Specific Registers (MSRs) including Intel Speed Shift (IA32_HWP_REQUEST), clearing BD_PROCHOT clamping to unlock full 4.2+ GHz turbo frequencies on bare metal.",
+        "importance": "Without HWP initialization, modern Intel CPUs (Tiger Lake, etc.) boot locked to minimal low-power mode (400–800MHz), causing Wasm execution to crawl. Unlocking MSRs gave a ~5x speedup on physical hardware.",
+        "difficulties": [
+          "Diagnosing why bare-metal execution was 10x slower than QEMU until APERF/MPERF and BD_PROCHOT MSRs were inspected.",
+          "Variadic C functions emitting vector instructions before SSE was enabled."
+        ],
+        "easyParts": [
+          "Reading and writing MSRs via inline assembly rdmsr/wrmsr once CPUID feature flags were confirmed."
+        ],
+        "notes": "Configured in main.c during early bootstrap right after serial init.",
+        "sourceFiles": [
+          { "path": "src/kernel/main.c", "description": "CPUID detection and MSR configuration" },
+          { "path": "src/arch/asmstubs.asm", "description": "enable_sse assembly stub" }
+        ],
+        "subtasks": [
+          { "text": "Enable SSE in CR0/CR4", "done": true },
+          { "text": "CPUID Speed Shift detection", "done": true },
+          { "text": "BD_PROCHOT clearing & Max Turbo request", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "pmm",
+      "title": "Physical Memory Manager (PMM)",
+      "category": "memory",
+      "status": "completed",
+      "summary": "Bitmap-based physical frame allocator tracking 4KiB pages across usable RAM reported by Limine.",
+      "position": { "x": 400, "y": 200 },
+      "dependsOn": ["limine-boot"],
+      "details": {
+        "description": "Scans the Limine memory map, calculates total usable RAM, and reserves a compact bitset to track allocation states for every 4096-byte page. Provides fast single and contiguous page allocations.",
+        "importance": "The fundamental base of all memory in the system: page tables, kernel heaps, Wasm linear memory, and framebuffers all allocate physical frames through the PMM.",
+        "difficulties": [
+          "Avoiding memory map regions that overlap ACPI reclaimable, NVS, or kernel ELF load segments.",
+          "Fast bit-search scanning for contiguous frames."
+        ],
+        "easyParts": [
+          "Limine provides clean, sorted memory map entries with normalized types."
+        ],
+        "notes": "Located in src/kernel/kern_vmm.c (currently in refactoring pipeline for src/kernel/mem/pmm.c).",
+        "sourceFiles": [
+          { "path": "src/kernel/kern_vmm.c", "description": "Physical frame bitmap routines (init_pmm, pmm_alloc_page)" }
+        ],
+        "subtasks": [
+          { "text": "Bitmap initialization over Limine memory map", "done": true },
+          { "text": "Single 4K frame alloc / free", "done": true },
+          { "text": "Contiguous multi-frame allocation for DMA", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "vmm",
+      "title": "Virtual Memory Manager (VMM)",
+      "category": "memory",
+      "status": "completed",
+      "summary": "4-Level PML4 paging manager handling page directory hierarchies, higher-half mapping, and userland address spaces.",
+      "position": { "x": 650, "y": 200 },
+      "dependsOn": ["pmm"],
+      "details": {
+        "description": "Constructs and modifies x86-64 4-level paging structures (PML4, PDPT, PD, PT). Maps the Higher Half Direct Map, sets page permissions (Read/Write, User/Supervisor, NX), and supports creating isolated address spaces for processes.",
+        "importance": "Enables memory protection, isolates kernel memory from user/Wasm space, and allows mapping memory-mapped I/O (MMIO) devices like framebuffers and xHCI controllers.",
+        "difficulties": [
+          "Properly invalidating TLB entries (invlpg) across page modifications.",
+          "Recursive paging vs. higher-half direct map manipulation of page table physical addresses."
+        ],
+        "easyParts": [
+          "HHDM provided by Limine allows accessing any physical page table by simply adding the HHDM base offset."
+        ],
+        "notes": "Handles page faults and dynamic mapping for heap expansion.",
+        "sourceFiles": [
+          { "path": "src/kernel/kern_vmm.c", "description": "PML4 traversal and vmm_map_page routines" },
+          { "path": "src/include/kern_vmm.h", "description": "Page flags and paging constants" }
+        ],
+        "subtasks": [
+          { "text": "4-level page table walk & insertion", "done": true },
+          { "text": "Page attribute flags & NX bit support", "done": true },
+          { "text": "Process address space clone & teardown", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "pat-wc",
+      "title": "Page Attribute Table (PAT) Write-Combining",
+      "category": "memory",
+      "status": "completed",
+      "summary": "Configures MSR Page Attribute Table to enable Write-Combining caching on the linear framebuffer.",
+      "position": { "x": 650, "y": 60 },
+      "dependsOn": ["vmm", "cpu-tuning-msr"],
+      "details": {
+        "description": "Programs IA32_PAT MSR to configure entry 7 as Write-Combining (WC). Remaps the video framebuffer pages with the WC attribute, enabling the CPU memory controller to burst write 64-byte chunks to GPU VRAM.",
+        "importance": "Delivered an immense 4x-8x FPS improvement in software rasterization for Quake, Doom, and the UI compositor by removing uncached memory stall bottlenecks.",
+        "difficulties": [
+          "Ensuring MSR PAT index bit flags match page table PTE bit combinations (PAT, PCD, PWT bits).",
+          "Flushing CPU caches (wbinvd) after PAT alteration."
+        ],
+        "easyParts": [
+          "Instant, dramatic visual frame rate jump as soon as PAT was configured properly."
+        ],
+        "notes": "Called via vmm_init_pat() during kernel bootstrap.",
+        "sourceFiles": [
+          { "path": "src/kernel/kern_vmm.c", "description": "vmm_init_pat implementation" }
+        ],
+        "subtasks": [
+          { "text": "IA32_PAT MSR programming", "done": true },
+          { "text": "Framebuffer page remapping with WC attribute", "done": true },
+          { "text": "Cache flushing & benchmark verification", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "heap",
+      "title": "Kernel Heap (kmalloc / kfree)",
+      "category": "memory",
+      "status": "completed",
+      "summary": "Dynamic linked-list chunk memory allocator with block splitting, coalescing, and VMM page growth.",
+      "position": { "x": 900, "y": 200 },
+      "dependsOn": ["vmm"],
+      "details": {
+        "description": "Provides kmalloc, kzalloc, krealloc, and kfree for kernel data structures. Maintains a double-linked block header list, splits oversized free chunks, coalesces adjacent freed blocks, and dynamically requests virtual pages from the VMM when exhausted.",
+        "importance": "Required by Wasm3 bytecode compiler, Ext2 inode trees, SSFN vector glyph cache, process descriptor tables, and IPC queues.",
+        "difficulties": [
+          "Preventing heap fragmentation when allocating thousands of tiny Wasm opcodes and large video buffers.",
+          "Catching subtle off-by-one pointer overwrites during chunk boundary coalescing."
+        ],
+        "easyParts": [
+          "Standard first-fit / best-fit chunk header logic."
+        ],
+        "notes": "Defined in src/kernel/kern_vmm.c and kern_mem.c.",
+        "sourceFiles": [
+          { "path": "src/kernel/kern_vmm.c", "description": "kmalloc_init, kmalloc, kfree logic" },
+          { "path": "src/kernel/kern_mem.c", "description": "mem_copy, mem_set, mem_cmp utilities" }
+        ],
+        "subtasks": [
+          { "text": "Chunk header tracking & allocation", "done": true },
+          { "text": "Block splitting & free coalescing", "done": true },
+          { "text": "Automatic VMM backing expansion", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "gdt-idt",
+      "title": "GDT, IDT & Interrupt Dispatcher",
+      "category": "arch_boot",
+      "status": "completed",
+      "summary": "Global Descriptor Table, 256-gate Interrupt Descriptor Table, assembly ISR entry stubs, and C dispatchers.",
+      "position": { "x": 400, "y": 380 },
+      "dependsOn": ["limine-boot"],
+      "details": {
+        "description": "Initializes 64-bit kernel code/data segment descriptors and registers all 256 IDT gates. Assembly stubs preserve CPU registers on interrupt and pass context structures to registered C ISR handlers.",
+        "importance": "Handles all CPU exceptions (Page Faults, GPF, Division by Zero) and hardware IRQs (Timer, Keyboard, Mouse, Disk).",
+        "difficulties": [
+          "Proper 16-byte stack alignment requirements for SSE instructions inside interrupt handlers.",
+          "Handling error-code vs non-error-code CPU exception stack frames in assembly."
+        ],
+        "easyParts": [
+          "Building the IDT descriptor array once the assembly macro generated 256 ISR stubs."
+        ],
+        "notes": "Refactored into dedicated arch module in src/kernel/x64/idt.c.",
+        "sourceFiles": [
+          { "path": "src/kernel/x64/idt.c", "description": "IDT gate setup and exception table" },
+          { "path": "src/arch/asmstubs.asm", "description": "Assembly ISR stubs and register push/pop" },
+          { "path": "src/kernel/kern_interrupts.c", "description": "High-level interrupt register and dispatch" }
+        ],
+        "subtasks": [
+          { "text": "64-bit GDT table & segment load", "done": true },
+          { "text": "256 ISR assembly handlers", "done": true },
+          { "text": "Dynamic C interrupt registration API", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "timer-apic",
+      "title": "APIC / PIT Timer & CPU Accounting",
+      "category": "io_drivers",
+      "status": "completed",
+      "summary": "10ms periodic quantum timer sending Local APIC EOIs and tracking per-process CPU time.",
+      "position": { "x": 650, "y": 380 },
+      "dependsOn": ["gdt-idt"],
+      "details": {
+        "description": "Configures periodic timer interrupts at 100Hz (10ms tick). Handles Local APIC End-Of-Interrupt (EOI) signaling, increments global tick counters, and credits CPU runtime ticks to currently active tasks.",
+        "importance": "Drives the preemptive multitasking scheduler, sleeping timeouts, frame timing, and profiling metrics.",
+        "difficulties": [
+          "Balancing timer frequency: high frequency increases context switch overhead, low frequency impairs input responsiveness."
+        ],
+        "easyParts": [
+          "Local APIC EOI register write (0xFFFFFFFF10000000) for clean interrupt acknowledgment."
+        ],
+        "notes": "timer_handler in main.c triggers sched_run_next() on each quantum.",
+        "sourceFiles": [
+          { "path": "src/kernel/main.c", "description": "timer_handler, delay, sw tick counter" },
+          { "path": "src/kernel/kern_interrupts.c", "description": "APIC EOI routines" }
+        ],
+        "subtasks": [
+          { "text": "100Hz periodic timer interrupt", "done": true },
+          { "text": "Local APIC EOI acknowledge", "done": true },
+          { "text": "Per-task CPU tick accounting", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "pci-subsystem",
+      "title": "PCI Bus Scanning & Discovery",
+      "category": "io_drivers",
+      "status": "completed",
+      "summary": "Enumerates all PCI buses, devices, and functions; reads Base Address Registers (BARs) and vendor IDs.",
+      "position": { "x": 400, "y": 560 },
+      "dependsOn": ["limine-boot", "serial-logging"],
+      "details": {
+        "description": "Performs standard 0xCF8/0xCFC I/O port PCI configuration cycles to scan all 256 buses, 32 devices, and 8 functions. Builds a linked list of detected hardware, reads BARs (I/O vs MMIO), and enables Bus Mastering.",
+        "importance": "Discovers storage controllers (IDE/AHCI), graphics cards, USB xHCI controllers, and serial expansion cards.",
+        "difficulties": [
+          "Differentiating 32-bit vs 64-bit BARs and I/O space vs Memory space decoding.",
+          "Handling multi-function device sub-headers."
+        ],
+        "easyParts": [
+          "PCI config space standard header layout is straightforward and universal."
+        ],
+        "notes": "Detected the WCH CH382 PCI serial card and xHCI controllers during boot.",
+        "sourceFiles": [
+          { "path": "src/kernel/kern_pci.c", "description": "PCI bus traversal, BAR decoding, and device list" },
+          { "path": "src/include/kern_pci.h", "description": "PCI config registers and device struct" }
+        ],
+        "subtasks": [
+          { "text": "PCI configuration port read/write", "done": true },
+          { "text": "Recursive bus/device enumeration", "done": true },
+          { "text": "BAR decoding & Bus Master enablement", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "keyboard-mouse",
+      "title": "PS/2 Keyboard & Mouse Drivers",
+      "category": "io_drivers",
+      "status": "completed",
+      "summary": "Interrupt-driven i8042 PS/2 controller driver with scancode decoding, modifiers, and 3-byte mouse packet parsing.",
+      "position": { "x": 650, "y": 500 },
+      "dependsOn": ["gdt-idt"],
+      "details": {
+        "description": "Registers IRQ 33 for keyboard and IRQ 44 for mouse. Decodes Set 1 / Set 2 scancodes into ASCII and key constants, tracks Shift/Ctrl/Alt state, and parses relative X/Y movement and button clicks from the PS/2 auxiliary device.",
+        "importance": "Provides direct user interactivity for the shell terminal, virtual session switcher (F1-F4), Ctrl+C process kill, and Quake/Doom gameplay controls.",
+        "difficulties": [
+          "Handling multi-byte scancode prefixes (0xE0) and key-up/break scancodes reliably.",
+          "Packet synchronization for PS/2 mouse 3-byte streaming."
+        ],
+        "easyParts": [
+          "Standard i8042 status and data ports (0x60, 0x64) respond reliably in QEMU and classic PC hardware."
+        ],
+        "notes": "Features dedicated queues for session foreground processes and compositor routing.",
+        "sourceFiles": [
+          { "path": "src/kernel/kern_keyboard.c", "description": "Scancode parser and key event queues" },
+          { "path": "src/kernel/kern_mouse.c", "description": "PS/2 mouse initialization and packet decoder" }
+        ],
+        "subtasks": [
+          { "text": "i8042 controller init & self-test", "done": true },
+          { "text": "Scancode to ASCII & modifier handling", "done": true },
+          { "text": "PS/2 mouse 3-byte packet parser", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "xhci-usb",
+      "title": "xHCI USB 3.0 Host Controller",
+      "category": "io_drivers",
+      "status": "in-progress",
+      "summary": "Extensible Host Controller Interface (xHCI) driver for USB 3.0/2.0 keyboard and HID enumeration.",
+      "position": { "x": 650, "y": 640 },
+      "dependsOn": ["pci-subsystem", "pmm", "vmm", "heap"],
+      "details": {
+        "description": "Discovers xHCI PCI devices, maps MMIO operational/runtime registers, allocates DMA Command Rings and Event Rings, and handles slot context initialization for USB HID devices.",
+        "importance": "Essential for modern physical hardware that lacks legacy PS/2 i8042 emulation.",
+        "difficulties": [
+          "Control-transfer DMA buffer alignment and TRB completion handshake bug on bare metal (currently shelved in favor of PS/2).",
+          "Complex endpoint descriptor parsing and Transfer Ring doorbell signaling."
+        ],
+        "easyParts": [
+          "PCI MMIO BAR discovery and basic capability register probing."
+        ],
+        "notes": "Code is in src/kernel/xhci/ ready for DMA transfer ring debugging.",
+        "sourceFiles": [
+          { "path": "src/kernel/xhci/", "description": "xHCI command ring, event ring, and TRB structures" },
+          { "path": "src/include/kern_xhci.h", "description": "xHCI register definitions and context structs" }
+        ],
+        "subtasks": [
+          { "text": "xHCI PCI detection & MMIO mapping", "done": true },
+          { "text": "Command Ring & Event Ring setup", "done": true },
+          { "text": "Fix control-transfer DMA completion bug", "done": false },
+          { "text": "USB HID boot keyboard polling", "done": false }
+        ]
+      }
+    },
+    {
+      "id": "ide-driver",
+      "title": "IDE ATA Disk Controller",
+      "category": "storage_fs",
+      "status": "completed",
+      "summary": "Legacy IDE ATA driver reading and writing 512-byte sectors using PIO mode on Primary/Secondary channels.",
+      "position": { "x": 650, "y": 760 },
+      "dependsOn": ["pci-subsystem", "gdt-idt"],
+      "details": {
+        "description": "Communicates with ATA hard drives via standard legacy I/O ports (0x1F0-0x1F7). Issues IDENTIFY commands, detects drive geometries, and reads/writes sectors using LBA28/LBA48 addressing.",
+        "importance": "Enables persistent storage loading: boots the Ext2 disk image containing Wasm binaries, game WADs, PAK files, and fonts.",
+        "difficulties": [
+          "Polling drive status registers (BSY, DRQ flags) without hanging when non-existent slave drives are probed.",
+          "PIO mode CPU cycle overhead compared to DMA."
+        ],
+        "easyParts": [
+          "Standard ATA sector read commands are simple and rock-solid across emulators."
+        ],
+        "notes": "Located in src/kernel/kern_ide.c. Scheduled to be supplemented by AHCI SATA driver.",
+        "sourceFiles": [
+          { "path": "src/kernel/kern_ide.c", "description": "ATA PIO read/write sector implementation" },
+          { "path": "src/include/kern_ide.h", "description": "ATA commands and status bits" }
+        ],
+        "subtasks": [
+          { "text": "ATA IDENTIFY drive probe", "done": true },
+          { "text": "LBA28 sector read/write routines", "done": true },
+          { "text": "Channel status busy-wait polling", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "ext2-driver",
+      "title": "Ext2 Filesystem Driver",
+      "category": "storage_fs",
+      "status": "completed",
+      "summary": "Full Ext2 filesystem driver supporting superblocks, block group descriptors, inode traversal, and directory lookups.",
+      "position": { "x": 900, "y": 760 },
+      "dependsOn": ["ide-driver", "heap"],
+      "details": {
+        "description": "Parses Ext2 partition superblock metadata, Block Group Descriptor Tables (BGDT), and inode tables. Reads direct, indirect, and doubly-indirect block pointers to traverse directory hierarchies and read large files.",
+        "importance": "Houses the entire sandfleaOS userland: allows loading Doom WADs, Quake PAK files (dozens of megabytes), WAT source scripts, and binary modules directly from disk.",
+        "difficulties": [
+          "Handling doubly-indirect block indexing for files larger than a few megabytes.",
+          "Parsing variable-length directory record entries across block boundaries."
+        ],
+        "easyParts": [
+          "Ext2 is clean, well-documented, and free of proprietary licensing hurdles."
+        ],
+        "notes": "Supports file reading and metadata inspection in src/kernel/kern_ext2.c.",
+        "sourceFiles": [
+          { "path": "src/kernel/kern_ext2.c", "description": "Ext2 superblock, inode, and directory parser" },
+          { "path": "src/include/kern_ext2.h", "description": "Ext2 on-disk structures and inode layout" }
+        ],
+        "subtasks": [
+          { "text": "Superblock & Block Group verification", "done": true },
+          { "text": "Inode path resolution & directory walk", "done": true },
+          { "text": "Direct & Indirect block reader", "done": true },
+          { "text": "File write support", "done": false }
+        ]
+      }
+    },
+    {
+      "id": "vfs",
+      "title": "Virtual Filesystem (VFS) & Handles",
+      "category": "storage_fs",
+      "status": "completed",
+      "summary": "Handle-based abstract filesystem layer supporting file descriptors, open/read/close/seek, and device files.",
+      "position": { "x": 1150, "y": 760 },
+      "dependsOn": ["ext2-driver", "heap"],
+      "details": {
+        "description": "Abstracts underlying storage media behind unified file handle primitives (open, read, write, seek, close). Maintains per-process file descriptor tables and maps standard file handles (stdin, stdout, stderr) to kernel terminal streams.",
+        "importance": "Allows Wasm WASI host functions and native C programs to perform file operations seamlessly without knowing whether the backend is Ext2, RAM disk, or a virtual device.",
+        "difficulties": [
+          "Tracking file seek offsets correctly across concurrent task reads.",
+          "Handle lifecycle cleanup on abnormal process termination."
+        ],
+        "easyParts": [
+          "Clean integer handle table design mapping to internal vnode pointers."
+        ],
+        "notes": "Core implementation in src/kernel/kern_fs.c.",
+        "sourceFiles": [
+          { "path": "src/kernel/kern_fs.c", "description": "VFS handle allocation, open/read/seek/close" },
+          { "path": "src/include/kern_fs.h", "description": "VFS interface definitions" }
+        ],
+        "subtasks": [
+          { "text": "Handle table & descriptor allocator", "done": true },
+          { "text": "Unified open/read/seek/close API", "done": true },
+          { "text": "Mount table abstraction", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "scheduler",
+      "title": "Preemptive Task Scheduler",
+      "category": "concurrency_ipc",
+      "status": "completed",
+      "summary": "Preemptive round-robin scheduler managing Task Control Blocks (TCBs), register context switches, and priorities.",
+      "position": { "x": 900, "y": 380 },
+      "dependsOn": ["gdt-idt", "timer-apic", "heap"],
+      "details": {
+        "description": "Maintains queues of active tasks and processes. On every 10ms timer interrupt, saves current CPU register state onto the task stack, selects the next runnable task, switches page tables if needed, and executes the assembly context restore stub.",
+        "importance": "Enables multi-threaded kernel execution, background processes, interactive shell responsiveness while Wasm modules run, and virtual terminal multiplexing.",
+        "difficulties": [
+          "Preserving 64-bit general purpose registers and SSE/AVX state without corrupting kernel stacks.",
+          "Preventing deadlock when the idle thread is skipped while other threads are busy."
+        ],
+        "easyParts": [
+          "Round-robin linked-list queue management is predictable and robust."
+        ],
+        "notes": "Implemented in src/kernel/kern_sched.c and src/arch/asmstubs.asm.",
+        "sourceFiles": [
+          { "path": "src/kernel/kern_sched.c", "description": "sched_init, sched_run_next, task state queues" },
+          { "path": "src/arch/asmstubs.asm", "description": "switch_task assembly context switch" }
+        ],
+        "subtasks": [
+          { "text": "Task Control Block (TCB) structure", "done": true },
+          { "text": "Assembly context switch stub", "done": true },
+          { "text": "Process termination & resource cleanup", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "sessions-vt",
+      "title": "Virtual Terminal Sessions (F1-F4)",
+      "category": "concurrency_ipc",
+      "status": "completed",
+      "summary": "Multi-session terminal multiplexer with F1-F4 switching, isolated screen cell buffers, and foreground process Ctrl+C routing.",
+      "position": { "x": 1150, "y": 380 },
+      "dependsOn": ["scheduler", "keyboard-mouse"],
+      "details": {
+        "description": "Provides 4 independent virtual terminal sessions switchable with F1-F4 hotkeys. Each session maintains its own cell buffer, command history, cursor state, and foreground process pointer with instant Ctrl+C process termination.",
+        "importance": "Allows running a heavy game or Wasm computation in Session 1 while maintaining an interactive debugging shell in Session 2.",
+        "difficulties": [
+          "Routing keyboard inputs correctly between active session shell vs foreground Wasm process vs GUI compositor.",
+          "Restoring clean framebuffer state when switching away from a fullscreen app."
+        ],
+        "easyParts": [
+          "Cell buffer swapping is instantaneous in memory."
+        ],
+        "notes": "Managed in src/kernel/kern_terminal.c and main loop.",
+        "sourceFiles": [
+          { "path": "src/kernel/kern_terminal.c", "description": "term_init, session_switch, VT data structures" },
+          { "path": "src/kernel/main.c", "description": "Session key routing and Ctrl+C interrupt handler" }
+        ],
+        "subtasks": [
+          { "text": "4 Virtual Terminal Session buffers", "done": true },
+          { "text": "F1-F4 instant session switching", "done": true },
+          { "text": "Foreground process Ctrl+C interceptor", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "ipc-channels",
+      "title": "Kernel IPC & Message Queues",
+      "category": "concurrency_ipc",
+      "status": "in-progress",
+      "summary": "Inter-Process Communication channel layer supporting message queues, pipe-like transfers, and process synchronization.",
+      "position": { "x": 1150, "y": 500 },
+      "dependsOn": ["scheduler", "heap"],
+      "details": {
+        "description": "Provides ring-buffered message channels allowing independent tasks and Wasm sandboxes to send structured messages, signals, and stream data.",
+        "importance": "Core to the non-POSIX vision of modular, isolated Wasm microservices communicating via explicit capability channels.",
+        "difficulties": [
+          "Designing non-blocking vs blocking receive semantics across scheduler tasks.",
+          "Preventing memory leaks when endpoints terminate unexpectedly."
+        ],
+        "easyParts": [
+          "Ring buffer memory queue logic."
+        ],
+        "notes": "Early implementation in src/kernel/kern_ipc.c; under research for zero-copy async capabilities.",
+        "sourceFiles": [
+          { "path": "src/kernel/kern_ipc.c", "description": "IPC channel allocation and message enqueue/dequeue" }
+        ],
+        "subtasks": [
+          { "text": "Channel descriptor allocation", "done": true },
+          { "text": "Ring buffer message transfer", "done": true },
+          { "text": "Async event notification / epoll-like poll", "done": false }
+        ]
+      }
+    },
+    {
+      "id": "framebuffer-screen",
+      "title": "Limine Framebuffer & Screen Surface",
+      "category": "graphics_ui",
+      "status": "completed",
+      "summary": "32bpp linear video surface manager with double buffering primitives, dirty rect tracking, and pitch calculation.",
+      "position": { "x": 400, "y": -60 },
+      "dependsOn": ["limine-boot", "heap"],
+      "details": {
+        "description": "Receives linear video memory address, resolution (width, height), pitch, and 32bpp color mask from Limine. Provides basic pixel plotting, fast direct fills, and surface abstraction for graphics layers.",
+        "importance": "The canvas for everything visual in sandfleaOS: text terminal, SSFN typography, 2D compositor, and 3D game engines.",
+        "difficulties": [
+          "Handling varying framebuffer pitch strides across different GPU hardware.",
+          "Direct VRAM writes being slow before PAT write-combining was enabled."
+        ],
+        "easyParts": [
+          "Limine's framebuffer request completely eliminates VESA BIOS INT 10h real-mode video switching."
+        ],
+        "notes": "Initialized via screen_init in src/kernel/kern_screen.c.",
+        "sourceFiles": [
+          { "path": "src/kernel/kern_screen.c", "description": "screen_init, screen_draw, display surface management" },
+          { "path": "src/include/kern_screen.h", "description": "Surface and display struct definitions" }
+        ],
+        "subtasks": [
+          { "text": "Limine framebuffer handshake", "done": true },
+          { "text": "32bpp display surface abstraction", "done": true },
+          { "text": "Fast screen clear & redraw routines", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "ssfn-font",
+      "title": "SSFN Vector / Bitmap Font Engine",
+      "category": "graphics_ui",
+      "status": "completed",
+      "summary": "Scalable Screen Font (SSFN) rasterizer rendering antialiased scalable typography directly to the framebuffer.",
+      "position": { "x": 650, "y": -60 },
+      "dependsOn": ["framebuffer-screen", "heap"],
+      "details": {
+        "description": "Integrates the SSFN font rasterizer to render high-quality typography directly onto 32bpp linear video memory. Embeds binary font assets at compile-time and provides glyph rendering with foreground/background coloring.",
+        "importance": "Gives sandfleaOS crisp, modern, readable text across any resolution, abandoning ugly VGA 8x16 bitmap fonts.",
+        "difficulties": [
+          "SSFN memory destination configuration with exact pitch alignment.",
+          "Embedding binary fonts cleanly into ELF object files with GCC/LD stubs."
+        ],
+        "easyParts": [
+          "SSFN single-header simplicity and lightweight footprint."
+        ],
+        "notes": "Configured in main.c and src/kernel/ssfn.c with regularfont.sfn blob.",
+        "sourceFiles": [
+          { "path": "src/kernel/ssfn.c", "description": "SSFN implementation stub" },
+          { "path": "src/include/ssfn.h", "description": "SSFN engine header" }
+        ],
+        "subtasks": [
+          { "text": "Embed binary SFN font asset", "done": true },
+          { "text": "SSFN destination framebuffer hook", "done": true },
+          { "text": "UTF-8 glyph rendering bridge", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "terminal-ansi",
+      "title": "Terminal Engine & ANSI Cell Buffer",
+      "category": "graphics_ui",
+      "status": "completed",
+      "summary": "Full virtual terminal system with 2D character cell matrix, cursor management, smooth scrolling, and ANSI escape sequence parsing.",
+      "position": { "x": 900, "y": -60 },
+      "dependsOn": ["ssfn-font", "sessions-vt"],
+      "details": {
+        "description": "Maintains an in-memory 2D cell grid for character and attribute storage. Parses ANSI escape sequences (colors, cursor positioning, line clearing), renders via SSFN, and supports history scrollback with PageUp/PageDown.",
+        "importance": "The primary user interface for the operating system: handles interactive commands, output redirection, and formatted debug logs.",
+        "difficulties": [
+          "State machine parsing for multi-byte ANSI CSI escape sequences.",
+          "Efficient scrollback rendering without redrawing the entire screen on every single newline."
+        ],
+        "easyParts": [
+          "Fixed cell grid math for row and column cursor navigation."
+        ],
+        "notes": "Implemented in src/kernel/kern_terminal.c.",
+        "sourceFiles": [
+          { "path": "src/kernel/kern_terminal.c", "description": "term_render, ANSI state machine, scrollback" },
+          { "path": "src/include/kern_terminal.h", "description": "Terminal session definitions" }
+        ],
+        "subtasks": [
+          { "text": "2D character cell matrix memory buffer", "done": true },
+          { "text": "ANSI color & cursor escape parser", "done": true },
+          { "text": "Scrollback history & cursor rendering", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "compositor",
+      "title": "2D Compositor & Infinite Canvas",
+      "category": "graphics_ui",
+      "status": "in-progress",
+      "summary": "Software window compositor supporting movable surfaces, mouse cursor compositing, dirty rects, and workspace panning.",
+      "position": { "x": 1150, "y": -60 },
+      "dependsOn": ["framebuffer-screen", "keyboard-mouse", "pat-wc"],
+      "details": {
+        "description": "Provides a window management compositor that layers independent 2D surfaces, renders a software mouse cursor without flicker using dirty rectangle backups, and supports an infinite canvas workspace.",
+        "importance": "Paves the way for sandfleaOS's modern non-overlapping/spatial canvas window manager.",
+        "difficulties": [
+          "Optimizing software blit routines to maintain 60 FPS across multiple translucent surfaces.",
+          "Smooth spatial workspace navigation hotkeys (Win+Scroll / Win+Arrows)."
+        ],
+        "easyParts": [
+          "Clean dirty rect restore logic for the mouse cursor."
+        ],
+        "notes": "Located in src/kernel/kern_compositor.c.",
+        "sourceFiles": [
+          { "path": "src/kernel/kern_compositor.c", "description": "compositor_init, surface blitting, dirty rects" },
+          { "path": "src/include/kern_compositor.h", "description": "Surface and window definitions" }
+        ],
+        "subtasks": [
+          { "text": "Software mouse cursor compositing", "done": true },
+          { "text": "Surface stacking & alpha blitting", "done": true },
+          { "text": "Infinite canvas workspace panning", "done": false },
+          { "text": "Window resize & snap gestures", "done": false }
+        ]
+      }
+    },
+    {
+      "id": "wasm3-engine",
+      "title": "Wasm3 Interpreter Engine Integration",
+      "category": "runtime_wasm",
+      "status": "completed",
+      "summary": "Embedded Wasm3 runtime integrated into kernel space, compiling WASM bytecode into fast M3 metacode.",
+      "position": { "x": 1150, "y": 200 },
+      "dependsOn": ["heap", "vmm"],
+      "details": {
+        "description": "Vendors and ports the high-performance Wasm3 interpreter into bare-metal C. Loads WebAssembly binary modules (.wasm), parses sections, compiles bytecodes into M3 executable metacode pages, and executes sandboxed stacks.",
+        "importance": "The cornerstone of sandfleaOS: applications run as portable Wasm bytecode rather than native ELF binaries, achieving sandboxing without relying on hardware ring 3.",
+        "difficulties": [
+          "Porting Wasm3 to bare-metal freestanding C without libc headers (providing custom setjmp/longjmp, math stubs, memory ops).",
+          "Handling Wasm stack growth and memory bounds validation."
+        ],
+        "easyParts": [
+          "Wasm3's metacode architecture is exceptionally fast and clean to embed."
+        ],
+        "notes": "Integrated in src/kernel/wasm3-0.5.0/ and src/kernel/wasm_spawn.c.",
+        "sourceFiles": [
+          { "path": "src/kernel/wasm_spawn.c", "description": "Wasm module loading and execution loop" },
+          { "path": "src/kernel/wasm3-0.5.0/", "description": "Vendored Wasm3 bytecode compiler and VM core" }
+        ],
+        "subtasks": [
+          { "text": "Freestanding libc stub bridge for Wasm3", "done": true },
+          { "text": "WASM binary section parser & validator", "done": true },
+          { "text": "Metacode compilation & stack executor", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "wat2wasm-native",
+      "title": "In-Kernel wat2wasm Native Compiler",
+      "category": "runtime_wasm",
+      "status": "completed",
+      "summary": "Built-in WebAssembly Text (.wat) lexer, parser, and binary encoder running natively in the kernel.",
+      "position": { "x": 1150, "y": 80 },
+      "dependsOn": ["wasm3-engine", "heap"],
+      "details": {
+        "description": "A complete native compiler embedded directly in the kernel that reads S-expression WebAssembly Text (.wat) source files and compiles them into binary .wasm modules on the fly in memory.",
+        "importance": "Allows writing and testing live Wasm scripts on the OS without needing a cross-compilation toolchain on a host machine.",
+        "difficulties": [
+          "S-expression recursive AST parsing and LEB128 variable-length integer encoding.",
+          "Resolving branch labels and type signature indices in memory."
+        ],
+        "easyParts": [
+          "S-expression syntax is regular and deterministic."
+        ],
+        "notes": "Implemented in src/kernel/wat2wasm_native.c and wat2wasm_wrapper.c.",
+        "sourceFiles": [
+          { "path": "src/kernel/wat2wasm_native.c", "description": "WAT text lexer and binary WASM generator" },
+          { "path": "src/kernel/wat2wasm_wrapper.c", "description": "Kernel command line wrapper" }
+        ],
+        "subtasks": [
+          { "text": "S-expression tokenizer & AST builder", "done": true },
+          { "text": "LEB128 integer & opcode encoder", "done": true },
+          { "text": "In-memory .wat to .wasm compilation pipeline", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "wasi-syscalls",
+      "title": "WASI Layer & Host Syscall Bridge",
+      "category": "runtime_wasm",
+      "status": "completed",
+      "summary": "Bridges WASM bytecode to kernel services via m3_LinkRawFunction, implementing WASI fd_read, fd_write, clock_time_get, and graphics hooks.",
+      "position": { "x": 1400, "y": 200 },
+      "dependsOn": ["wasm3-engine", "vfs", "timer-apic"],
+      "details": {
+        "description": "Implements WASI (WebAssembly System Interface) host functions linked via m3_LinkRawFunction. Maps fd_read, fd_write, fd_seek, clock_time_get, and proc_exit to internal VFS handles, terminal buffers, and timing hardware.",
+        "importance": "Enables standard Clang/WASI compiled programs (and game engines) to run unmodified on sandfleaOS.",
+        "difficulties": [
+          "Memory pointer translation: Wasm3 uses linear memory offsets that must be safely bounds-checked and mapped to kernel virtual addresses.",
+          "Translating 64-bit WASI error codes (errno) to kernel status."
+        ],
+        "easyParts": [
+          "m3_LinkRawFunction provides a clean, elegant C signature for host functions."
+        ],
+        "notes": "Located in src/kernel/wasm_spawn.c (planned refactor to src/kernel/wasm/host_funcs/).",
+        "sourceFiles": [
+          { "path": "src/kernel/wasm_spawn.c", "description": "WASI syscall host function bindings" }
+        ],
+        "subtasks": [
+          { "text": "WASI fd_read / fd_write stream bridge", "done": true },
+          { "text": "WASI clock_time_get & timing hooks", "done": true },
+          { "text": "Safe linear memory bounds translation", "done": true },
+          { "text": "Modular host function refactoring", "done": false }
+        ]
+      }
+    },
+    {
+      "id": "doom-port",
+      "title": "Doom (Wasm Edition)",
+      "category": "apps_userland",
+      "status": "completed",
+      "summary": "Classic Doom running in sandfleaOS via WebAssembly, reading DOOM1.WAD from Ext2 and blitting to the framebuffer.",
+      "position": { "x": 1650, "y": 100 },
+      "dependsOn": ["wasi-syscalls", "ext2-driver", "pat-wc", "keyboard-mouse"],
+      "details": {
+        "description": "Runs a Wasm-compiled port of Doom. Loads DOOM1.WAD from the Ext2 filesystem through the VFS handle layer, processes keyboard input events via WASI, and pushes rendering buffers directly to the display surface.",
+        "importance": "Major project milestone proving that the entire storage, memory, WASI syscall, and graphics pipeline is robust and production-ready.",
+        "difficulties": [
+          "Handling large WAD file seeks and memory allocations inside Wasm linear memory.",
+          "Input latency calibration with the keyboard queue."
+        ],
+        "easyParts": [
+          "Doom's clean software rendering architecture maps naturally to a linear framebuffer."
+        ],
+        "notes": "Runs as a foreground Wasm process with Ctrl+C interrupt support.",
+        "sourceFiles": [
+          { "path": "src/kernel/wasm_spawn.c", "description": "Doom process spawning and frame dispatch" }
+        ],
+        "subtasks": [
+          { "text": "Ext2 DOOM1.WAD streaming", "done": true },
+          { "text": "Framebuffer direct blit host function", "done": true },
+          { "text": "Keyboard event bridge", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "quake-port",
+      "title": "Quake 3D Engine Port",
+      "category": "apps_userland",
+      "status": "completed",
+      "summary": "Full Quake 1 3D software rasterizer engine running on sandfleaOS with PAK file loading, mouse look, and high-res rendering.",
+      "position": { "x": 1650, "y": 280 },
+      "dependsOn": ["wasi-syscalls", "ext2-driver", "pat-wc", "keyboard-mouse", "timer-apic"],
+      "details": {
+        "description": "Port of the classic Quake 1 engine to sandfleaOS. Loads PAK0.PAK files from Ext2 disk, computes 3D perspective-correct software rasterization, captures mouse delta packets for mouselook, and renders at high frame rates unlocked by PAT write-combining.",
+        "importance": "Demonstrates complex 3D math, heavy disk streaming, dynamic heap usage, and sub-millisecond timer accuracy on bare metal.",
+        "difficulties": [
+          "Integer overflow and fixed-point math quirks during Wasm compilation.",
+          "Smooth mouse delta integration without drifting."
+        ],
+        "easyParts": [
+          "Software rasterizer required zero 3D GPU acceleration drivers."
+        ],
+        "notes": "Port implementation in src/kernel/quake.c.",
+        "sourceFiles": [
+          { "path": "src/kernel/quake.c", "description": "Quake sandfleaOS system driver glue" }
+        ],
+        "subtasks": [
+          { "text": "Ext2 PAK0.PAK file streaming", "done": true },
+          { "text": "3D software rasterizer video buffer hook", "done": true },
+          { "text": "Mouse look & keyboard controls", "done": true },
+          { "text": "Audio sound driver bridge (planned)", "done": false }
+        ]
+      }
+    },
+    {
+      "id": "interactive-shell",
+      "title": "Interactive Shell & Command Suite",
+      "category": "apps_userland",
+      "status": "completed",
+      "summary": "Interactive kernel shell with filesystem exploration, memory diagnostics, hardware inspection, and script execution.",
+      "position": { "x": 1400, "y": -60 },
+      "dependsOn": ["terminal-ansi", "vfs"],
+      "details": {
+        "description": "Provides an interactive command prompt with built-in commands: ls, cat, mem, pci, run (Wasm), wat (compile and run), clear, sessions, and system diagnostics.",
+        "importance": "The primary administrative environment for debugging and launching applications.",
+        "difficulties": [
+          "Command line argument tokenization and escaping."
+        ],
+        "easyParts": [
+          "Modular command handler structure."
+        ],
+        "notes": "Commands handled in src/include/util_cmd.h and main loop.",
+        "sourceFiles": [
+          { "path": "src/include/util_cmd.h", "description": "Command parser and shell built-ins" }
+        ],
+        "subtasks": [
+          { "text": "Interactive prompt & history buffer", "done": true },
+          { "text": "Built-in filesystem tools (ls, cat)", "done": true },
+          { "text": "Hardware & memory inspection commands", "done": true }
+        ]
+      }
+    },
+    {
+      "id": "ahci-sata",
+      "title": "AHCI SATA Controller Driver",
+      "category": "roadmap_future",
+      "status": "planned",
+      "summary": "Modern Advanced Host Controller Interface (AHCI) driver with PRDT DMA transfers to replace legacy IDE PIO.",
+      "position": { "x": 900, "y": 920 },
+      "dependsOn": ["pci-subsystem", "pmm", "vmm"],
+      "details": {
+        "description": "Replaces legacy IDE ATA PIO with high-speed AHCI SATA controller support. Discovers AHCI ABAR via PCI, allocates Command Lists and Received FIS structures, and issues DMA reads/writes via Physical Region Descriptor Tables (PRDT).",
+        "importance": "Drastically increases disk I/O throughput for large game assets and allows running on modern SATA/SSD hardware without legacy IDE emulation.",
+        "difficulties": [
+          "Setting up 1KiB aligned Command Lists and 128-byte Command Tables in physical memory.",
+          "Handling SATA FIS (Frame Information Structure) handshakes and interrupt statuses."
+        ],
+        "easyParts": [
+          "AHCI 1.3 spec is cleanly structured around memory-mapped I/O registers."
+        ],
+        "notes": "Listed as top priority storage goal in todo.md.",
+        "sourceFiles": [
+          { "path": "todo.md", "description": "AHCI replace IDE milestone" }
+        ],
+        "subtasks": [
+          { "text": "PCI AHCI controller probe & ABAR mapping", "done": false },
+          { "text": "Port memory structures (Command List, FIS)", "done": false },
+          { "text": "PRDT DMA sector read/write", "done": false },
+          { "text": "Ext2 driver backend swap", "done": false }
+        ]
+      }
+    },
+    {
+      "id": "smp-multicore",
+      "title": "Multicore SMP & MADT / ACPI",
+      "category": "roadmap_future",
+      "status": "planned",
+      "summary": "ACPI MADT table parsing, Local APIC timer calibration, AP startup trampolines, and multi-core thread scheduling.",
+      "position": { "x": 1150, "y": 920 },
+      "dependsOn": ["limine-boot", "gdt-idt", "scheduler"],
+      "details": {
+        "description": "Parses ACPI Multiple APIC Description Tables (MADT) to discover CPU cores. Sends INIT-SIPI-SIPI Inter-Processor Interrupts (IPI) to awaken Application Processors (APs), sets up per-core GDT/IDT/TSS stacks, and balances tasks across cores.",
+        "importance": "Unlocks true hardware parallelism: Core 0 handles kernel I/O and display compositing while other cores execute isolated Wasm worker threads.",
+        "difficulties": [
+          "Real-mode 16-bit AP startup trampoline assembly and atomic spinlock primitives.",
+          "Thread-safe scheduling runqueues and per-CPU data structures."
+        ],
+        "easyParts": [
+          "Limine provides direct pointers to ACPI tables."
+        ],
+        "notes": "Roadmap item in todo.md (MADT/ACPI parsing, Multicore support).",
+        "sourceFiles": [
+          { "path": "todo.md", "description": "MADT / ACPI parsing & per-core scheduler" }
+        ],
+        "subtasks": [
+          { "text": "ACPI RSDP & MADT table parser", "done": false },
+          { "text": "Local APIC IPI startup trampoline", "done": false },
+          { "text": "Per-CPU state & lockless runqueues", "done": false },
+          { "text": "Core affinity assignment for processes", "done": false }
+        ]
+      }
+    },
+    {
+      "id": "async-io-handles",
+      "title": "Async Handle I/O (io_uring Model)",
+      "category": "roadmap_future",
+      "status": "planned",
+      "summary": "Asynchronous ring-buffer I/O submission and completion queues for zero-copy file and IPC transfers.",
+      "position": { "x": 1400, "y": 760 },
+      "dependsOn": ["vfs", "ipc-channels"],
+      "details": {
+        "description": "An asynchronous I/O interface inspired by io_uring, replacing synchronous blocking syscalls with lock-free Submission Queues (SQ) and Completion Queues (CQ).",
+        "importance": "Allows Wasm applications to stream assets, textures, and IPC messages without stalling execution or consuming extra OS threads.",
+        "difficulties": [
+          "Shared ring-buffer memory layout between kernel and sandboxed Wasm linear address space.",
+          "Managing buffer lifetimes for inflight asynchronous disk transfers."
+        ],
+        "easyParts": [
+          "Lock-free single-producer single-consumer ring buffer logic."
+        ],
+        "notes": "Tracked in todo.md under FS & IPC research.",
+        "sourceFiles": [
+          { "path": "todo.md", "description": "Async handle I/O interface design" }
+        ],
+        "subtasks": [
+          { "text": "Submission / Completion queue data structures", "done": false },
+          { "text": "Async VFS read/write workers", "done": false },
+          { "text": "WASI async host function bindings", "done": false }
+        ]
+      }
+    },
+    {
+      "id": "blake3-security",
+      "title": "BLAKE3 Integrity & Capability Sandboxing",
+      "category": "roadmap_future",
+      "status": "research",
+      "summary": "Cryptographic BLAKE3 module hashing and fine-grained capability tokens for Wasm host function permissions.",
+      "position": { "x": 1400, "y": 380 },
+      "dependsOn": ["wasi-syscalls", "wasm3-engine"],
+      "details": {
+        "description": "Integrates BLAKE3 tree-hashing to verify bytecode integrity before execution. Replaces traditional UNIX user/group permissions with capability tokens that explicitly grant access to specific VFS paths, network endpoints, or graphics surfaces.",
+        "importance": "Ensures untrusted Wasm modules downloaded from external sources cannot perform unauthorized I/O or escape their sandbox.",
+        "difficulties": [
+          "Optimizing BLAKE3 SIMD AVX2/SSE routines in bare-metal kernel space.",
+          "Designing an ergonomic capability passing API that doesn't overcomplicate simple scripts."
+        ],
+        "easyParts": [
+          "BLAKE3 reference C implementation is exceptionally fast and self-contained."
+        ],
+        "notes": "Researching BLAKE3 integration per todo.md.",
+        "sourceFiles": [
+          { "path": "todo.md", "description": "BLAKE3 hashing & capability token design" }
+        ],
+        "subtasks": [
+          { "text": "Vendored BLAKE3 C implementation", "done": false },
+          { "text": "Module hash verification upon ext2 load", "done": false },
+          { "text": "WASI capability token permission checks", "done": false }
+        ]
+      }
+    },
+    {
+      "id": "elf-loader",
+      "title": "Native 64-bit ELF Binary Loader",
+      "category": "roadmap_future",
+      "status": "planned",
+      "summary": "Support for loading and executing native x86_64 ELF binaries alongside WebAssembly modules.",
+      "position": { "x": 1400, "y": 560 },
+      "dependsOn": ["vmm", "vfs", "scheduler"],
+      "details": {
+        "description": "Parses 64-bit ELF headers, program headers, and segments (.text, .data, .bss). Allocates virtual address space, copies segments, sets up initial user stack frames, and jumps to entry points.",
+        "importance": "Enables running native high-performance tools and compilers directly on the OS when JIT or native execution is preferred over Wasm interpretation.",
+        "difficulties": [
+          "Supporting dynamic relocation tables or enforcing statically-linked position-independent executables (PIE).",
+          "Implementing a native syscall dispatch ABI for ELF binaries."
+        ],
+        "easyParts": [
+          "Static ELF header parsing is straightforward and well-defined."
+        ],
+        "notes": "Listed in todo.md as secondary execution tier.",
+        "sourceFiles": [
+          { "path": "todo.md", "description": "ELF64 header parser and segment mapper" }
+        ],
+        "subtasks": [
+          { "text": "ELF64 header validation", "done": false },
+          { "text": "Segment mapping to process address space", "done": false },
+          { "text": "Initial stack setup and jump to entry", "done": false }
+        ]
+      }
+    }
+  ]
+}
