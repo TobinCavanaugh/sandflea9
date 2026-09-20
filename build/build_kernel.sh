@@ -147,6 +147,12 @@ log "  parallel jobs: $PARALLEL_MAX"
 # track every PID and reap individually. A failure aborts the whole
 # build; in-flight workers become orphaned briefly but that's fine —
 # the build is failing anyway. No shared .o files = no corruption.
+# Check for ccache
+CC="gcc"
+if command -v ccache >/dev/null 2>&1; then
+    CC="ccache gcc"
+fi
+
 PIDS=()
 SRCS=()
 
@@ -169,19 +175,31 @@ for src in "${C_SOURCES[@]}"; do
 
     if [ $SHOULD_REBUILD -eq 1 ]; then
         log "  CC  $src"
-        # Throttle: reap one worker before launching the next once we
-        # hit the cap, so #PIDS stays <= PARALLEL_MAX throughout.
-        gcc $CFLAGS "$src" -o "$obj_path" &
+        FILE_CFLAGS="$CFLAGS"
+        # wasm2c generated code is ~10MB; compile with -O2 -fno-inline for ~10x faster compile
+        if [ "$src" = "src/external/wasm2c_wat2wasm.c" ]; then
+            FILE_CFLAGS="${CFLAGS//-O3/-O2 -fno-inline-functions}"
+        fi
+
+        $CC $FILE_CFLAGS "$src" -o "$obj_path" &
         PIDS+=($!)
         SRCS+=("$src")
+
         if [ "${#PIDS[@]}" -ge "$PARALLEL_MAX" ]; then
-            reap_pid="${PIDS[0]}"
-            reap_src="${SRCS[0]}"
-            if wait "$reap_pid"; then
-                PIDS=("${PIDS[@]:1}")
-                SRCS=("${SRCS[@]:1}")
+            # Wait for ANY worker to finish (non-blocking pool)
+            if wait -n 2>/dev/null; then
+                NEW_PIDS=()
+                NEW_SRCS=()
+                for idx in "${!PIDS[@]}"; do
+                    if kill -0 "${PIDS[$idx]}" 2>/dev/null; then
+                        NEW_PIDS+=("${PIDS[$idx]}")
+                        NEW_SRCS+=("${SRCS[$idx]}")
+                    fi
+                done
+                PIDS=("${NEW_PIDS[@]}")
+                SRCS=("${NEW_SRCS[@]}")
             else
-                err "gcc failed (pid $reap_pid processing $reap_src) -- aborting"
+                err "gcc compilation worker failed -- aborting"
                 exit 1
             fi
         fi

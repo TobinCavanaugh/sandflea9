@@ -19,6 +19,9 @@ if errorlevel 1 (
 
 setlocal enabledelayedexpansion
 
+REM Record start timestamp for timing
+for /f %%t in ('powershell -NoProfile -Command "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()"') do set "WB_START_MS=%%t"
+
 set "WAT2WASM=C:\bin\wabt\bin\wat2wasm.exe"
 if exist "%WAT2WASM%" (
     echo --- Compiling WASM ^(Windows wat2wasm.exe^) ---
@@ -60,4 +63,13 @@ if not errorlevel 1 (
 )
 echo Invoking WSL build at "%WSL_DIR%"
 wsl -e bash -c "cd '%WSL_DIR%' && bash build/build.sh %*"
-exit /b %ERRORLEVEL%
+set "BUILD_EXIT_CODE=%ERRORLEVEL%"
+
+REM Output total elapsed time in seconds
+if defined WB_START_MS (
+    for /f %%t in ('powershell -NoProfile -Command "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()"') do set "WB_END_MS=%%t"
+    for /f %%d in ('powershell -NoProfile -Command "([double](!WB_END_MS! - !WB_START_MS!) / 1000).ToString('0.00')"') do set "WB_ELAPSED=%%d"
+    echo [wb.bat] Total build time: !WB_ELAPSED!s
+)
+
+exit /b %BUILD_EXIT_CODE%

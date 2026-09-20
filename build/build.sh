@@ -31,6 +31,7 @@ fi
 step()  { printf "${_CYA}[build]${_NC} %s\n" "$*"; }
 done_() { printf "${_GRN}[build]${_NC} %s\n" "$*"; }
 
+START_TIME=$(python3 -c 'import time; print(time.time())' 2>/dev/null || date +%s)
 step "sandfleaOS build — project root: $PROJECT_ROOT"
 
 # ---- Phase 1: WABT library + filesystem images in parallel --------------
@@ -63,5 +64,8 @@ bash "$SCRIPT_DIR/build_kernel.sh"
 step "phase 3/3 — package UEFI ISO"
 bash "$SCRIPT_DIR/build_iso.sh"
 
-done_ "build complete — bootable sandfleaOS.iso ready"
+END_TIME=$(python3 -c 'import time; print(time.time())' 2>/dev/null || date +%s)
+ELAPSED=$(python3 -c "print(f'{$END_TIME - $START_TIME:.2f}')" 2>/dev/null || echo "$((END_TIME - START_TIME))")
+
+done_ "build complete in ${ELAPSED}s — bootable sandfleaOS.iso ready"
 done_ "use wr.bat (or 'wsl bash build/wr.sh' on a Linux box) to launch qemu"
