@@ -199,10 +199,10 @@ done
 # ---- Font blob -----------------------------------------------------------
 log "Embedding font"
 if [ ! -f "$OBJ_DIR/regularfont.o" ] || \
-   [ "src/blob/regularfont.sfn" -nt "$OBJ_DIR/regularfont.o" ]; then
-    log "  OBJCOPY src/blob/regularfont.sfn"
+   [ "src/assets/regularfont.sfn" -nt "$OBJ_DIR/regularfont.o" ]; then
+    log "  OBJCOPY src/assets/regularfont.sfn"
     objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
-        src/blob/regularfont.sfn "$OBJ_DIR/regularfont.o"
+        src/assets/regularfont.sfn "$OBJ_DIR/regularfont.o"
 fi
 LINK_LIST="$LINK_LIST $OBJ_DIR/regularfont.o"
 

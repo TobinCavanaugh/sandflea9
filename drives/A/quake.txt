@@ -1,0 +1,12 @@
+# Quake WASM host contract
+
+The kernel Quake launcher uses the common WASI/file-descriptor imports provided by
+wasm_spawn.c. The module must export `_start` (the normal WASI entry point).
+
+Recommended runtime assets:
+- `id1/pak0.pak` (required Quake shareware or registered data)
+- `id1/pak1.pak` (optional registered-data expansion)
+- additional mods in their own directory, if supported by the build
+
+The launcher starts Quake with its working directory at `/` and passes the
+standard WASI argv list. Put PAK files under `id1/` in the filesystem image.

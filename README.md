@@ -47,7 +47,8 @@ sandfleaOS is built on a few specific design principles:
 *   `src/arch/`: Architecture-specific assembly for ISRs, IRQs, and the kernel entry point.
 *   `src/include/`: System headers and internal definitions.
 *   `src/wasm/`: WebAssembly source files (.wat) for testing and system utilities.
-*   `src/blob/`: Binary assets including fonts, test Wasm modules, and configuration files.
+*   `src/assets/`: Kernel-embedded binary assets (fonts, etc.).
+*   `drives/`: Ext2 drive contents (`drives/A/`, `drives/B/`, configured via `.driveinfo`).
 *   `media/`: Project documentation, architectural writings, and media assets.
 
 ## Development

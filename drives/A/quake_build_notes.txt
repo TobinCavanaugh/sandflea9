@@ -1,0 +1,12 @@
+# Quake WASM build notes
+
+The kernel uses wasm3 0.5.0. `quake.wasm` must be valid for wasm3's parser and
+must match the module's exported game API (`initGame`, `tickGame(i32)`,
+`reportKeyDown(i32)`, `reportKeyUp(i32)`, framebuffer getters).
+
+`LEB encoded value overflow` during `initGame` means execution reached Quake's
+WASM code and wasm3 rejected a malformed/unsupported instruction operand while
+interpreting it. This is usually a compiler/wasm feature compatibility issue,
+not a missing PAK file. Rebuild with wasm32 settings that avoid reference types,
+threads, SIMD, bulk-memory extensions, and newer exception/GC features; then
+validate with `wasm-validate` before copying the result to `src/blob/quake.wasm`.

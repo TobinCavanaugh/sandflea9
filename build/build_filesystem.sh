@@ -1,71 +1,107 @@
 #!/bin/bash
-# build/build_filesystem.sh -- build the ext2 filesystem images.
+# build/build_filesystem.sh -- build the ext2 filesystem images from drives/
 #
-# disk.img is a volatile 32MB boot volume (label='A') rebuilt fresh on
-# every build so that runtime modifications from previous QEMU sessions
-# do not persist.
+# Scans all directories under drives/*/ and uses their .driveinfo configuration:
+#   label: Volume label (defaults to drive name, e.g. A, data)
+#   size: Image size (defaults to 64M)
+#   mode: volatile | persistent (defaults to volatile for A, persistent for others)
+#   output: Output image path (defaults to iso_root/disk.img for A, data.img for B)
 #
-# data.img is preserved-by-existence -- created once on first build,
-# never overwritten, so user data survives qemu sessions.
+# Volatile drives are formatted fresh on every build.
+# Persistent drives are created once and preserved across builds.
+# Uses `mke2fs -F -F -d` for single-pass filesystem generation (<0.3s).
 #
 # Safe to run in parallel with build_wabt.sh (no shared resources).
 set -e
 . "$(dirname "$0")/lib.sh"
 
-# ---- disk.img (boot volume) --------------------------------------------
-log "Creating boot filesystem (disk.img, 64MB, ext2, label='A')"
-# truncate is faster than `dd if=/dev/zero` because the kernel
-# allocates sparse pages; only the ext2 metadata blocks need to be
-# zeroed, which mkfs.ext2 does anyway.
-truncate -s 64M "$ISO_DIR/disk.img"
-mkfs.ext2 -F -L A "$ISO_DIR/disk.img"
-ok "disk.img formatted"
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$PROJECT_ROOT"
 
-{
-    echo "write src/blob/testfile.txt testfile.txt"
-    echo "write src/blob/a.txt a.txt"
-    echo "write src/blob/b.txt b.txt"
-    echo "write src/blob/c.txt c.txt"
-    echo "write src/blob/utf8.txt utf8"
-    echo "write src/blob/DOOM1.WAD DOOM1.WAD"
-    echo "write src/blob/quake.wasm quake.wasm"
-    echo "mkdir id1"
-    [ -f src/blob/id1/pak0.pak ] && echo "write src/blob/id1/pak0.pak id1/pak0.pak"
-    [ -f src/blob/id1/pak1.pak ] && echo "write src/blob/id1/pak1.pak id1/pak1.pak"
-    echo "mkdir folder"
-    echo "write src/blob/c.txt folder/a.txt"
-    echo "write src/wasm/wat/hello.wat hello.wat"
-    echo "write src/wasm/wat/add_test.wat add_test.wat"
-    echo "write src/wasm/wat/cat.wat cat.wat"
-    echo "write src/wasm/wat/lsr.wat lsr.wat"
-    echo "write src/wasm/wat/file_test.wat file_test.wat"
-    echo "write src/wasm/wat/crashme.wat crashme.wat"
-    echo "write src/wasm/wat/ipc_receiver.wat ipc_receiver.wat"
-    echo "write src/wasm/wat/ipc_sender.wat ipc_sender.wat"
-
-    # Auto-include all user-app .wasm files compiled by wb.bat. Filter
-    # out the in-kernel tool so it doesn't redundantly end up in /A/.
-    for wasm_path in obj/wasm/*.wasm; do
-        [ -f "$wasm_path" ] || continue
-        [ "$(basename "$wasm_path")" = "wat2wasm.wasm" ] && continue
-        wasm_name=$(basename "$wasm_path")
-        echo "write $wasm_path $wasm_name"
-    done
-    if [ -f "obj/wasm/file_test.wasm" ]; then
-        echo "write obj/wasm/file_test.wasm w"
-    fi
-} | debugfs -w "$ISO_DIR/disk.img"
-log "Boot files written to disk.img"
-ok "disk.img: $(stat -c%s "$ISO_DIR/disk.img") bytes"
-
-# ---- data.img (persistent volume) --------------------------------------
-# Created only once on first build; never overwritten in subsequent
-# builds (preserves user data across qemu sessions).
-if [ ! -f "data.img" ]; then
-    log "Creating persistent data drive (data.img, 64MB, ext2, label='data')"
-    truncate -s 64M data.img
-    mkfs.ext2 -F -L data data.img
-    ok "data.img created (preserved across future builds)"
-else
-    log "data.img already exists; preserved"
+if [ ! -d "drives" ]; then
+    warn "No drives/ directory found; skipping filesystem creation."
+    exit 0
 fi
+
+for drive_dir in drives/*/; do
+    [ -d "$drive_dir" ] || continue
+    drive_name="$(basename "$drive_dir")"
+
+    # Default settings based on drive name
+    label="$drive_name"
+    size="64M"
+    if [ "$drive_name" = "A" ]; then
+        mode="volatile"
+        output="$ISO_DIR/disk.img"
+    elif [ "$drive_name" = "B" ]; then
+        label="data"
+        mode="persistent"
+        output="data.img"
+    else
+        mode="persistent"
+        output="${drive_name}.img"
+    fi
+
+    # Parse .driveinfo if present
+    driveinfo_file="$drive_dir/.driveinfo"
+    if [ -f "$driveinfo_file" ]; then
+        while IFS='=' read -r key val || [ -n "$key" ]; do
+            # Trim whitespace and carriage returns
+            key="$(echo "$key" | tr -d '\r ')"
+            val="$(echo "$val" | tr -d '\r')"
+            # Strip leading/trailing whitespace from value
+            val="${val#"${val%%[! ]*}"}"
+            val="${val%"${val##*[! ]}"}"
+            case "$key" in
+                label)  label="$val" ;;
+                size)   size="$val" ;;
+                mode)   mode="$val" ;;
+                output) output="$val" ;;
+            esac
+        done < "$driveinfo_file"
+    fi
+
+    # If persistent and image already exists, skip to preserve data
+    if [ "$mode" = "persistent" ] && [ -f "$output" ]; then
+        log "Drive $drive_name ($output) already exists; preserved"
+        continue
+    fi
+
+    log "Building Drive $drive_name ($output, $size, ext2, label='$label', mode=$mode)"
+
+    STAGE_DIR="/tmp/sandflea_stage_${drive_name}_$$"
+    rm -rf "$STAGE_DIR"
+    mkdir -p "$STAGE_DIR"
+
+    # Copy drive contents to staging area and remove metadata
+    cp -r "$drive_dir". "$STAGE_DIR/"
+    rm -f "$STAGE_DIR/.driveinfo"
+
+    # For boot drive A, auto-inject wat scripts and compiled user wasm binaries
+    if [ "$drive_name" = "A" ]; then
+        if [ -d "src/wasm/wat" ]; then
+            for wat_file in src/wasm/wat/*.wat; do
+                [ -f "$wat_file" ] || continue
+                cp "$wat_file" "$STAGE_DIR/"
+            done
+        fi
+
+        if [ -d "$WASM_DIR" ]; then
+            for wasm_path in "$WASM_DIR"/*.wasm; do
+                [ -f "$wasm_path" ] || continue
+                [ "$(basename "$wasm_path")" = "wat2wasm.wasm" ] && continue
+                cp "$wasm_path" "$STAGE_DIR/"
+            done
+            if [ -f "$WASM_DIR/file_test.wasm" ]; then
+                cp "$WASM_DIR/file_test.wasm" "$STAGE_DIR/w"
+            fi
+        fi
+    fi
+
+    mkdir -p "$(dirname "$output")"
+    truncate -s "$size" "$output"
+    mkfs.ext2 -F -F -L "$label" -d "$STAGE_DIR" "$output"
+
+    rm -rf "$STAGE_DIR"
+    ok "Drive $drive_name -> $output ($(stat -c%s "$output" 2>/dev/null || stat -f%z "$output" 2>/dev/null) bytes)"
+done

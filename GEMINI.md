@@ -48,5 +48,6 @@ A hobby operating system for x64 with a focus on WebAssembly as the primary exec
 - `src/arch/`: Architecture-specific assembly (ISRs, entry point).
 - `src/include/`: Header files and internal definitions.
 - `src/wasm/`: Wasm test source files (.wat).
-- `src/blob/`: Binary assets (Wasm modules, fonts, test files).
+- `src/assets/`: Kernel-embedded binary assets (e.g. fonts).
+- `drives/`: Ext2 drive contents (`drives/A/`, `drives/B/`, configured by `.driveinfo`).
 - `media/writings/`: Implementation plans and architectural notes.

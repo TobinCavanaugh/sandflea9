@@ -27,18 +27,22 @@ if exist "%WAT2WASM%" (
         echo   %%f
         "%WAT2WASM%" "%%f" -o "obj\wasm\%%~nf.wasm"
     )
-    REM Pre-compiled .wasm blobs (no matching .wat source): copy unchanged.
-    for %%f in (src\blob\*.wasm) do (
-        if not exist "src\wasm\wat\%%~nf.wat" (
-            copy "%%f" "obj\wasm\" >nul
+    REM Pre-compiled .wasm files from drives\A (no matching .wat source)
+    if exist "drives\A\*.wasm" (
+        for %%f in (drives\A\*.wasm) do (
+            if not exist "src\wasm\wat\%%~nf.wat" (
+                copy "%%f" "obj\wasm\" >nul
+            )
         )
     )
 ) else (
-    echo WARNING: wat2wasm not found at "%WAT2WASM%", copying pre-built .wasm from src\blob\
+    echo WARNING: wat2wasm not found at "%WAT2WASM%"
     if not exist "obj\wasm" mkdir "obj\wasm"
-    for %%f in (src\blob\*.wasm) do (
-        if not exist "src\wasm\wat\%%~nf.wat" (
-            copy "%%f" "obj\wasm\" >nul
+    if exist "drives\A\*.wasm" (
+        for %%f in (drives\A\*.wasm) do (
+            if not exist "src\wasm\wat\%%~nf.wat" (
+                copy "%%f" "obj\wasm\" >nul
+            )
         )
     )
 )

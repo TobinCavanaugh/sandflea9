@@ -1,0 +1,4 @@
+label=data
+size=64M
+mode=persistent
+output=data.img

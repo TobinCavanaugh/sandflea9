@@ -69,7 +69,8 @@ fi
 # ---- Check for WinMan WASM from C# project or blob directory -------------
 WINMAN_OUT="$WASM_DIR/winman.wasm"
 for candidate in \
-    "src/blob/winman.wasm" \
+    "drives/A/winman.wasm" \
+    "src/assets/winman.wasm" \
     "/mnt/c/Users/tobin/RiderProjects/winman/bin/Release/net8.0/browser-wasm/AppBundle/winman.wasm" \
     "/mnt/c/Users/tobin/RiderProjects/winman/bin/Release/net8.0/browser-wasm/native/winman.wasm" \
     "/mnt/c/Users/tobin/RiderProjects/winman/bin/Debug/net8.0/browser-wasm/AppBundle/winman.wasm" \

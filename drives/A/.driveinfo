@@ -1,0 +1,4 @@
+label=A
+size=64M
+mode=volatile
+output=iso_root/disk.img
