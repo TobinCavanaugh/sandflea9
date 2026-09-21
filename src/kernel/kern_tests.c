@@ -900,11 +900,87 @@ u0 handle_command_str(const char *cmd) {
         extern u64 rdmsr(u32 msr);
         extern u0 delay(u64 ms);
 
-        u32 eax, ebx, ecx, edx;
-        asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(6));
+        // --- 1. Query Vendor String (CPUID leaf 0) ---
+        u32 v_eax, v_ebx, v_ecx, v_edx;
+        asm volatile("cpuid" : "=a"(v_eax), "=b"(v_ebx), "=c"(v_ecx), "=d"(v_edx) : "a"(0), "c"(0));
+        char vendor[13] = {0};
+        *(u32 *)&vendor[0] = v_ebx;
+        *(u32 *)&vendor[4] = v_edx;
+        *(u32 *)&vendor[8] = v_ecx;
 
-        screen_push_line("=== CPU CLOCK & POWER DIAGNOSTICS ===");
+        // --- 2. Query Brand String (CPUID leaves 0x80000002..0x80000004) ---
+        char brand[49] = {0};
+        u32 ext_max, b_ebx, b_ecx, b_edx;
+        asm volatile("cpuid" : "=a"(ext_max), "=b"(b_ebx), "=c"(b_ecx), "=d"(b_edx) : "a"(0x80000000), "c"(0));
+        if (ext_max >= 0x80000004) {
+            asm volatile("cpuid" : "=a"(*(u32 *)&brand[0]),  "=b"(*(u32 *)&brand[4]),  "=c"(*(u32 *)&brand[8]),  "=d"(*(u32 *)&brand[12]) : "a"(0x80000002), "c"(0));
+            asm volatile("cpuid" : "=a"(*(u32 *)&brand[16]), "=b"(*(u32 *)&brand[20]), "=c"(*(u32 *)&brand[24]), "=d"(*(u32 *)&brand[28]) : "a"(0x80000003), "c"(0));
+            asm volatile("cpuid" : "=a"(*(u32 *)&brand[32]), "=b"(*(u32 *)&brand[36]), "=c"(*(u32 *)&brand[40]), "=d"(*(u32 *)&brand[44]) : "a"(0x80000004), "c"(0));
+        }
+        char *brand_str = brand;
+        while (*brand_str == ' ') brand_str++;
+        if (*brand_str == '\0') brand_str = "x86_64 Processor";
+
+        screen_push_line("=== CPU IDENTIFICATION ===");
+        screen_push_linef("Model:  %s", brand_str);
+        screen_push_linef("Vendor: %s | Arch: x86_64 (64-bit Long Mode)", vendor);
         screen_push_linef("Base TSC Estimate: ~%llu MHz", profile_tsc_mhz());
+
+        // --- 3. Query Feature Flags ---
+        u32 f1_eax, f1_ebx, f1_ecx, f1_edx;
+        asm volatile("cpuid" : "=a"(f1_eax), "=b"(f1_ebx), "=c"(f1_ecx), "=d"(f1_edx) : "a"(1), "c"(0));
+
+        u32 f7_eax, f7_ebx, f7_ecx, f7_edx;
+        asm volatile("cpuid" : "=a"(f7_eax), "=b"(f7_ebx), "=c"(f7_ecx), "=d"(f7_edx) : "a"(7), "c"(0));
+
+        u32 fe_eax, fe_ebx, fe_ecx, fe_edx;
+        asm volatile("cpuid" : "=a"(fe_eax), "=b"(fe_ebx), "=c"(fe_ecx), "=d"(fe_edx) : "a"(0x80000001), "c"(0));
+
+        screen_push_line("=== EXTENSIONS & INSTRUCTION SETS ===");
+        screen_push_linef("SIMD:   %s%s%s%s%s%s%s%s%s%s%s%s",
+            (f1_edx & (1 << 23)) ? "MMX " : "",
+            (f1_edx & (1 << 25)) ? "SSE " : "",
+            (f1_edx & (1 << 26)) ? "SSE2 " : "",
+            (f1_ecx & (1 << 0))  ? "SSE3 " : "",
+            (f1_ecx & (1 << 9))  ? "SSSE3 " : "",
+            (f1_ecx & (1 << 19)) ? "SSE4.1 " : "",
+            (f1_ecx & (1 << 20)) ? "SSE4.2 " : "",
+            (f1_ecx & (1 << 28)) ? "AVX " : "",
+            (f7_ebx & (1 << 5))  ? "AVX2 " : "",
+            (f7_ebx & (1 << 16)) ? "AVX512F " : "",
+            (f1_ecx & (1 << 12)) ? "FMA " : "",
+            (f1_ecx & (1 << 29)) ? "F16C " : "");
+
+        screen_push_linef("Crypto: %s%s%s%s%s%s%s%s%s",
+            (f1_ecx & (1 << 25)) ? "AES-NI " : "",
+            (f7_ebx & (1 << 29)) ? "SHA-NI " : "",
+            (f1_ecx & (1 << 1))  ? "PCLMUL " : "",
+            (f1_ecx & (1 << 23)) ? "POPCNT " : "",
+            (f7_ebx & (1 << 3))  ? "BMI1 " : "",
+            (f7_ebx & (1 << 8))  ? "BMI2 " : "",
+            (f7_ebx & (1 << 19)) ? "ADX " : "",
+            (f1_ecx & (1 << 30)) ? "RDRAND " : "",
+            (f7_ebx & (1 << 18)) ? "RDSEED " : "");
+
+        screen_push_linef("System: %s%s%s%s%s%s%s%s%s%s%s%s",
+            (fe_edx & (1 << 20)) ? "NX " : "",
+            (f7_ebx & (1 << 0))  ? "FSGSBASE " : "",
+            (f7_ebx & (1 << 9))  ? "ERMS " : "",
+            (f7_ebx & (1 << 7))  ? "SMEP " : "",
+            (f7_ebx & (1 << 20)) ? "SMAP " : "",
+            (fe_edx & (1 << 26)) ? "1GB_PAGES " : "",
+            (fe_edx & (1 << 27)) ? "RDTSCP " : "",
+            (f1_edx & (1 << 16)) ? "PAT " : "",
+            (f1_edx & (1 << 9))  ? "APIC " : "",
+            (f1_ecx & (1 << 21)) ? "x2APIC " : "",
+            (f1_ecx & (1 << 5))  ? "VMX " : "",
+            (fe_ecx & (1 << 2))  ? "SVM " : "");
+
+        // Leaf 6 for thermal/power
+        u32 eax, ebx, ecx, edx;
+        asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(6), "c"(0));
+
+        screen_push_line("=== POWER & CLOCKS DIAGNOSTICS ===");
 
         // Check HWP (Intel Speed Shift)
         if (eax & (1 << 7)) {
